@@ -186,7 +186,8 @@ available, `/refine` injects a one-shot `complete(prompt, opts?)` into
 `ProposeInput` and records any `modelCall` telemetry a proposer returns
 (model, tokens, latency, ok/error) in the `harness-refinement` audit entry —
 so a companion package can ship a dedicated-model proposer whose spend stays
-**audited, not hidden**. Both `complete` and `modelCall` are optional;
+**audited, not hidden**. One ships as a companion: **[pi-harness-model-proposer](https://github.com/pungggi/pi-harness-model-proposer)**
+(`pi install npm:pi-harness-model-proposer`). Both `complete` and `modelCall` are optional;
 `steering` and `dedupe` ignore them, so the default behavior is unchanged.
 
 Register your own proposer from another extension (the registry is re-exported
