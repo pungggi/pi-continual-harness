@@ -20,6 +20,7 @@ type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 interface MiniCtx {
   ui: { notify: (msg: string, level: string) => void; setStatus: () => void };
   sessionManager: { getBranch: () => unknown[] };
+  model: { provider: string; id: string };
 }
 
 function makeMini(branch: unknown[]) {
@@ -34,6 +35,7 @@ function makeMini(branch: unknown[]) {
   const ctx = (): MiniCtx => ({
     ui: { notify: (msg, level) => notifications.push({ msg, level }), setStatus: () => {} },
     sessionManager: { getBranch: () => branch },
+    model: { provider: "test", id: "main" },
   });
   return { pi: pi as unknown as ExtensionAPI, handlers, entries, notifications, ctx };
 }
@@ -46,7 +48,7 @@ function seedItem(id: string, importance: number): void {
       data: {
         state: {
           items: [
-            { id, kind: "memory", content: "fact", evidence: "e", importance, active: true, createdAt: 1, updatedAt: 1 },
+            { id, kind: "memory", content: "fact", evidence: "e", importance, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
           ],
         },
       },
@@ -159,5 +161,32 @@ describe("registerOutcome handler", () => {
     await handlers.get("turn_end")!({ turnIndex: 1 }, ctx());
     expect(getState().items[0]!.importance).toBeCloseTo(0.5);
     expect(notifications).toHaveLength(0);
+  });
+
+  it("only bumps items owned by the active model (other models are ignored)", async () => {
+    await setConfig(true, 0.05);
+    reconstruct([
+      {
+        type: "custom",
+        customType: STATE_ENTRY,
+        data: {
+          state: {
+            items: [
+              { id: "h_mine", kind: "memory", content: "mine", evidence: "e", importance: 0.5, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
+              { id: "h_other", kind: "memory", content: "other", evidence: "e", importance: 0.5, active: true, ownerModel: "other/model", createdAt: 1, updatedAt: 1 },
+            ],
+          },
+        },
+      },
+    ]);
+    const branch = [asst("seed")];
+    const { pi, handlers, ctx } = makeMini(branch);
+    registerOutcome(pi);
+    await handlers.get("turn_end")!({ turnIndex: 0 }, ctx());
+    branch.push(asst("citing [h_mine] and [h_other]"));
+    await handlers.get("turn_end")!({ turnIndex: 1 }, ctx());
+    const byId = new Map(getState().items.map((i) => [i.id, i.importance]));
+    expect(byId.get("h_mine")).toBeCloseTo(0.55); // active model → bumped
+    expect(byId.get("h_other")).toBeCloseTo(0.5); // different model → untouched
   });
 });

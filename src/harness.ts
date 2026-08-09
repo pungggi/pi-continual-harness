@@ -19,6 +19,7 @@ import {
   decayAndPrune,
   exportDurable,
   getState,
+  modelKey,
   reconstructFromDurable,
 } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
@@ -223,8 +224,12 @@ async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promi
   const path = await resolvePath(rest, ctx);
   const items = getState().items;
   const active = items.filter((i) => i.active);
+  const key = modelKey(ctx.model);
+  // status shows this model's view (what gets injected) + the cross-model total.
+  const mine = key ? active.filter((i) => i.ownerModel === key) : active;
+  const models = [...new Set(active.map((i) => i.ownerModel).filter(Boolean))];
   const counts: Record<ComponentKind, number> = { prompt: 0, memory: 0, skill: 0, subagent: 0 };
-  for (const i of active) counts[i.kind] += 1;
+  for (const i of mine) counts[i.kind] += 1;
   let fileState: string;
   try {
     const st = await stat(path);
@@ -234,7 +239,8 @@ async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promi
   }
   ctx.ui.setStatus("harness", undefined);
   ctx.ui.notify(
-    `Harness: ${active.length} active / ${items.length} total — ` +
+    `Harness${key ? ` [${key}]` : ""}: ${mine.length} active for this model / ${active.length} active total ` +
+      `across ${models.length} model(s) — ` +
       `prompt ${counts.prompt}, memory ${counts.memory}, skill ${counts.skill}, subagent ${counts.subagent}. ` +
       `Durable: ${fileState}.`,
     "info",

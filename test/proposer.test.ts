@@ -13,7 +13,7 @@ import {
 
 function item(over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">): HarnessItem {
   const now = 10_000;
-  return { evidence: "e", importance: 0.5, active: true, createdAt: now, updatedAt: now, ...over };
+  return { evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: now, updatedAt: now, ...over };
 }
 
 const state = (items: HarnessItem[]): HarnessState => ({ items });
@@ -60,6 +60,15 @@ describe("dedupeProposer", () => {
   it("ignores near-duplicates of a different kind", async () => {
     const a = item({ id: "h_a", kind: "prompt", content: "always use the foo pattern", importance: 0.9 });
     const b = item({ id: "h_b", kind: "memory", content: "always use the foo pattern", importance: 0.4 });
+    const r = await dedupeProposer.propose({ evidence: "", state: state([a, b]), lookback: 10 });
+    expect(r.deltas ?? []).toHaveLength(0);
+  });
+
+  it("does not dedupe near-duplicates bound to different owner models", async () => {
+    // Same kind, near-identical text, but different ownerModel → both kept.
+    // Per-model isolation means each model keeps its own copy.
+    const a = item({ id: "h_a", kind: "prompt", content: "always use the foo pattern", importance: 0.9, ownerModel: "anthropic/sonnet" });
+    const b = item({ id: "h_b", kind: "prompt", content: "use the foo pattern always", importance: 0.4, ownerModel: "google/gemini" });
     const r = await dedupeProposer.propose({ evidence: "", state: state([a, b]), lookback: 10 });
     expect(r.deltas ?? []).toHaveLength(0);
   });

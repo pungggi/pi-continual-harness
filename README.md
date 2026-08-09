@@ -79,9 +79,12 @@ preserved). Point pi-reflect at the same file to refine it offline:
 
 The model-facing tools:
 
-- `harness_list [kind]` — read current state (optionally filtered by kind).
+- `harness_list({ kind?, model? })` — read current state. `model` defaults to
+  the active model's items (what gets injected this turn); `"*"` returns every
+  model.
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
-  `delete` deltas. Every `create` requires `evidence`.
+  `delete` deltas. Every `create` requires `evidence`. New items are stamped
+  automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).
 
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
@@ -154,12 +157,51 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 3. The agent calls the tools (steering path); each accepted delta updates the
    in-memory state, which is snapshotted to the session via
    `appendEntry("harness-state", ...)`. Direct-apply proposers snapshot the
-   same way.
+   same way. New items are stamped with the active model (see
+   [Model binding](#model-binding-per-model-isolation)).
 4. Because pi's session tree branches at any entry, `/tree` navigation gives
    rollback to any pre-refinement point for free — no bespoke snapshot system.
 
 This reuses the existing agent loop (no nested/hidden model calls), is
 model-agnostic, and keeps every delta visible and reviewable in the transcript.
+
+## Model binding (per-model isolation)
+
+Every item is bound to exactly one model as `ownerModel` (`"provider/id"`). An
+item is **only injected for the model it belongs to** — so switching to a
+brand-new model id starts from a **blank harness**, and one model's notes never
+leak into another's context. Binding is at the *exact* model id (not family or
+vendor): a new version id is a clean slate, by design.
+
+How the binding is set and respected:
+
+- **Created items are stamped automatically** with the model driving the turn.
+  The model-facing tools cannot read the active model, so `before_agent_start`
+  (which always fires first in a turn, with the model) caches it; `harness_mutate`
+  stamps creates from that cache, and direct-apply proposers stamp from their
+  `ctx.model`. You never name the model yourself.
+- **Injection filters by owner.** Only items whose `ownerModel` matches the
+  active model are appended to the system prompt. An unknown model injects
+  nothing.
+- **`harness_list` defaults to the active model** (pass `model: "*"` for every
+  model, or an explicit `"provider/id"`).
+- **Orphan adoption.** Items with no owner — from a legacy session snapshot, an
+  old durable file, or created while the model was unknown — are adopted by the
+  active model on first contact (the next `before_agent_start`). This is the
+  migration path: existing harnesses transition cleanly with no manual steps,
+  and it's persisted as a normal `harness-state` entry (so `/tree` rollback
+  covers it).
+- **Durable round-trip preserves owner.** `/harness export` tags each item with
+  `model: provider/id`; `/harness import` restores it. An item whose tag
+  pi-reflect stripped becomes an orphan and is adopted by the active model.
+
+Manual commands (`export`, `import`, `keep`, `drop`, `prune`, `push-mem`,
+`status`) operate on the **whole store** by design — they are explicit human
+actions with full control. Isolation is enforced only where pollution would
+leak automatically: injection, listing, create-stamping, and the outcome loop.
+In particular, `/harness push-mem` pushes *every* model's active items into
+pi-mem (which can yield near-duplicate memories across models); scope it per
+model in pi-mem if that matters to you.
 
 ## Proposers
 
@@ -235,6 +277,10 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   paths (both off by default).
 - **Pluggable delta proposers** with a registry: `steering` (default) and
   `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
+- **Per-model isolation**: every item is bound to a `provider/id` and injected
+  only for that model; new items are stamped automatically and orphans adopted
+  on first contact. A new model id starts from a blank harness, and the durable
+  round-trip preserves the owner tag.
 
 Open extension points (see `docs/ROADMAP.md`):
 

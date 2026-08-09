@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  adoptOrphans,
   applyDeltas,
   bumpImportance,
   decayAndPrune,
@@ -14,6 +15,7 @@ import {
   getState,
   IMPORTANCE_FLOOR,
   listItems,
+  modelKey,
   parseDurable,
   reconstruct,
   reconstructFromDurable,
@@ -392,5 +394,152 @@ describe("parseDurable + reconstructFromDurable", () => {
     expect(res.missingFile).toBe(true);
     expect(res.imported).toBe(0);
     expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+describe("modelKey", () => {
+  it("renders provider/id and is undefined for no model", () => {
+    expect(modelKey({ provider: "anthropic", id: "claude-sonnet-4" })).toBe("anthropic/claude-sonnet-4");
+    expect(modelKey(undefined)).toBeUndefined();
+  });
+});
+
+describe("model binding — applyDeltas stamps ownerModel", () => {
+  beforeEach(reset);
+
+  it("create uses delta.ownerModel, defaulting to orphan (\"\")", () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "tagged", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "orphan", evidence: "e" },
+      ],
+      vi.fn(),
+    );
+    const byContent = new Map(getState().items.map((i) => [i.content, i.ownerModel]));
+    expect(byContent.get("tagged")).toBe("anthropic/sonnet");
+    expect(byContent.get("orphan")).toBe("");
+  });
+
+  it("update preserves owner when omitted, reassigns when given", () => {
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "x", evidence: "e", ownerModel: "a/b" }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    applyDeltas([{ op: "update", id, content: "y" }], vi.fn());
+    expect(getState().items[0]!.ownerModel).toBe("a/b");
+    applyDeltas([{ op: "update", id, ownerModel: "c/d" }], vi.fn());
+    expect(getState().items[0]!.ownerModel).toBe("c/d");
+  });
+});
+
+describe("model binding — adoptOrphans", () => {
+  beforeEach(reset);
+
+  it("stamps orphans to the key, leaves owned items alone, persists once", () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "orphan", evidence: "e" },
+        { op: "create", kind: "memory", content: "owned", evidence: "e", ownerModel: "anthropic/sonnet" },
+      ],
+      vi.fn(),
+    );
+    const persist = vi.fn();
+    expect(adoptOrphans("google/gemini", persist)).toBe(1);
+    const byContent = new Map(getState().items.map((i) => [i.content, i.ownerModel]));
+    expect(byContent.get("orphan")).toBe("google/gemini");
+    expect(byContent.get("owned")).toBe("anthropic/sonnet");
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op (no persist) when there are no orphans", () => {
+    applyDeltas([{ op: "create", kind: "memory", content: "x", evidence: "e", ownerModel: "a/b" }], vi.fn());
+    const persist = vi.fn();
+    expect(adoptOrphans("a/b", persist)).toBe(0);
+    expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+describe("model binding — reconstruct normalizes legacy snapshots", () => {
+  beforeEach(reset);
+
+  it("treats items missing ownerModel as orphans", () => {
+    reconstruct([
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: { state: { items: [{ id: "h_a", kind: "memory", content: "legacy", evidence: "e", importance: 0.5, active: true, createdAt: 1, updatedAt: 1 }] } },
+      },
+    ]);
+    expect(getState().items[0]!.ownerModel).toBe("");
+  });
+
+  it("preserves an explicit ownerModel", () => {
+    reconstruct([
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: { state: { items: [{ id: "h_a", kind: "memory", content: "x", evidence: "e", importance: 0.5, active: true, ownerModel: "anthropic/sonnet", createdAt: 1, updatedAt: 1 }] } },
+      },
+    ]);
+    expect(getState().items[0]!.ownerModel).toBe("anthropic/sonnet");
+  });
+});
+
+describe("model binding — durable round-trip", () => {
+  beforeEach(reset);
+
+  it("export emits one model: line per owned item; parse inverts it", async () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "prompt", content: "owned note", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "orphan fact", evidence: "e" },
+      ],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-model-rt-"));
+    const file = join(dir, "harness-state.md");
+    try {
+      await exportDurable(file);
+      const body = readFileSync(file, "utf8");
+      // exactly one model: line — the orphan (ownerModel "") emits none
+      expect((body.match(/^\s+- model:/gm) ?? []).length).toBe(1);
+      expect(body).toContain("model: anthropic/sonnet");
+      const parsed = parseDurable(body);
+      const byContent = new Map(parsed.map((p) => [p.content, p]));
+      expect(byContent.get("owned note")?.ownerModel).toBe("anthropic/sonnet");
+      expect(byContent.get("orphan fact")?.ownerModel).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reconstructFromDurable carries owner through import; untagged items stay orphans", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-model-imp-"));
+    const file = join(dir, "harness-state.md");
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        "- **[h_owned]** (importance 0.50) tagged",
+        "  - evidence: e",
+        "  - model: google/gemini",
+        "- **[h_plain]** (importance 0.50) untagged",
+        "  - evidence: e",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      await reconstructFromDurable(file, {}, vi.fn());
+      const byId = new Map(getState().items.map((i) => [i.id, i.ownerModel]));
+      expect(byId.get("h_owned")).toBe("google/gemini");
+      expect(byId.get("h_plain")).toBe(""); // orphan → adopted by active model on first contact
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

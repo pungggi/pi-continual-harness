@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { applyDeltas, getState, listItems } from "./store.js";
+import { applyDeltas, getActiveModelKey, getState, listItems } from "./store.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
 const KIND_VALUES = ["prompt", "memory", "skill", "subagent"] as const;
@@ -21,6 +21,9 @@ const CreateShape = Type.Object({
     description: "Why this belongs in the harness state, grounded in trajectory evidence.",
   }),
   importance: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+  // ownerModel is intentionally NOT exposed to the model: it is stamped
+  // server-side from the active model so items bind to the model driving the
+  // turn without the agent having to (or being able to) name it.
 });
 
 const UpdateShape = Type.Object({
@@ -52,10 +55,26 @@ export function registerTools(pi: ExtensionAPI): void {
     ],
     parameters: Type.Object({
       kind: Type.Optional(StringEnum(KIND_VALUES)),
+      model: Type.Optional(
+        Type.String({
+          description:
+            "Filter by owner model as provider/id. Omit = the active model items; use * for all models.",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
       const kind = params.kind as ComponentKind | undefined;
-      const items = listItems(kind);
+      const modelFilter = params.model as string | undefined;
+      // Default scope = the active model's items (what gets injected this turn).
+      // "*" = every model; an explicit id = that model. When no active model is
+      // known (no turn started) and no filter is given, return all so the agent
+      // is never silently shown an empty store during setup.
+      const ownerKey =
+        modelFilter === "*"
+          ? undefined
+          : modelFilter ?? getActiveModelKey();
+      let items = listItems(kind);
+      if (ownerKey !== undefined) items = items.filter((i) => i.ownerModel === ownerKey);
       return {
         content: [
           {
@@ -66,7 +85,7 @@ export function registerTools(pi: ExtensionAPI): void {
                 : items
                     .map(
                       (i) =>
-                        `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}) ${i.content}\n  evidence: ${i.evidence}`,
+                        `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}, model ${i.ownerModel || "(orphan)"}) ${i.content}\n  evidence: ${i.evidence}`,
                     )
                     .join("\n"),
           },
@@ -89,7 +108,15 @@ export function registerTools(pi: ExtensionAPI): void {
       deltas: Type.Array(DeltaShape, { minItems: 1, maxItems: 20 }),
     }),
     async execute(_toolCallId, params) {
-      const deltas = params.deltas as Delta[];
+      const incoming = params.deltas as Delta[];
+      // Stamp every create with the active model so new notes bind to the model
+      // driving this turn (strict per-model isolation). When the active model is
+      // unknown, leave them as orphans — before_agent_start adopts them next.
+      const key = getActiveModelKey();
+      const deltas =
+        key === undefined
+          ? incoming
+          : incoming.map((d) => (d.op === "create" ? { ...d, ownerModel: key } : d));
       const applied: AppliedDelta[] = applyDeltas(deltas, (snapshot, ver) => {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });

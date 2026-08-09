@@ -28,6 +28,32 @@ const IMPORTANCE_FLOOR = 0.3;
 let state: HarnessState = { items: [] };
 let version = 0;
 
+// ---- model binding -------------------------------------------------------
+//
+// Items are strictly per-model (ownerModel = "provider/id"). The model-facing
+// tools (harness_list / harness_mutate) receive NO ctx, so they cannot read
+// the active model at execute time. before_agent_start always fires first in a
+// turn WITH ctx.model, so it caches the active key here; the tools then read
+// the cache to stamp/filter. Undefined cache (no turn started) is treated as
+// "model unknown" — tools fall back gracefully (create orphans, list all).
+let activeModelKey: string | undefined;
+
+/** Canonical owner key for a model: "provider/id". Accepts the structural
+ *  shape of pi-ai's Model (provider + id) without importing the type. */
+export function modelKey(m?: { provider: string; id: string }): string | undefined {
+  return m ? `${m.provider}/${m.id}` : undefined;
+}
+
+/** Cache the active model key (called from before_agent_start). */
+export function setActiveModelKey(key: string | undefined): void {
+  activeModelKey = key;
+}
+
+/** Read the cached active model key (called from the model-facing tools). */
+export function getActiveModelKey(): string | undefined {
+  return activeModelKey;
+}
+
 export function getState(): HarnessState {
   return state;
 }
@@ -62,6 +88,9 @@ function applyOne(delta: Delta): AppliedDelta {
       evidence: delta.evidence,
       importance: clamp(delta.importance ?? 0.5),
       active: true,
+      // Owner is stamped by the caller (tool/proposer) from the active model.
+      // Absent → orphan (""), adopted by the active model on first contact.
+      ownerModel: delta.ownerModel ?? "",
       createdAt: now,
       updatedAt: now,
     };
@@ -79,6 +108,7 @@ function applyOne(delta: Delta): AppliedDelta {
       evidence: delta.evidence ?? before.evidence,
       importance: clamp(delta.importance ?? before.importance),
       active: delta.active ?? before.active,
+      ownerModel: delta.ownerModel ?? before.ownerModel,
       updatedAt: Date.now(),
     };
     state.items[idx] = after;
@@ -123,7 +153,11 @@ export function reconstruct(entries: Iterable<unknown>): void {
       last = entry.data.state;
     }
   }
-  state = last ? { items: last.items.map((i) => ({ ...i })) } : { items: [] };
+  // Normalize legacy snapshots that predate ownerModel: missing → orphan (""),
+  // adopted by the active model on first contact (see adoptOrphans).
+  state = last
+    ? { items: last.items.map((i) => ({ ...i, ownerModel: i.ownerModel ?? "" })) }
+    : { items: [] };
   version = 0;
 }
 
@@ -172,6 +206,28 @@ export function bumpImportance(
   return item;
 }
 
+/** Adopt every orphan item (ownerModel === "") to the given model key. This is
+ *  the migration policy for legacy snapshots / durable imports / items created
+ *  while the active model was unknown: they become owned by the first model to
+ *  claim them. Idempotent: a no-op (no persist) when there are no orphans. */
+export function adoptOrphans(
+  key: string,
+  persist: (snapshot: HarnessState, version: number) => void,
+): number {
+  let adopted = 0;
+  for (const i of state.items) {
+    if (i.ownerModel === "") {
+      i.ownerModel = key;
+      adopted += 1;
+    }
+  }
+  if (adopted > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  return adopted;
+}
+
 export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };
 
 // ---- Durable export (composition seam with pi-reflect / pi-mem) -------------
@@ -186,6 +242,7 @@ export async function exportDurable(path = DEFAULT_DURABLE_PATH): Promise<string
     for (const i of items) {
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
+      if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
     }
     lines.push("");
   }
@@ -241,6 +298,7 @@ interface ParsedItem {
   importance: number;
   content: string;
   evidence: string;
+  ownerModel?: string;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -265,6 +323,7 @@ const RE_H2 = /^##\s+(.*)$/;
 const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.*)$/;
 const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
+const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
 
 /** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
 export function parseDurable(text: string): ParsedItem[] {
@@ -293,6 +352,12 @@ export function parseDurable(text: string): ParsedItem[] {
     const ev = line.match(RE_EVIDENCE);
     if (ev) {
       if (pending) pending.evidence = ev[1]!.trim();
+      continue;
+    }
+
+    const mdl = line.match(RE_MODEL);
+    if (mdl) {
+      if (pending) pending.ownerModel = mdl[1]!.trim();
       continue;
     }
 
@@ -361,6 +426,9 @@ export async function reconstructFromDurable(
       existing.evidence = p.evidence;
       existing.importance = clamp(p.importance);
       existing.active = true;
+      // Owner: durable wins only if the file carried a model tag; otherwise keep
+      // the existing owner (don't clobber a known binding with a missing field).
+      if (p.ownerModel) existing.ownerModel = p.ownerModel;
       existing.updatedAt = now;
       updated += 1;
     } else {
@@ -372,6 +440,7 @@ export async function reconstructFromDurable(
         evidence: p.evidence,
         importance: clamp(p.importance),
         active: true,
+        ownerModel: p.ownerModel ?? "",
         createdAt: now,
         updatedAt: now,
       });

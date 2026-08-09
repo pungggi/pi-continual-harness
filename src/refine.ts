@@ -19,7 +19,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, exportDurable, REFINE_ENTRY, snapshotState } from "./store.js";
+import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
 
@@ -96,6 +96,11 @@ export async function runRefine(
     ...(complete ? { complete } : {}),
   });
   const proposedDeltas = result.deltas ?? [];
+  // Stamp direct-apply create deltas with the active model so proposer-authored
+  // notes bind to the model driving the turn (the steering path is stamped in
+  // the harness_mutate tool instead). Orphans result only when the model is
+  // unknown; before_agent_start adopts them on the next turn.
+  const ownerKey = modelKey(ctx.model);
 
   let applied = 0;
   let applyError: string | undefined;
@@ -108,7 +113,12 @@ export async function runRefine(
     // so we surface the failure as an audited no-op rather than crashing /refine.
     try {
       const appliedDeltas = applyDeltas(
-        proposedDeltas.map((d) => d.delta),
+        proposedDeltas.map((d) => {
+          const delta = d.delta;
+          return ownerKey !== undefined && delta.op === "create"
+            ? { ...delta, ownerModel: ownerKey }
+            : delta;
+        }),
         (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
       );
       applied = appliedDeltas.length;

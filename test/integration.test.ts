@@ -36,6 +36,7 @@ interface FakeCtx {
     getBranch: () => unknown[];
   };
   cwd: string;
+  model: { provider: string; id: string };
 }
 
 function makeFakePi(branch: unknown[]) {
@@ -72,6 +73,7 @@ function makeFakePi(branch: unknown[]) {
     },
     sessionManager: { getBranch: () => branch },
     cwd: "/tmp",
+    model: { provider: "test", id: "main" },
   });
 
   return { pi: pi as unknown as ExtensionAPI, handlers, tools, commands, entries, sentMessages, notifications, statuses, ctx };

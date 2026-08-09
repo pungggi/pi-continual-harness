@@ -14,7 +14,7 @@ import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
-import { getState, reconstruct, STATE_ENTRY } from "./store.js";
+import { getState, reconstruct, setActiveModelKey, STATE_ENTRY } from "./store.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
   // Rebuild in-memory state from the current branch on every session start /
@@ -26,6 +26,9 @@ export default function continualHarness(pi: ExtensionAPI): void {
     resetAutoRefine();
     resetReminder();
     resetOutcome();
+    // Drop any stale active-model key from the previous session: the next
+    // before_agent_start re-caches it before any tool can run.
+    setActiveModelKey(undefined);
     reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
     const n = getState().items.length;
     if (n > 0) {

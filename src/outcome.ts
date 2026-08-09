@@ -24,7 +24,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
-import { bumpImportance, getState } from "./store.js";
+import { bumpImportance, getState, modelKey } from "./store.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
 type AnyEntry = {
@@ -83,7 +83,14 @@ export function registerOutcome(pi: ExtensionAPI): void {
       .join("\n");
     if (!text.trim()) return;
 
-    const activeIds = new Set(getState().items.filter((i) => i.active).map((i) => i.id));
+    // Only the active model's items are injected, so only those can be cited.
+    // Filter accordingly; an unknown model → no candidates → no bumps.
+    const key = modelKey(ctx.model);
+    const activeIds = new Set(
+      key === undefined
+        ? []
+        : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
+    );
     const refs = findReferences(text, activeIds);
     if (refs.length === 0) return;
 

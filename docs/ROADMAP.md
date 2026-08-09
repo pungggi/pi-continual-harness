@@ -82,6 +82,35 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   **Effort:** ~95 lines. **Risk:** medium (autonomy) — mitigated by opt-in +
   promotion-only + persist/rollback + visibility.
 
+## Phase 6 — DONE (main; unreleased)
+
+- **Model binding (per-model isolation).** Every item now carries an
+  `ownerModel` (`"provider/id"`), and an item is injected **only** for the
+  exact model it belongs to — so switching to a brand-new model id starts from
+  a blank harness and one model's notes never pollute another's context.
+  Binding is at the exact id by design (a new version is a clean slate).
+  - New items are stamped automatically: `before_agent_start` caches the active
+    model (the model-facing tools have no `ctx` of their own), and
+    `harness_mutate` / direct-apply proposers stamp creates from it.
+  - **Orphan adoption** is the migration path: items with no owner (legacy
+    snapshots, old durable files, created while the model was unknown) are
+    adopted by the active model on first contact — persisted as a normal
+    `harness-state` entry, so `/tree` rollback covers it.
+  - The **durable round-trip preserves owner** (a `model:` line per item);
+    `dedupe` no longer compares across models; the outcome loop only bumps the
+    active model's cited items.
+  - Manual commands (`export`/`import`/`keep`/`drop`/`prune`/`push-mem`/`status`)
+    keep whole-store control; isolation is enforced only at the automatic
+    context layer (injection, listing, create-stamping, outcome).
+
+  **Effort:** ~370 lines across 8 source files (schema, store, inject bridge,
+  tools, refine, outcome, proposer, harness) + docs + 19 new tests. **Risk:**
+  medium (behavioural change to injection + a new persisted field + durable
+  format) — mitigated by: backward-compatible schema (missing → orphan →
+  adopted), strict turn-start caching (the active model is always known before
+  any tool runs), and a full durable round-trip that degrades to the adopt
+  policy if pi-reflect strips the tag.
+
 ## Future extensions (not on the phase plan)
 
 Two items were flagged during the phases as deferred decisions. Neither needs

@@ -175,6 +175,9 @@ export const dedupeProposer: DeltaProposer = {
       let best = 0;
       for (const k of keepers) {
         if (k.kind !== cand.kind) continue;
+        // Per-model isolation: each model keeps its own copy, so two near-
+        // identical items bound to different models are NOT duplicates.
+        if (k.ownerModel !== cand.ownerModel) continue;
         const sim = tokenOverlap(k.content, cand.content);
         if (sim >= DEDUPE_THRESHOLD && sim > best) {
           best = sim;

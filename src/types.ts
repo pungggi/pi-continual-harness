@@ -25,6 +25,14 @@ export interface HarnessItem {
   importance: number;
   /** Whether the item is injected into the system prompt each turn. */
   active: boolean;
+  /**
+   * The model this item is bound to, as "provider/id". Empty string = orphan
+   * (not yet adopted by any model). Model binding is STRICT per-model: an item
+   * is only injected for the exact model it belongs to, so a brand-new model
+   * id starts from a blank harness and never inherits another model's notes.
+   * Orphans are adopted by the active model on first contact (see store.ts).
+   */
+  ownerModel: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -41,6 +49,9 @@ export type Delta =
       content: string;
       evidence: string;
       importance?: number;
+      /** Owner "provider/id". Stamped server-side from the active model when the
+       *  agent omits it; set explicitly by direct-apply proposers. Absent → orphan. */
+      ownerModel?: string;
     }
   | {
       op: "update";
@@ -49,6 +60,8 @@ export type Delta =
       evidence?: string;
       importance?: number;
       active?: boolean;
+      /** Reassign ownership (rare; used by migration/import). Absent → keep current. */
+      ownerModel?: string;
     }
   | { op: "delete"; id: string; reason: string };
 

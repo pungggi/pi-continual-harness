@@ -90,6 +90,37 @@ Every item carries an `importance` in `[0, 1]`. Items below the floor
 The session layer is the source of truth at runtime. The durable file is a
 **best-effort export/import** that closes the loop with offline tools.
 
+### Model binding (per-model isolation)
+
+Every item carries an `ownerModel` (`"provider/id"`, or `""` for an orphan).
+**An item is injected only for the exact model it belongs to**, so a brand-new
+model id starts from a blank harness and one model's notes never leak into
+another's context. Binding is at the exact id on purpose — a new version is a
+clean slate.
+
+- **Stamping.** New items are stamped with the model driving the turn. The
+  model-facing tools cannot see the active model, so `before_agent_start`
+  caches it (it always fires first in a turn, with the model); `harness_mutate`
+  stamps creates from that cache, and direct-apply proposers stamp from
+  `ctx.model`.
+- **Injection.** `before_agent_start` renders only items whose `ownerModel`
+  matches the active model; an unknown model injects nothing.
+- **`harness_list`** defaults to the active model's items (`model: "*"` for all,
+  or an explicit `"provider/id"`).
+- **Orphan adoption.** Items with no owner (legacy snapshots, old durable
+  files, or created while the model was unknown) are adopted by the active
+  model on first contact — the next `before_agent_start` — and that adoption is
+  persisted as a normal `harness-state` entry (branchable via `/tree`). This is
+  the migration path: existing harnesses move to per-model isolation with no
+  manual steps.
+- **Durable round-trip** preserves the owner (a `model:` line per item);
+  untagged items import as orphans and are adopted on first contact.
+
+Manual commands (`export`/`import`/`keep`/`drop`/`prune`/`push-mem`/`status`)
+operate on the whole store by design; isolation is enforced only where
+pollution would leak automatically (injection, listing, create-stamping,
+outcome).
+
 ---
 
 ## 2. Installation
@@ -153,6 +184,7 @@ interface HarnessItem {
   evidence: string;    // why this item exists, grounded in the trajectory
   importance: number;  // [0,1] fitness; < 0.3 is prune-eligible
   active: boolean;     // injected into the system prompt when true
+  ownerModel: string;  // "provider/id" — only injected for this model ("" = orphan)
   createdAt: number;   // epoch ms
   updatedAt: number;   // epoch ms — touched by bumps/decay; decay proxy
 }
@@ -164,8 +196,8 @@ The unit of mutation (see [`src/types.ts`](../src/types.ts)):
 
 ```ts
 type Delta =
-  | { op: "create";   kind: ComponentKind; content: string; evidence: string; importance?: number }
-  | { op: "update";   id: string; content?: string; evidence?: string; importance?: number; active?: boolean }
+  | { op: "create";   kind: ComponentKind; content: string; evidence: string; importance?: number; ownerModel?: string }
+  | { op: "update";   id: string; content?: string; evidence?: string; importance?: number; active?: boolean; ownerModel?: string }
   | { op: "delete";   id: string; reason: string };
 ```
 
@@ -349,14 +381,16 @@ Two tools are registered for the agent to call (see [`src/tools.ts`](../src/tool
 ### `harness_list`
 
 ```
-harness_list({ kind?: ComponentKind })
+harness_list({ kind?: ComponentKind, model?: string })
 ```
 
 Reads current state. Omit `kind` for everything, or filter by `prompt` |
-`memory` | `skill` | `subagent`. Returns one text line per item:
+`memory` | `skill` | `subagent`. `model` defaults to the **active model's**
+items (what gets injected this turn); pass `"*"` for every model, or an
+explicit `"provider/id"`. Returns one text line per item:
 
 ```
-[h_lz3k9p2_a1b2c] (memory, importance 0.62, active) <content>
+[h_lz3k9p2_a1b2c] (memory, importance 0.62, active, model anthropic/sonnet) <content>
   evidence: <evidence>
 ```
 
@@ -410,6 +444,7 @@ The durable markdown file is the composition seam. `/harness export` writes it;
 
 - **[h_xxx]** (importance 0.62) <content>
   - evidence: <evidence>
+  - model: <provider/id>      ← optional; the owner model (omitted for orphans)
 
 ## <Section title>
 ...
@@ -437,7 +472,10 @@ Two bullet forms are recognized on import:
    ```
    - **[h_lz3k9p2_a1b2c]** (importance 0.62) The content text
      - evidence: Why it exists
+     - model: provider/id
    ```
+   The `model:` line is optional; items without it import as orphans and are
+   adopted by the active model on first contact.
 2. **Plain bullet** (lenient — for hand-written / pi-reflect-added items):
    ```
    - **[h_xxx]** content here
