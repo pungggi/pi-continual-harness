@@ -542,4 +542,35 @@ describe("model binding — durable round-trip", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("an untagged durable entry orphans an existing owned item (adopted on first contact)", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "tagged", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      vi.fn(),
+    );
+    const id = getState().items[0]!.id;
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-model-strip-"));
+    const file = join(dir, "harness-state.md");
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        `- **[${id}]** (importance 0.50) stripped by pi-reflect`,
+        `  - evidence: e`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      await reconstructFromDurable(file, {}, vi.fn());
+      // durable wins on owner: the absent tag orphans the item (→ adopted by the
+      // active model on first contact), matching the documented round-trip.
+      expect(getState().items[0]!.ownerModel).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -77,8 +77,10 @@ function clamp(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-/** Apply a single delta against the in-memory state. Does not persist. */
-function applyOne(delta: Delta): AppliedDelta {
+/** Apply a single delta against the in-memory state. Does not persist.
+ *  `actorModel`, when set, stamps creates and restricts update/delete to that
+ *  model's items (per-model isolation at the model-facing tool boundary). */
+function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
   if (delta.op === "create") {
     const now = Date.now();
     const item: HarnessItem = {
@@ -88,9 +90,9 @@ function applyOne(delta: Delta): AppliedDelta {
       evidence: delta.evidence,
       importance: clamp(delta.importance ?? 0.5),
       active: true,
-      // Owner is stamped by the caller (tool/proposer) from the active model.
-      // Absent → orphan (""), adopted by the active model on first contact.
-      ownerModel: delta.ownerModel ?? "",
+      // Owner: explicit delta wins; else the actor model; else orphan (""),
+      // adopted by the active model on first contact.
+      ownerModel: delta.ownerModel ?? actorModel ?? "",
       createdAt: now,
       updatedAt: now,
     };
@@ -102,6 +104,10 @@ function applyOne(delta: Delta): AppliedDelta {
     const idx = state.items.findIndex((i) => i.id === delta.id);
     if (idx < 0) throw new Error(`update: no item with id ${delta.id}`);
     const before = state.items[idx]!;
+    // Per-model isolation: when an actor model is known, a mutation may only
+    // touch that model's items. Cross-model maintenance paths (the dedupe
+    // proposer, /harness keep|drop|prune) call applyDeltas with no actor.
+    assertOwnsItem("update", delta.id, before, actorModel);
     const after: HarnessItem = {
       ...before,
       content: delta.content ?? before.content,
@@ -118,8 +124,26 @@ function applyOne(delta: Delta): AppliedDelta {
   // delete
   const idx = state.items.findIndex((i) => i.id === delta.id);
   if (idx < 0) throw new Error(`delete: no item with id ${delta.id}`);
+  assertOwnsItem("delete", delta.id, state.items[idx]!, actorModel);
   state.items.splice(idx, 1);
   return { op: "delete", id: delta.id, reason: delta.reason };
+}
+
+/** Enforce that `actorModel` owns `item`; no-op when the actor is unknown
+ *  (manual / cross-model paths). Throws an audited, rollback-triggering error
+ *  otherwise. */
+function assertOwnsItem(
+  op: "update" | "delete",
+  id: string,
+  item: HarnessItem,
+  actorModel?: string,
+): void {
+  if (actorModel === undefined) return;
+  if (item.ownerModel !== actorModel) {
+    throw new Error(
+      `${op}: item ${id} is owned by ${item.ownerModel || "(orphan)"}, not the active model ${actorModel}`,
+    );
+  }
 }
 
 /**
@@ -129,11 +153,12 @@ function applyOne(delta: Delta): AppliedDelta {
 export function applyDeltas(
   deltas: Delta[],
   persist: (snapshot: HarnessState, version: number) => void,
+  actorModel?: string,
 ): AppliedDelta[] {
   const snapshotBefore = { items: state.items.map((i) => ({ ...i })) };
   const applied: AppliedDelta[] = [];
   try {
-    for (const d of deltas) applied.push(applyOne(d));
+    for (const d of deltas) applied.push(applyOne(d, actorModel));
   } catch (err) {
     // Roll back in-memory state on failure.
     state = snapshotBefore;
@@ -426,9 +451,10 @@ export async function reconstructFromDurable(
       existing.evidence = p.evidence;
       existing.importance = clamp(p.importance);
       existing.active = true;
-      // Owner: durable wins only if the file carried a model tag; otherwise keep
-      // the existing owner (don't clobber a known binding with a missing field).
-      if (p.ownerModel) existing.ownerModel = p.ownerModel;
+      // Durable wins on owner too: a present tag sets the owner; an absent tag
+      // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
+      // active model on first contact — matching the documented round-trip.
+      existing.ownerModel = p.ownerModel ?? "";
       existing.updatedAt = now;
       updated += 1;
     } else {

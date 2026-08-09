@@ -109,17 +109,17 @@ export function registerTools(pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params) {
       const incoming = params.deltas as Delta[];
-      // Stamp every create with the active model so new notes bind to the model
-      // driving this turn (strict per-model isolation). When the active model is
-      // unknown, leave them as orphans — before_agent_start adopts them next.
-      const key = getActiveModelKey();
-      const deltas =
-        key === undefined
-          ? incoming
-          : incoming.map((d) => (d.op === "create" ? { ...d, ownerModel: key } : d));
-      const applied: AppliedDelta[] = applyDeltas(deltas, (snapshot, ver) => {
-        pi.appendEntry("harness-state", { state: snapshot, version: ver });
-      });
+      // The active model is the ACTOR: creates bind to it, and update/delete are
+      // scoped to it (per-model isolation). When the active model is unknown (no
+      // turn started) there is no actor — creates become orphans, adopted next
+      // turn, and update/delete are unscoped (graceful fallback).
+      const applied: AppliedDelta[] = applyDeltas(
+        incoming,
+        (snapshot, ver) => {
+          pi.appendEntry("harness-state", { state: snapshot, version: ver });
+        },
+        getActiveModelKey(),
+      );
       const summary = summarize(applied);
       return {
         content: [{ type: "text", text: summary }],

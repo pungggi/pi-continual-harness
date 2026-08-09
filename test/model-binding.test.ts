@@ -156,6 +156,62 @@ describe("harness_mutate — stamps create with the active model", () => {
   });
 });
 
+describe("harness_mutate — isolation enforces update/delete on the active model", () => {
+  beforeEach(reset);
+
+  it("rejects an update targeting another model's item (atomic rollback)", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" }],
+      () => {},
+    );
+    const id = getState().items[0]!.id;
+    setActiveModelKey("anthropic/sonnet");
+    const { pi, tools } = fakePi();
+    registerTools(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await expect(
+      (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
+        deltas: [{ op: "update", id, content: "hijacked" }],
+      }),
+    ).rejects.toThrow(/owned by/);
+    expect(getState().items[0]!.content).toBe("theirs"); // unchanged (rolled back)
+  });
+
+  it("rejects a delete targeting another model's item", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" }],
+      () => {},
+    );
+    const id = getState().items[0]!.id;
+    setActiveModelKey("anthropic/sonnet");
+    const { pi, tools } = fakePi();
+    registerTools(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await expect(
+      (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
+        deltas: [{ op: "delete", id, reason: "cross-model" }],
+      }),
+    ).rejects.toThrow(/owned by/);
+    expect(getState().items).toHaveLength(1); // not deleted
+  });
+
+  it("allows update of the active model's own items", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      () => {},
+    );
+    const id = getState().items[0]!.id;
+    setActiveModelKey("anthropic/sonnet");
+    const { pi, tools } = fakePi();
+    registerTools(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
+      deltas: [{ op: "update", id, content: "updated" }],
+    });
+    expect(getState().items[0]!.content).toBe("updated");
+  });
+});
+
 describe("harness_list — model filtering", () => {
   beforeEach(reset);
 
