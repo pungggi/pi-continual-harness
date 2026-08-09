@@ -1,6 +1,6 @@
 {
   "name": "pi-continual-harness",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Online self-improvement layer for pi. A unified, in-trajectory harness-state store (prompt notes, memory, skill descriptions, sub-agent specs) with a manual /refine that proposes evidence-backed structured CRUD deltas. Composes with pi-reflect (offline) and pi-mem (storage); owns only the online optimizer layer. Inspired by Continual Harness (arXiv 2605.09998) and ACE (arXiv 2510.04618).",
   "keywords": [
     "pi-package",

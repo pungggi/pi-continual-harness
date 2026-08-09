@@ -31,7 +31,7 @@ export function registerHarness(pi: ExtensionAPI): void {
       "Durable harness-state I/O + importance hygiene. Subcommands: " +
       "import [--prune] [path] · export [path] · status [path] · " +
       "prune [--decay <days>] · keep <id> · drop <id> · " +
-      "push-mem [--all|--kind <kind>] (persist active items to pi-mem).",
+      "push-mem [--all|--kind <kind>|--model <provider/id|active>] (persist active items to pi-mem).",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "status").toLowerCase();
@@ -203,21 +203,33 @@ async function handlePushMem(
     const k = rest[kindIdx + 1]!;
     if (k === "prompt" || k === "memory" || k === "skill" || k === "subagent") kind = k;
   }
+  // --model scopes the push to one owner model (default: every model). "active"
+  // resolves to the model driving this command, so you don't have to name it.
+  const modelIdx = rest.indexOf("--model");
+  let modelFilter: string | undefined;
+  if (modelIdx >= 0 && modelIdx + 1 < rest.length) {
+    const m = rest[modelIdx + 1]!;
+    modelFilter = m === "active" ? (modelKey(ctx.model) ?? "") : m;
+  }
   // Default: memory kind (the clean 1:1 mapping). --all or --kind override.
-  const items = getState().items.filter((i) =>
-    i.active && (all || (kind ? i.kind === kind : i.kind === "memory")),
+  const items = getState().items.filter(
+    (i) =>
+      i.active &&
+      (all || (kind ? i.kind === kind : i.kind === "memory")) &&
+      (modelFilter === undefined || i.ownerModel === modelFilter),
   );
   if (items.length === 0) {
     ctx.ui.notify(
-      "No active items to push (default: memory kind; use --all or --kind <kind>).",
+      "No active items to push (default: memory kind; use --all, --kind <kind>, or --model <provider/id|active>).",
       "warning",
     );
     return;
   }
   const scope = all ? "item(s)" : `${kind ?? "memory"} item(s)`;
+  const modelNote = modelFilter !== undefined ? ` [model ${modelFilter || "(orphan)"}]` : "";
   const msg = buildPushMemPrompt(items, scope);
   pi.sendUserMessage(msg);
-  ctx.ui.notify(`Steering agent to persist ${items.length} ${scope} to pi-mem.`, "info");
+  ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
 }
 
 async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {

@@ -1,6 +1,6 @@
 # pi-continual-harness — Manual
 
-**Version 0.5.x · the online self-improvement layer for the [pi](https://pi.dev) coding agent**
+**Version 0.7.x · the online self-improvement layer for the [pi](https://pi.dev) coding agent**
 
 This is the complete reference manual for `pi-continual-harness`. It documents
 every command, tool, config key, file format, and extension point, plus the
@@ -355,12 +355,14 @@ Bumps an item's importance **−0.1** (clamped) and touches `updatedAt`. This
 *demotes*; to actually *remove*, follow with `prune` once it falls below the
 floor, or use `harness_mutate` `delete`.
 
-#### `push-mem [--all|--kind <kind>]`
+#### `push-mem [--all|--kind <kind>|--model <provider/id|active>]`
 
 ```
 /harness push-mem            # push active MEMORY items to pi-mem
 /harness push-mem --all      # push every active item
 /harness push-mem --kind skill   # push only skill-kind items
+/harness push-mem --all --model anthropic/sonnet  # only one model's items
+/harness push-mem --all --model active            # only the active model's items
 ```
 
 Copies active items into **pi-mem's** semantic memory store by **steering** the
@@ -370,7 +372,8 @@ install it rather than fabricating one. The harness store is **read-only** for a
 push (pi-mem gets a separate copy).
 
 Default scope is the `memory` kind (the clean 1:1 mapping); `--all` / `--kind`
-override. See [§11](#11-compositions).
+override; `--model` scopes to one owner model (default: every model; `active` =
+the model driving the command). See [§11](#11-compositions).
 
 ---
 
@@ -710,6 +713,7 @@ store (LanceDB + embeddings). `/harness push-mem` copies active items into it:
 /harness push-mem            # active MEMORY items → pi-mem
 /harness push-mem --all      # every active item
 /harness push-mem --kind skill
+/harness push-mem --all --model active   # only the active model's items
 ```
 
 The composition works by **steering** the agent to call pi-mem's `save_memory`

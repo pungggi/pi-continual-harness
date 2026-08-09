@@ -64,7 +64,7 @@ Durable I/O (round-trip with pi-reflect):
 /harness prune [--decay <days>]  # drop items below the importance floor
 /harness keep <id>               # nudge importance up (+0.1)
 /harness drop <id>               # nudge importance down (−0.1)
-/harness push-mem [--all|--kind <kind>]  # persist active items to pi-mem (save_memory)
+/harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
 ```
 
 `import` reconciles the file into the live store: items whose id matches an
@@ -103,9 +103,10 @@ pi install npm:pi-mem        # optional companion
 ```
 
 By default only **memory**-kind items are pushed (the clean 1:1 mapping); use
-`--all` for every active item or `--kind prompt|skill|subagent` for a specific
-kind. The harness store itself is unchanged by a push — pi-mem gets a separate
-copy.
+`--all` for every active item, `--kind prompt|skill|subagent` for a specific
+kind, or `--model <provider/id|active>` to scope the push to one model's items
+(`--model active` = the model driving the command). The harness store itself is
+unchanged by a push — pi-mem gets a separate copy.
 
 ## Configuration
 
@@ -200,8 +201,8 @@ Manual commands (`export`, `import`, `keep`, `drop`, `prune`, `push-mem`,
 actions with full control. Isolation is enforced only where pollution would
 leak automatically: injection, listing, create-stamping, and the outcome loop.
 In particular, `/harness push-mem` pushes *every* model's active items into
-pi-mem (which can yield near-duplicate memories across models); scope it per
-model in pi-mem if that matters to you.
+pi-mem by default (which can yield near-duplicate memories across models); pass
+`--model <provider/id|active>` to scope it to one model.
 
 ## Proposers
 
@@ -262,14 +263,14 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 ## Status
 
-0.5.x. Implemented:
+0.7.x. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
 - Two-way durable round-trip with pi-reflect (`/harness import|export|status`).
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
-- **pi-mem composition**: `/harness push-mem [--all|--kind]` steers the agent
+- **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent
   to persist active items into pi-mem (soft-fail; no dependency).
 - Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
   opt-in `turn_end` reminder, opt-in `turn_end` auto-refine, and an opt-in
