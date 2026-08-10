@@ -1,6 +1,6 @@
 # pi-continual-harness — Manual
 
-**Version 0.7.x · the online self-improvement layer for the [pi](https://pi.dev) coding agent**
+**Version 0.8.x · the online self-improvement layer for the [pi](https://pi.dev) coding agent**
 
 This is the complete reference manual for `pi-continual-harness`. It documents
 every command, tool, config key, file format, and extension point, plus the
@@ -103,8 +103,11 @@ clean slate.
   caches it (it always fires first in a turn, with the model); `harness_mutate`
   stamps creates from that cache, and direct-apply proposers stamp from
   `ctx.model`.
-- **Injection.** `before_agent_start` renders only items whose `ownerModel`
-  matches the active model; an unknown model injects nothing.
+- **Injection.** `before_agent_start` renders a **selected subset** of the
+  items whose `ownerModel` matches the active model — importance-ordered and
+  capped per kind + by a token budget, on by default (see
+  [§8 → Injection selection](#injection-selection-on-by-default)). An unknown
+  model injects nothing.
 - **`harness_list`** defaults to the active model's items (`model: "*"` for all,
   or an explicit `"provider/id"`).
 - **Orphan adoption.** Items with no owner (legacy snapshots, old durable
@@ -913,18 +916,30 @@ The package re-exports a small public API for other extensions:
 
 ```ts
 import {
+  // delta proposers — see §9
   registerProposer,   // register a named delta proposer
   listProposers,      // list registered proposer names
   type DeltaProposer,
   type ProposeInput,
   type ProposedDelta,
   type ProposeResult,
+  // injection selection — see §8 → "Injection selection"
+  selectForInjection, // pure: items + ownerKey + cfg → selected subset
+  normalizeInjection, // resolve a partial config against the defaults
+  estimateTokens,     // chars → rough token count (charsPerToken)
+  DEFAULT_INJECTION,  // the shipped defaults (on; 1500 / 10 / 4)
+  type InjectionConfig,
+  type NormalizedInjection,
+  type SelectionResult,
 } from "pi-continual-harness";
 ```
 
-The only documented extension point today is the **proposer registry**. Register
-a proposer from your extension's setup, then it becomes selectable via
-`/refine --proposer <name>` or the `proposer` config key. See [§9](#9-delta-proposers).
+There are two documented extension points: the **proposer registry** and the
+**injection selection policy**. Register a proposer from your extension's setup
+and it becomes selectable via `/refine --proposer <name>` or the `proposer`
+config key (see [§9](#9-delta-proposers)). `selectForInjection` is pure — call
+it to inspect what *would* be injected, or layer a richer policy (e.g. relevance
+to the current turn) on top (see [§8 → Injection selection](#injection-selection-on-by-default)).
 
 > The store internals (`getState`, `applyDeltas`, `snapshotState`, etc.) are
 > *importable* from the source modules but are **not** part of the stable public
@@ -959,6 +974,10 @@ a proposer from your extension's setup, then it becomes selectable via
 | Reminder cadence | `50` turns | `config.ts` `DEFAULT_EVERY_TURNS` |
 | Auto-refine cadence | `100` turns | `config.ts` `DEFAULT_AUTO_EVERY_TURNS` |
 | Outcome bump | `0.03` per reference | `config.ts` `DEFAULT_REF_BUMP` |
+| Injection enabled | `true` (on by default; opt-out) | `select.ts` `DEFAULT_INJECTION` |
+| Injection token budget | `1500` | `select.ts` `DEFAULT_INJECTION.maxTokens` |
+| Injection per-kind cap | `10` | `select.ts` `DEFAULT_INJECTION.maxPerKind` |
+| Injection chars/token | `4` | `select.ts` `DEFAULT_INJECTION.charsPerToken` |
 | Dedupe threshold | `0.6` Jaccard | `proposer.ts` `DEDUPE_THRESHOLD` |
 | `harness_mutate` batch size | `1`–`20` deltas | `tools.ts` |
 | Default create importance | `0.5` | `store.ts` `applyOne` |
@@ -1015,9 +1034,11 @@ Mutations are synchronous and cannot interleave inside a single operation.
 `applyDeltas` is all-or-nothing.
 
 **What's the difference between the injected block and the durable file?**
-The injected block (system prompt, each turn) is the **live** active state. The
-durable file is a **best-effort export** for offline tools. They can briefly
-diverge if you edit the file by hand — run `/harness import` to reconcile.
+The injected block (system prompt, each turn) is a **bounded, importance-selected
+subset** of the live active state (see
+[§8 → Injection selection](#injection-selection-on-by-default)); the durable file
+is a **best-effort export of *all* active items** for offline tools. They can
+briefly diverge if you edit the file by hand — run `/harness import` to reconcile.
 
 ---
 
