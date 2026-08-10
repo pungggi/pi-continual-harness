@@ -111,6 +111,29 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   any tool runs), and a full durable round-trip that degrades to the adopt
   policy if pi-reflect strips the tag.
 
+## Phase 7 — DONE (main; unreleased)
+
+- **Bounded injection (selection on by default).** The harness accumulates
+  notes, but the system prompt is finite — so `src/select.ts` now decides WHICH
+  active items for the active model get surfaced each turn, and in what order.
+  The store is unchanged; only what is *surfaced* changes.
+  - Policy (pure, deterministic, unit-tested): filter to active + owner-model
+    items (per-model isolation, unchanged); order by importance desc (stable on
+    store index); cap via `maxPerKind` (balanced sections) then `maxTokens`
+    (total budget, filled round-robin across kinds by importance rank; an item
+    that doesn't fit is skipped, not a hard stop).
+  - **ON BY DEFAULT** with generous defaults (`maxTokens: 1500`, `maxPerKind:
+    10`) that are a no-op for small stores and protective for large ones. Opt
+    out with `injection.enabled: false` → legacy "all items, in store order".
+  - **Transparency footer** when items are dropped; **public API**
+    (`selectForInjection`, `normalizeInjection`, `estimateTokens`,
+    `DEFAULT_INJECTION`, types) re-exported for companions/tests.
+  **Effort:** ~170 lines (`select.ts` + `inject.ts`/`config.ts` wiring + docs)
+  + 25 tests. **Risk:** medium (a new default for injected content) — mitigated
+  by: the store is never changed by selection (nothing lost), `/tree` rollback
+  and the durable round-trip are untouched, defaults trim nothing for small
+  stores, and a one-key opt-out restores the pre-0.8 block exactly.
+
 ## Future extensions (not on the phase plan)
 
 Two items were flagged during the phases as deferred decisions. Neither needs
@@ -140,6 +163,17 @@ prose.
 These are open backlog, not commitments. The broader composition space
 (auto-push to pi-mem on a cadence, bi-directional pi-mem sync) is similarly
 open-ended exploration, not a near-term plan.
+
+A third, narrower future extension opened up by Phase 7:
+
+- **Relevance-aware injection.** Phase 7 ships importance + budget selection;
+  the natural next step is to fold in *relevance to the current user turn* —
+  blending the importance score with a keyword-overlap score against the latest
+  user message (reusing the `tokenize` / `tokenOverlap` helpers already in
+  `proposer.ts`). `selectForInjection` is pure and takes the candidate set, so a
+  relevance scorer can be layered in without touching `inject.ts`; the tradeoff
+  to resolve is whether to apply it always or only as a tiebreaker within the
+  budget (so a high-importance note is never bumped out by a keyword match).
 
 ## Out of scope (compose instead)
 

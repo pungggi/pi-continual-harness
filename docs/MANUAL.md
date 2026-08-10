@@ -521,6 +521,7 @@ defaults (the loader never throws).
 {
   "durableScope": "global",                 // "global" (default) | "project"
   "proposer": "steering",                   // steering | dedupe | <custom>
+  "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": false, "everyTurns": 50 },
   "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false },
   "outcomeImportance": { "enabled": false, "bump": 0.03 }
@@ -533,6 +534,10 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `durableScope` | `"global"` | `"global"` \| `"project"` | Where the durable file lives. See [paths](#15-file--path-layout). |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
+| `injection.enabled` | `true` | bool | Master switch for the [injection selection policy](#injection-selection-on-by-default). `false` → legacy "all items, in store order". |
+| `injection.maxTokens` | `1500` | number > 0 | Total token budget for the rendered block (intro + headers + items). |
+| `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
+| `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
 | `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
 | `remindRefine.everyTurns` | `50` | int | Reminder cadence. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
@@ -540,6 +545,39 @@ defaults (the loader never throws).
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
+
+### Injection selection (on by default)
+
+The harness accumulates notes, but the system prompt is finite — so the block
+appended each turn is the result of a **selection policy**, not the whole
+store. It is **on by default**; the store itself is never changed by selection
+(nothing is lost), only what is *surfaced*.
+
+The policy (pure, deterministic; `src/select.ts`):
+
+1. **Filter** — only active items bound to the active model (per-model
+   isolation, unchanged).
+2. **Order** — importance desc; ties keep store/insertion order (stable).
+3. **Cap** — `maxPerKind` (balanced sections), then `maxTokens` (total budget).
+   The budget is filled **round-robin across kinds by importance rank**, so one
+   kind cannot starve the others; an item that doesn't fit is **skipped** (not a
+   hard stop), so a large item never blocks smaller higher-priority ones.
+
+The defaults (`maxTokens: 1500`, `maxPerKind: 10`) are a **no-op for small
+stores** (nothing trimmed) and protective as the harness grows. When the policy
+drops items, the block ends with a transparency footer naming the count and how
+to raise the ceiling or `/harness prune`.
+
+```json
+{ "injection": { "maxTokens": 3000 } }      // raise the ceiling
+{ "injection": { "maxPerKind": 5 } }         // trim harder, per kind
+{ "injection": { "enabled": false } }        // opt out: legacy "all, in order"
+```
+
+Bad numeric values are coerced to the defaults (no `NaN` / no `<= 0` leaks into
+the sizing arithmetic). `selectForInjection` is pure and re-exported, so a
+companion package can layer a richer policy (e.g. relevance to the current turn)
+without touching `inject.ts`.
 
 ### Scope resolution
 

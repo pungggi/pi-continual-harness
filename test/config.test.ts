@@ -10,6 +10,7 @@ import {
   resetConfigCache,
   resolveDurablePath,
 } from "../src/config.js";
+import { DEFAULT_INJECTION } from "../src/select.js";
 import { DEFAULT_DURABLE_PATH } from "../src/store.js";
 
 function tempFile(): string {
@@ -92,6 +93,51 @@ describe("config", () => {
         await writeFile(file, JSON.stringify({ outcomeImportance: { bump: NaN } }), "utf8");
         const cfg = await loadConfig(file);
         expect(cfg.outcomeImportance?.bump).toBe(DEFAULT_REF_BUMP);
+      });
+    });
+  });
+
+  describe("injection (selection policy, on by default)", () => {
+    it("DEFAULT_CONFIG ships injection ON with conservative defaults", () => {
+      expect(DEFAULT_CONFIG.injection).toEqual(DEFAULT_INJECTION);
+      expect(DEFAULT_CONFIG.injection?.enabled).toBe(true);
+    });
+
+    it("a missing file yields the resolved injection defaults", async () => {
+      const cfg = await loadConfig(tempFile());
+      expect(cfg.injection).toEqual(DEFAULT_INJECTION);
+    });
+
+    it("merges a partial injection over the defaults", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ injection: { maxTokens: 500 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.injection).toEqual({
+          enabled: true, // default retained
+          maxTokens: 500, // overridden
+          maxPerKind: 10, // default retained
+          charsPerToken: 4, // default retained
+        });
+      });
+    });
+
+    it("honors the opt-out (enabled: false)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ injection: { enabled: false } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.injection?.enabled).toBe(false);
+      });
+    });
+
+    it("coerces bad injection numbers back to defaults (no NaN sizing)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({ injection: { maxTokens: "huge", maxPerKind: 0, charsPerToken: -1 } }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.injection).toEqual(DEFAULT_INJECTION);
       });
     });
   });

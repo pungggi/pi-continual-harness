@@ -74,3 +74,16 @@ export {
   type ProposedDelta,
   type ProposeResult,
 } from "./proposer.js";
+
+// Injection selection policy (on by default). Re-exported so companion packages
+// and tests can reuse the pure selection/normalization without reaching into
+// internal paths.
+export {
+  DEFAULT_INJECTION,
+  estimateTokens,
+  normalizeInjection,
+  selectForInjection,
+  type InjectionConfig,
+  type NormalizedInjection,
+  type SelectionResult,
+} from "./select.js";

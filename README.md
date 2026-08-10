@@ -116,6 +116,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 {
   "durableScope": "global",
   "proposer": "steering",
+  "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false },
   "outcomeImportance": { "enabled": false, "bump": 0.03 }
@@ -126,6 +127,11 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   `~/.pi/agent/harness-state.md`; `"project"` writes to
   `~/.pi/agent/harness-state/<slug>.md` (slug derived from `cwd`) so each
   project keeps separate state for pi-reflect.
+- **`injection`** — the selection policy for WHAT gets surfaced in the system
+  prompt each turn (see [Injection selection](#injection-selection-on-by-default)).
+  ON by default: items are importance-ordered, capped at `maxPerKind` (default
+  10) per kind and `maxTokens` (default 1500) total. Set `enabled: false` to
+  restore the legacy "inject all items, in store order" behaviour.
 - **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
   to `steering` (the agent reasons via a steering message). `dedupe` applies a
   rule-based dedupe directly. See [Proposers](#proposers).
@@ -204,6 +210,47 @@ In particular, `/harness push-mem` pushes *every* model's active items into
 pi-mem by default (which can yield near-duplicate memories across models); pass
 `--model <provider/id|active>` to scope it to one model.
 
+## Injection selection (on by default)
+
+The harness ACCUMULATES notes (create / refine / auto-refine / outcome-promotion),
+but the system prompt is finite. So since 0.8 the block appended each turn is the
+result of a **selection policy**, not the whole store — and it is **on by
+default**. The store itself is never changed by selection (nothing is lost);
+only what is *surfaced* changes.
+
+The policy (pure, deterministic; `src/select.ts`):
+
+1. **Filter** — only active items bound to the active model (strict per-model
+   isolation, unchanged).
+2. **Order** — importance desc; ties keep store/insertion order (stable). The
+   highest-fitness notes lead each section.
+3. **Cap** — `maxPerKind` (default 10: balanced sections, no single kind drowns
+   the block), then `maxTokens` (default 1500: total budget). The budget is
+   filled **round-robin across kinds by importance rank**, so one kind cannot
+   starve the others; within that order an item that doesn't fit is **skipped**
+   (not a hard stop), so a large item never blocks smaller higher-priority ones.
+
+The defaults are deliberately generous — a **no-op for small stores** (nothing
+trimmed) and protective as the harness grows. When the policy drops items, the
+block ends with a one-line transparency note:
+
+```
+_(3 item(s) not shown — below the injection budget. Raise `injection.maxTokens`/`maxPerKind` in harness.json or run `/harness prune`.)_
+```
+
+Tune or disable it in `harness.json`:
+
+```json
+{ "injection": { "maxTokens": 3000, "maxPerKind": 20 } }   // raise the ceiling
+{ "injection": { "maxPerKind": 5 } }                        // trim harder, per kind
+{ "injection": { "enabled": false } }                       // opt out: legacy "all, in order"
+```
+
+Selection is factored into a pure function (`selectForInjection`) and
+re-exported from the package entry, so a companion package can layer richer
+policies (e.g. relevance to the current turn, via the shared `tokenize` /
+`tokenOverlap` helpers) without touching `inject.ts`.
+
 ## Proposers
 
 `/refine` is split into two stages: **propose** (given evidence + state, decide
@@ -263,7 +310,7 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 ## Status
 
-0.7.x. Implemented:
+0.8.x. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
@@ -282,6 +329,10 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   only for that model; new items are stamped automatically and orphans adopted
   on first contact. A new model id starts from a blank harness, and the durable
   round-trip preserves the owner tag.
+- **Bounded injection (on by default)**: the supplemental block is
+  importance-ordered and capped per kind + by a total token budget, so a growing
+  harness never balloons the system prompt. Tunable / opt-out via the `injection`
+  config key; the store is never changed by selection.
 
 Open extension points (see `docs/ROADMAP.md`):
 

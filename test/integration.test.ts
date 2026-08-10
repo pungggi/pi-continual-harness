@@ -176,6 +176,76 @@ describe("before_agent_start injection", () => {
   });
 });
 
+// Phase 7: injection selection is ON BY DEFAULT. These drive the real
+// before_agent_start handler (which reads config + renders) to pin the default
+// behaviour end-to-end: importance-ordered, capped, with a transparency footer;
+// and that `injection.enabled: false` restores the legacy "all, in order" mode.
+describe("before_agent_start injection selection (default on, opt-out)", () => {
+  beforeEach(() => {
+    reset();
+    resetConfigCache();
+  });
+
+  async function blockWith(items: Delta[], injectionCfg?: object): Promise<string> {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-inject-"));
+    const cfgFile = join(dir, "harness.json");
+    const cfg = injectionCfg ? { injection: injectionCfg } : {};
+    writeFileSync(cfgFile, JSON.stringify(cfg));
+    await loadConfig(cfgFile); // populate the in-process cache the handler reads
+    try {
+      const { pi, handlers, ctx } = makeFakePi([]);
+      continualHarness(pi);
+      applyDeltas(items, () => {});
+      const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx())) as {
+        systemPrompt?: string;
+      };
+      return ret?.systemPrompt ?? "";
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
+  }
+
+  it("default policy orders injected items by importance (highest first)", async () => {
+    // Inserted low-first; default selection must surface high before low.
+    const block = await blockWith([
+      { op: "create", kind: "prompt", content: "low-imp", evidence: "e", importance: 0.2, ownerModel: "test/main" },
+      { op: "create", kind: "prompt", content: "high-imp", evidence: "e", importance: 0.9, ownerModel: "test/main" },
+    ]);
+    expect(block).toContain("high-imp");
+    expect(block).toContain("low-imp");
+    expect(block.indexOf("high-imp")).toBeLessThan(block.indexOf("low-imp"));
+  });
+
+  it("maxPerKind trims the lowest-importance items and appends a transparency footer", async () => {
+    const block = await blockWith(
+      [
+        { op: "create", kind: "prompt", content: "kept", evidence: "e", importance: 0.9, ownerModel: "test/main" },
+        { op: "create", kind: "prompt", content: "dropped", evidence: "e", importance: 0.2, ownerModel: "test/main" },
+      ],
+      { maxPerKind: 1 },
+    );
+    expect(block).toContain("kept");
+    expect(block).not.toContain("dropped");
+    expect(block).toMatch(/1 item\(s\) not shown/);
+  });
+
+  it("injection.enabled: false restores legacy mode (all items, store order)", async () => {
+    // Inserted low-first; legacy must preserve insertion order (low before high).
+    const block = await blockWith(
+      [
+        { op: "create", kind: "prompt", content: "low-imp", evidence: "e", importance: 0.2, ownerModel: "test/main" },
+        { op: "create", kind: "prompt", content: "high-imp", evidence: "e", importance: 0.9, ownerModel: "test/main" },
+      ],
+      { enabled: false },
+    );
+    expect(block).toContain("low-imp");
+    expect(block).toContain("high-imp");
+    expect(block.indexOf("low-imp")).toBeLessThan(block.indexOf("high-imp"));
+    expect(block).not.toMatch(/not shown/); // no footer in legacy mode
+  });
+});
+
 // Assumptions (1) + (2): /refine reads message.content[].text from the branch
 // and calls sendUserMessage with a steering prompt containing that evidence.
 describe("/refine command", () => {

@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DURABLE_PATH } from "./store.js";
+import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
@@ -39,6 +40,9 @@ export interface HarnessConfig {
     enabled?: boolean;
     bump?: number;
   };
+  /** Injection selection policy (on by default). Resolved by loadConfig, so the
+   *  value here is always fully-populated. See src/select.ts. */
+  injection?: NormalizedInjection;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
@@ -47,6 +51,10 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
+  // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
+  // for small stores; protective as the harness accumulates. Opt out with
+  // `injection.enabled: false`. See src/select.ts.
+  injection: DEFAULT_INJECTION,
 };
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
@@ -71,6 +79,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       enabled: over.outcomeImportance?.enabled ?? false,
       bump: coerceBump(over.outcomeImportance?.bump),
     },
+    // normalizeInjection is defensive (bad types → defaults), so a partial or
+    // malformed `injection` object degrades to the shipped defaults rather than
+    // corrupting the block sizing arithmetic.
+    injection: normalizeInjection(over.injection as Partial<{ enabled: boolean; maxTokens: number; maxPerKind: number; charsPerToken: number }> | undefined),
   };
 }
 

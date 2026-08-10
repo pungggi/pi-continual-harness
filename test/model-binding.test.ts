@@ -13,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerInjection, renderHarnessBlock } from "../src/inject.js";
 import { registerTools } from "../src/tools.js";
 import { applyDeltas, getState, reconstruct, setActiveModelKey } from "../src/store.js";
+import { resetConfigCache } from "../src/config.js";
 
 type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 
@@ -45,6 +46,9 @@ function ctxWithModel(provider: string, id: string): { model: { provider: string
 function reset(): void {
   reconstruct([]);
   setActiveModelKey(undefined);
+  // before_agent_start now reads the injection config; drop any cached config so
+  // these isolation tests don't inherit a stray cache entry from another file.
+  resetConfigCache();
 }
 
 describe("renderHarnessBlock — strict per-model isolation", () => {
