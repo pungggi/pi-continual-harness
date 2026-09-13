@@ -67,6 +67,9 @@ Durable I/O (round-trip with pi-reflect):
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
 ```
 
+Subcommands, flags, `--kind`/`--model` values, and `keep`/`drop` item ids all
+autocomplete in the TUI as you type after `/harness `.
+
 `import` reconciles the file into the live store: items whose id matches an
 existing entry are updated (offline edits win on content/evidence/importance),
 new entries are created. By default nothing is deleted — `--prune` also drops

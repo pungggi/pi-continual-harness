@@ -42,7 +42,10 @@ interface FakeCtx {
 function makeFakePi(branch: unknown[]) {
   const handlers = new Map<string, Handler>();
   const tools = new Map<string, Record<string, unknown>>();
-  const commands = new Map<string, { description?: string; handler: Handler }>();
+  const commands = new Map<
+    string,
+    { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: Handler }
+  >();
   const entries: Array<{ type: string; customType: string; data: unknown }> = [];
   const sentMessages: string[] = [];
   const notifications: Array<{ msg: string; level: string }> = [];
@@ -55,7 +58,10 @@ function makeFakePi(branch: unknown[]) {
     registerTool: (def: Record<string, unknown>) => {
       tools.set(def.name as string, def);
     },
-    registerCommand: (name: string, opts: { description?: string; handler: Handler }) => {
+    registerCommand: (
+      name: string,
+      opts: { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: Handler },
+    ) => {
       commands.set(name, opts);
     },
     appendEntry: (customType: string, data: unknown) => {
@@ -316,6 +322,122 @@ describe("/harness command", () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
     expect(commands.has("harness")).toBe(true);
+  });
+
+  it("registers argument completions and lists all subcommands on empty prefix", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const items = complete("") as Array<{ value: string; label: string; description?: string }>;
+    expect(items.map((i) => i.value)).toEqual([
+      "import",
+      "export",
+      "status",
+      "prune",
+      "keep",
+      "drop",
+      "push-mem",
+    ]);
+    for (const i of items) {
+      expect(i.label).toBe(i.value); // label mirrors the subcommand name
+      expect(i.description).toMatch(/\S/); // one short help line each
+    }
+  });
+
+  it("filters subcommands case-insensitively as you type", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    expect((complete("imp") as Array<{ value: string }>).map((i) => i.value)).toEqual(["import"]);
+    expect((complete("P") as Array<{ value: string }>).map((i) => i.value)).toEqual([
+      "prune",
+      "push-mem",
+    ]);
+    expect(complete("nope")).toBeNull();
+  });
+
+  it("completes subcommand flags with the full replacement value", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    // trailing space → fresh-token menu of the sub's unused flags
+    expect(complete("import ")).toEqual([
+      { value: "import --prune", label: "--prune", description: expect.any(String) },
+    ]);
+    // partial flag → filtered, value replaces the WHOLE argument text
+    expect(complete("import --p")).toEqual([
+      { value: "import --prune", label: "--prune", description: expect.any(String) },
+    ]);
+    // already-used flags are not re-offered; the remaining ones are
+    expect(complete("push-mem --all --")).toEqual([
+      { value: "push-mem --all --kind", label: "--kind", description: expect.any(String) },
+      { value: "push-mem --all --model", label: "--model", description: expect.any(String) },
+    ]);
+    // subs without flags (or unknown subs) offer nothing
+    expect(complete("status ")).toBeNull();
+    expect(complete("whatever --")).toBeNull();
+  });
+
+  it("completes --kind and --model values for push-mem", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    expect(complete("push-mem --kind m")).toEqual([
+      { value: "push-mem --kind memory", label: "memory", description: expect.any(String) },
+    ]);
+    // --model offers `active` plus the distinct owner models in the store
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "a", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "b", evidence: "e", ownerModel: "google/gemini" },
+      ] as Delta[],
+      () => {},
+    );
+    const models = complete("push-mem --model ") as Array<{ value: string }>;
+    expect(models.map((m) => m.value)).toEqual([
+      "push-mem --model active",
+      "push-mem --model anthropic/sonnet",
+      "push-mem --model google/gemini",
+    ]);
+  });
+
+  it("completes keep/drop with active item ids and content previews", async () => {
+    const { pi, tools, commands, ctx } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "memory", content: "use PostgreSQL for the orders service", evidence: "design review" }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = getState().items[0]!.id;
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+
+    const items = complete("keep ") as Array<{ value: string; label: string; description?: string }>;
+    expect(items).toHaveLength(1);
+    expect(items[0]!.value).toBe(`keep ${id}`);
+    expect(items[0]!.label).toBe(id);
+    expect(items[0]!.description).toContain("memory");
+    expect(items[0]!.description).toContain("use PostgreSQL");
+
+    // prefix filtering on the id, and drop works the same way
+    expect(complete(`drop ${id}`)).toEqual([
+      { value: `drop ${id}`, label: id, description: expect.any(String) },
+    ]);
+    // once the id is committed (trailing space), nothing more to complete
+    expect(complete(`keep ${id} `)).toBeNull();
+    expect(complete("keep h_zzz")).toBeNull();
+  });
+
+  it("returns null for path-ish and number arguments (leaves them to the editor)", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    expect(complete("export ./src")).toBeNull();
+    expect(complete("import /home")).toBeNull();
+    expect(complete("prune --decay ")).toBeNull();
   });
 
   it("export then import round-trips active items through a durable file", async () => {

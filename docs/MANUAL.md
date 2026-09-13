@@ -275,7 +275,14 @@ proposes evidence-backed CRUD deltas.
 /harness <subcommand> [args]
 ```
 
-Durable I/O and importance hygiene. Subcommands:
+Durable I/O and importance hygiene. The command registers argument
+autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
+menu of subcommands with a one-line help each; one level deeper it completes
+flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`), `--kind` / `--model`
+values, and `keep`/`drop` item ids straight from the live store. Path
+arguments intentionally get no menu (use editor path completion).
+
+Subcommands:
 
 #### `status [path]`
 

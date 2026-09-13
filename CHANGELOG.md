@@ -8,6 +8,32 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.8.1] — 2026-09-13
+
+The completions release. `/harness` now registers `getArgumentCompletions`, so
+subcommands stop being one long crammed command description and become a
+filtered autocomplete menu instead. Handler logic is unchanged — purely UX.
+
+### Added
+
+- **`/harness` argument autocomplete** (`src/harness.ts`) — two levels:
+  - `/harness <partial>` lists the seven subcommands (import, export, status,
+    prune, keep, drop, push-mem), each with a one-line description, filtered
+    case-insensitively as you type (matching the handler's `toLowerCase()`
+    tolerance).
+  - `/harness <sub> …` completes what comes next per subcommand: flags
+    (`--prune`, `--decay`, `--all`, `--kind`, `--model` — already-used flags
+    are not re-offered), `--kind` values (`prompt|memory|skill|subagent`),
+    `--model` values (`active` plus the distinct owner models in the store),
+    and `keep`/`drop` item ids straight from the live store with a
+    `kind · content-preview` description row.
+  - Path/number/free-text arguments return no menu, leaving the editor's own
+    completion alone.
+- Completion rows carry the full replacement text (pi replaces the whole
+  argument string on selection), so multi-token completion round-trips exactly.
+- The `/harness` command description is now a compact one-liner instead of the
+  full subcommand + flag grammar.
+
 ## [0.8.0] — 2026-08-10
 
 The bounded-injection release. The harness ACCUMULATES notes, but the system
