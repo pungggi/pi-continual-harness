@@ -4,6 +4,10 @@
 //   /harness export [path]               write active items to a markdown file
 //   /harness import [--prune] [path]     parse it back and merge (durable wins)
 //
+// The command registers getArgumentCompletions so the TUI offers a filtered
+// menu of subcommands (and, one level deeper, flags / item ids / kinds) as
+// you type — see completions() below. The handler itself stays parsing-only.
+//
 // export writes the active items to ~/.pi/agent/harness-state.md (best-effort);
 // import parses that file and merges into the live store. Because pi-reflect
 // edits markdown files and git-commits, pointing it at the same file closes the
@@ -23,15 +27,152 @@ import {
   reconstructFromDurable,
 } from "./store.js";
 import { loadConfig, resolveDurablePath } from "./config.js";
+import { KIND_LABEL } from "./types.js";
 import type { ComponentKind, HarnessItem } from "./types.js";
+
+/** One row of the /harness subcommand menu (label = name, value = name). */
+interface CompletionEntry {
+  name: string;
+  description: string;
+}
+
+const SUBCOMMANDS: CompletionEntry[] = [
+  { name: "import", description: "Import durable state (--prune to prune stale items)" },
+  { name: "export", description: "Export active items to durable file" },
+  { name: "status", description: "Show harness status (active/total, per-kind counts, durable file)" },
+  { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
+  { name: "keep", description: "Bump item importance (+0.1)" },
+  { name: "drop", description: "Lower item importance (−0.1)" },
+  { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
+];
+
+const KINDS: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
+
+/** Flags each subcommand accepts, in menu order. */
+const FLAGS: Record<string, CompletionEntry[]> = {
+  import: [{ name: "--prune", description: "Drop live items missing from the durable file" }],
+  prune: [{ name: "--decay", description: "Decay items not updated for <days> before pruning" }],
+  "push-mem": [
+    { name: "--all", description: "Push every active item, not just memories" },
+    { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
+    { name: "--model", description: "Limit to one owner model (provider/id or \"active\")" },
+  ],
+};
+
+function preview(text: string, max = 60): string {
+  // Single line + truncated so the menu row stays readable.
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/**
+ * Argument autocomplete for /harness (pi calls this with the FULL text after
+ * the command name; a selected item's `value` REPLACES that whole text, so
+ * multi-token rows re-emit the tokens already typed). Two levels:
+ *
+ *   /harness <partial-subcommand>      → matching subcommands
+ *   /harness <sub> …<partial-token>    → flags / ids / kind+model values for sub
+ *
+ * Returns null where a menu would only get in the way (path arguments,
+ * numeric flag values, unknown subcommands) so the editor falls back to its
+ * own behavior.
+ */
+function completions(argumentPrefix: string) {
+  // Level 1 — still typing the first token: the subcommand menu.
+  if (!/\s/.test(argumentPrefix)) {
+    const q = argumentPrefix.toLowerCase();
+    return filterSubcommands(q);
+  }
+  const tokens = argumentPrefix.trim().split(/\s+/).filter(Boolean);
+  // Fresh token (trailing whitespace) → the token being completed is "";
+  // otherwise it is the last typed token. `before` are the committed ones.
+  const fresh = argumentPrefix !== argumentPrefix.trimEnd();
+  const last = fresh ? "" : (tokens.at(-1) ?? "");
+  const before = fresh ? tokens : tokens.slice(0, -1);
+
+  // A stray leading space ("/harness  imp") still means level 1, matching the
+  // handler's tolerant split.
+  if (before.length === 0) return filterSubcommands(last.toLowerCase());
+
+  const sub = before[0]!.toLowerCase();
+  // Flag-value completion: the token right before the one being typed.
+  const prev = before.at(-1)!;
+  if (prev === "--kind" && sub === "push-mem") {
+    return filterValues(
+      KINDS.map((k) => ({ value: k, description: KIND_LABEL[k] })),
+      last,
+      before,
+    );
+  }
+  if (prev === "--model" && sub === "push-mem") {
+    const owners = [...new Set(getState().items.filter((i) => i.active && i.ownerModel).map((i) => i.ownerModel))];
+    return filterValues(
+      [
+        { value: "active", description: "The model driving this command" },
+        ...owners.map((m) => ({ value: m, description: "Items owned by this model" })),
+      ],
+      last,
+      before,
+    );
+  }
+
+  // Flag completion ("--…" prefix, or a fresh token for flag-taking subs).
+  // A fresh --kind/--model value was already completed above (early return),
+  // so a fresh token here means "offer the remaining flags".
+  if (last.startsWith("--") || (fresh && sub in FLAGS)) {
+    const used = new Set(before.filter((t) => t.startsWith("--")));
+    const rows = (FLAGS[sub] ?? []).filter((f) => !used.has(f.name));
+    const items = rows
+      .filter((f) => f.name.startsWith(last))
+      .map((f) => ({ value: [...before, f.name].join(" "), label: f.name, description: f.description }));
+    return items.length > 0 ? items : null;
+  }
+
+  // Positional id completion for keep/drop: the one argument they take.
+  if (sub === "keep" || sub === "drop") {
+    const idCommitted = before.slice(1).some((t) => !t.startsWith("--"));
+    if (idCommitted) return null; // id already chosen; nothing left to complete
+    const items = getState()
+      .items.filter((i) => i.active && i.id.startsWith(last))
+      .map((i: HarnessItem) => ({
+        value: [...before, i.id].join(" "),
+        label: i.id,
+        description: `${i.kind} · ${preview(i.content)}`,
+      }));
+    return items.length > 0 ? items : null;
+  }
+
+  // Everything else is a path/number/free-text argument — no menu.
+  return null;
+}
+
+function filterSubcommands(prefix: string) {
+  const items = SUBCOMMANDS.filter((s) => s.name.startsWith(prefix)).map((s) => ({
+    value: s.name,
+    label: s.name,
+    description: s.description,
+  }));
+  return items.length > 0 ? items : null;
+}
+
+/** Flag-value completion: `value` = committed tokens + the chosen value. */
+function filterValues(
+  rows: Array<{ value: string; description: string }>,
+  prefix: string,
+  before: string[],
+) {
+  const items = rows
+    .filter((r) => r.value.startsWith(prefix))
+    .map((r) => ({ value: [...before, r.value].join(" "), label: r.value, description: r.description }));
+  return items.length > 0 ? items : null;
+}
 
 export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
     description:
-      "Durable harness-state I/O + importance hygiene. Subcommands: " +
-      "import [--prune] [path] · export [path] · status [path] · " +
-      "prune [--decay <days>] · keep <id> · drop <id> · " +
-      "push-mem [--all|--kind <kind>|--model <provider/id|active>] (persist active items to pi-mem).",
+      "Durable harness-state I/O + importance hygiene " +
+      "(import · export · status · prune · keep · drop · push-mem — " +
+      "subcommands autocomplete as you type)",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = (parts[0] ?? "status").toLowerCase();
@@ -61,6 +202,7 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
       }
     },
+    getArgumentCompletions: (argumentPrefix) => completions(argumentPrefix),
   });
 }
 
