@@ -17,76 +17,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import continualHarness from "../src/index.js";
-import { applyDeltas, getState, reconstruct, STATE_ENTRY } from "../src/store.js";
+import { applyDeltas, getState, reconstruct, setSessionProject, STATE_ENTRY } from "../src/store.js";
 import type { Delta } from "../src/types.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { resetAutoRefine } from "../src/auto-refine.js";
 import { resetOutcome } from "../src/outcome.js";
+import { resetDurableSync } from "../src/durable.js";
 import { runRefine } from "../src/refine.js";
 import { registerProposer } from "../src/proposer.js";
+import { makeFakePi } from "./helpers.js";
 
-type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
-
-interface FakeCtx {
-  ui: {
-    notify: (msg: string, level: string) => void;
-    setStatus: (key: string, text: string | undefined) => void;
-  };
-  sessionManager: {
-    getBranch: () => unknown[];
-  };
-  cwd: string;
-  model: { provider: string; id: string };
-}
-
-function makeFakePi(branch: unknown[]) {
-  const handlers = new Map<string, Handler>();
-  const tools = new Map<string, Record<string, unknown>>();
-  const commands = new Map<
-    string,
-    { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: Handler }
-  >();
-  const entries: Array<{ type: string; customType: string; data: unknown }> = [];
-  const sentMessages: string[] = [];
-  const notifications: Array<{ msg: string; level: string }> = [];
-  const statuses: Array<{ key: string; text: string | undefined }> = [];
-
-  const pi = {
-    on: (ev: string, h: Handler) => {
-      handlers.set(ev, h);
-    },
-    registerTool: (def: Record<string, unknown>) => {
-      tools.set(def.name as string, def);
-    },
-    registerCommand: (
-      name: string,
-      opts: { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: Handler },
-    ) => {
-      commands.set(name, opts);
-    },
-    appendEntry: (customType: string, data: unknown) => {
-      entries.push({ type: "custom", customType, data });
-    },
-    sendUserMessage: (msg: string) => {
-      sentMessages.push(msg);
-    },
-  };
-
-  const ctx = (): FakeCtx => ({
-    ui: {
-      notify: (msg, level) => notifications.push({ msg, level }),
-      setStatus: (key, text) => statuses.push({ key, text }),
-    },
-    sessionManager: { getBranch: () => branch },
-    cwd: "/tmp",
-    model: { provider: "test", id: "main" },
-  });
-
-  return { pi: pi as unknown as ExtensionAPI, handlers, tools, commands, entries, sentMessages, notifications, statuses, ctx };
-}
-
-function reset(): void {
+// Prime the config cache with defaults before each test so handlers never read
+// the developer's real ~/.pi/agent/harness.json (which may opt into autoImport
+// and would then touch real files from these tests).
+async function reset(): Promise<void> {
   reconstruct([]);
+  setSessionProject(undefined);
+  resetDurableSync();
+  resetConfigCache();
+  await loadConfig(join(tmpdir(), `pi-ch-test-no-config-${Date.now()}.json`));
 }
 
 describe("registration", () => {
@@ -124,21 +73,21 @@ describe("session_start reconstruction", () => {
         },
       },
     ];
-    const { pi, handlers, ctx, notifications } = makeFakePi(branch);
+    const { pi, fire, ctx, notifications } = makeFakePi(branch);
     continualHarness(pi);
 
-    await handlers.get("session_start")!({ reason: "startup" }, ctx());
+    await fire("session_start", { reason: "startup" }, ctx());
 
     expect(getState().items.map((i) => i.id)).toEqual(["h_1"]);
     expect(notifications.some((n) => /1 item\(s\) restored/.test(n.msg))).toBe(true);
   });
 
   it("stays empty and stays quiet when the branch has no harness-state entry", async () => {
-    const { pi, handlers, ctx, notifications } = makeFakePi([
+    const { pi, fire, ctx, notifications } = makeFakePi([
       { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
     ]);
     continualHarness(pi);
-    await handlers.get("session_start")!({ reason: "startup" }, ctx());
+    await fire("session_start", { reason: "startup" }, ctx());
     expect(getState().items).toHaveLength(0);
     expect(notifications).toHaveLength(0);
   });
@@ -161,13 +110,13 @@ describe("before_agent_start injection", () => {
         },
       },
     ];
-    const { pi, handlers, ctx } = makeFakePi(branch);
+    const { pi, fire, ctx } = makeFakePi(branch);
     continualHarness(pi);
-    await handlers.get("session_start")!({ reason: "startup" }, ctx());
+    await fire("session_start", { reason: "startup" }, ctx());
 
-    const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx())) as {
+    const [ret] = (await fire("before_agent_start", { systemPrompt: "BASE" }, ctx())) as Array<{
       systemPrompt?: string;
-    };
+    }>;
     expect(ret?.systemPrompt).toBeDefined();
     expect(ret!.systemPrompt!.startsWith("BASE")).toBe(true);
     expect(ret!.systemPrompt).toContain("Continual Harness state");
@@ -175,9 +124,9 @@ describe("before_agent_start injection", () => {
   });
 
   it("returns undefined (no prompt change) when there is no active state", async () => {
-    const { pi, handlers, ctx } = makeFakePi([]);
+    const { pi, fire, ctx } = makeFakePi([]);
     continualHarness(pi);
-    const ret = await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx());
+    const [ret] = await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
     expect(ret).toBeUndefined();
   });
 });
@@ -199,12 +148,12 @@ describe("before_agent_start injection selection (default on, opt-out)", () => {
     writeFileSync(cfgFile, JSON.stringify(cfg));
     await loadConfig(cfgFile); // populate the in-process cache the handler reads
     try {
-      const { pi, handlers, ctx } = makeFakePi([]);
+      const { pi, fire, ctx } = makeFakePi([]);
       continualHarness(pi);
       applyDeltas(items, () => {});
-      const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx())) as {
+      const [ret] = (await fire("before_agent_start", { systemPrompt: "BASE" }, ctx())) as Array<{
         systemPrompt?: string;
-      };
+      }>;
       return ret?.systemPrompt ?? "";
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -336,6 +285,8 @@ describe("/harness command", () => {
       "prune",
       "keep",
       "drop",
+      "move",
+      "split",
       "push-mem",
     ]);
     for (const i of items) {
@@ -431,6 +382,38 @@ describe("/harness command", () => {
     expect(complete("keep h_zzz")).toBeNull();
   });
 
+  it("completes move with item ids then global|project values", async () => {
+    const { pi, tools, commands, ctx } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "memory", content: "relay deploy procedure", evidence: "e" }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = getState().items[0]!.id;
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+
+    // first positional: the item id (same menu as keep/drop)
+    const ids = complete("move ") as Array<{ value: string; label: string }>;
+    expect(ids).toHaveLength(1);
+    expect(ids[0]!.value).toBe(`move ${id}`);
+
+    // second positional: the target scope
+    expect(complete(`move ${id} `)).toEqual([
+      { value: `move ${id} global`, label: "global", description: expect.any(String) },
+      { value: `move ${id} project`, label: "project", description: expect.any(String) },
+    ]);
+    // filtered by prefix, replacing the whole argument text
+    expect(complete(`move ${id} pr`)).toEqual([
+      { value: `move ${id} project`, label: "project", description: expect.any(String) },
+    ]);
+    // id + scope chosen → nothing left to complete
+    expect(complete(`move ${id} project `)).toBeNull();
+  });
+
   it("returns null for path-ish and number arguments (leaves them to the editor)", () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
@@ -438,6 +421,76 @@ describe("/harness command", () => {
     expect(complete("export ./src")).toBeNull();
     expect(complete("import /home")).toBeNull();
     expect(complete("prune --decay ")).toBeNull();
+  });
+
+  it("/harness move re-scopes an item (project stamps the session slug)", async () => {
+    const { pi, tools, commands, ctx, notifications, entries } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "memory", content: "relay deploy", evidence: "e" }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const id = getState().items[0]!.id;
+
+    await commands.get("harness")!.handler(`move ${id} project`, ctx());
+    expect(getState().items[0]!.scope).toBe("project");
+    // fake ctx cwd is /tmp → slug "tmp"
+    expect(getState().items[0]!.project).toBe("tmp");
+    expect(notifications.some((n) => /Moved .* → project "tmp"/.test(n.msg))).toBe(true);
+    // audited as a harness-state snapshot (rollback-able)
+    expect(entries.some((e) => e.customType === STATE_ENTRY)).toBe(true);
+
+    await commands.get("harness")!.handler(`move ${id} global`, ctx());
+    expect(getState().items[0]!.scope).toBe("global");
+    expect(getState().items[0]!.project).toBeUndefined();
+  });
+
+  it("/harness move validates its arguments", async () => {
+    const { pi, commands, ctx, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("harness")!.handler("move", ctx());
+    await commands.get("harness")!.handler("move h_x bogus", ctx());
+    expect(notifications.filter((n) => n.level === "warning").length).toBe(2);
+    await commands.get("harness")!.handler("move h_missing global", ctx());
+    expect(notifications.some((n) => /move failed: update: no item/.test(n.msg))).toBe(true);
+  });
+
+  it("/harness split steers the agent to classify scopes via harness_mutate", async () => {
+    const { pi, tools, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [
+        { op: "create", kind: "memory", content: "PowerShell quirk", evidence: "global ev" },
+        { op: "create", kind: "memory", content: "relay deploy procedure", evidence: "project ev" },
+      ] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    await commands.get("harness")!.handler("split", ctx());
+    expect(sentMessages).toHaveLength(1);
+    const msg = sentMessages[0]!;
+    expect(msg).toContain("harness_mutate");
+    expect(msg).toContain('"scope": "project"');
+    expect(msg).toContain("PowerShell quirk");
+    expect(msg).toContain("relay deploy procedure");
+    expect(msg).toContain('slug "tmp"'); // fake cwd /tmp
+    expect(notifications.some((n) => /Steering agent to classify 2/.test(n.msg))).toBe(true);
+  });
+
+  it("/harness split is a no-op warning with an empty store", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("harness")!.handler("split", ctx());
+    expect(sentMessages).toHaveLength(0);
+    expect(notifications.some((n) => /No active items to split/.test(n.msg))).toBe(true);
   });
 
   it("export then import round-trips active items through a durable file", async () => {
@@ -540,13 +593,13 @@ describe("runRefine + auto-refine", () => {
       const branch = [
         { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
       ];
-      const { pi, handlers, ctx, sentMessages, entries } = makeFakePi(branch);
+      const { pi, fire, ctx, sentMessages, entries } = makeFakePi(branch);
       continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
 
       // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1)
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx());
+      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
       expect(sentMessages).toHaveLength(0);
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx());
+      await fire("turn_end", { type: "turn_end", turnIndex: 1 }, ctx());
 
       expect(sentMessages.length).toBeGreaterThanOrEqual(1);
       expect(sentMessages.at(-1)).toContain("/refine");
@@ -568,10 +621,10 @@ describe("runRefine + auto-refine", () => {
     writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: false } }));
     await loadConfig(cfgFile);
     try {
-      const { pi, handlers, ctx, sentMessages } = makeFakePi([]);
+      const { pi, fire, ctx, sentMessages } = makeFakePi([]);
       continualHarness(pi);
       for (let i = 0; i < 200; i++) {
-        await handlers.get("turn_end")!({ type: "turn_end", turnIndex: i }, ctx());
+        await fire("turn_end", { type: "turn_end", turnIndex: i }, ctx());
       }
       expect(sentMessages).toHaveLength(0);
     } finally {
@@ -590,23 +643,23 @@ describe("runRefine + auto-refine", () => {
     writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
     await loadConfig(cfgFile);
     try {
-      const { pi, handlers, ctx, sentMessages } = makeFakePi([
+      const { pi, fire, ctx, sentMessages } = makeFakePi([
         { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
       ]);
       continualHarness(pi);
 
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 0 }, ctx()); // seed
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 1 }, ctx()); // fire #1
+      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx()); // seed
+      await fire("turn_end", { type: "turn_end", turnIndex: 1 }, ctx()); // fire #1
       const afterFirst = sentMessages.length;
       expect(afterFirst).toBeGreaterThanOrEqual(1);
 
       // Simulate a fork/resume: session_start should reset the cadence so the
       // very next turn re-seeds instead of firing immediately.
-      await handlers.get("session_start")!({ reason: "fork" }, ctx());
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 2 }, ctx());
+      await fire("session_start", { reason: "fork" }, ctx());
+      await fire("turn_end", { type: "turn_end", turnIndex: 2 }, ctx());
       expect(sentMessages.length).toBe(afterFirst); // re-seeded, no immediate fire
 
-      await handlers.get("turn_end")!({ type: "turn_end", turnIndex: 3 }, ctx()); // fire #2
+      await fire("turn_end", { type: "turn_end", turnIndex: 3 }, ctx()); // fire #2
       expect(sentMessages.length).toBe(afterFirst + 1);
     } finally {
       resetAutoRefine();

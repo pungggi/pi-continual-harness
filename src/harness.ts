@@ -1,34 +1,51 @@
 // /harness — durable I/O. The two-way round-trip seam with pi-reflect.
 //
-//   /harness status [path]               counts + durable file presence/mtime
-//   /harness export [path]               write active items to a markdown file
-//   /harness import [--prune] [path]     parse it back and merge (durable wins)
+//   /harness status [path]               counts + durable layer presence/mtime
+//   /harness export [path]               layered export (or full snapshot to path)
+//   /harness import [--prune] [path]     layered import (or single file from path)
+//   /harness move <id> <global|project>  move an item between durable layers
+//   /harness split                       steer the agent to classify scopes
 //
 // The command registers getArgumentCompletions so the TUI offers a filtered
-// menu of subcommands (and, one level deeper, flags / item ids / kinds) as
+// menu of subcommands (and, one level deeper, flags / item ids / values) as
 // you type — see completions() below. The handler itself stays parsing-only.
 //
-// export writes the active items to ~/.pi/agent/harness-state.md (best-effort);
-// import parses that file and merges into the live store. Because pi-reflect
-// edits markdown files and git-commits, pointing it at the same file closes the
-// loop: offline refinement flows back into the online store.
+// Durable I/O is LAYERED on per-item scope (issue #7): every item belongs to
+// the global layer (~/.pi/agent/harness-state.md) or a project layer
+// (~/.pi/agent/harness-state/<slug>.md). Without an explicit path, export
+// writes each layer from the items' own scope and import merges global first,
+// then the current project's file (project wins id collisions; --prune drops
+// only items absent from EVERY layer). An explicit path keeps the classic
+// single-file semantics — untagged items default to the layer the path
+// represents (see defaultScopeForPath).
 //
-// Manual only (no session_start auto-import): importing is an explicit,
-// reviewable action, matching the package's "no autonomous mutation" stance.
+// Importing stays a manual, reviewable action by default; opt into the
+// session_start auto-import + turn_end auto-export bundle with
+// harness.json { "autoImport": true } (see durable.ts).
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { stat } from "node:fs/promises";
 import {
+  applyDeltas,
   bumpImportance,
   decayAndPrune,
+  DEFAULT_DURABLE_PATH,
   exportDurable,
+  exportDurableLayers,
   getState,
+  importDurableLayers,
   modelKey,
+  PROJECT_DURABLE_DIR,
   reconstructFromDurable,
 } from "./store.js";
-import { loadConfig, resolveDurablePath } from "./config.js";
+import {
+  defaultScopeForPath,
+  layerFilesFor,
+  projectDurablePath,
+  projectSlug,
+} from "./config.js";
 import { KIND_LABEL } from "./types.js";
-import type { ComponentKind, HarnessItem } from "./types.js";
+import type { ComponentKind, Delta, HarnessItem } from "./types.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
 interface CompletionEntry {
@@ -37,12 +54,14 @@ interface CompletionEntry {
 }
 
 const SUBCOMMANDS: CompletionEntry[] = [
-  { name: "import", description: "Import durable state (--prune to prune stale items)" },
-  { name: "export", description: "Export active items to durable file" },
-  { name: "status", description: "Show harness status (active/total, per-kind counts, durable file)" },
+  { name: "import", description: "Import durable state, layered (--prune to prune stale items)" },
+  { name: "export", description: "Export active items to durable layers (or one file with a path)" },
+  { name: "status", description: "Show harness status (active/total, per-kind counts, durable layers)" },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },
   { name: "drop", description: "Lower item importance (−0.1)" },
+  { name: "move", description: "Move an item between durable scopes (global | project)" },
+  { name: "split", description: "Steer the agent to classify every item global vs project" },
   { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
 ];
 
@@ -128,10 +147,25 @@ function completions(argumentPrefix: string) {
     return items.length > 0 ? items : null;
   }
 
-  // Positional id completion for keep/drop: the one argument they take.
-  if (sub === "keep" || sub === "drop") {
-    const idCommitted = before.slice(1).some((t) => !t.startsWith("--"));
-    if (idCommitted) return null; // id already chosen; nothing left to complete
+  // Positional id completion for keep/drop/move: the first argument they take.
+  if (sub === "keep" || sub === "drop" || sub === "move") {
+    const positionals = before.slice(1).filter((t) => !t.startsWith("--"));
+    // move takes a second positional: the target scope.
+    if (sub === "move") {
+      if (positionals.length >= 2) return null; // id + scope chosen; done
+      if (positionals.length === 1) {
+        return filterValues(
+          [
+            { value: "global", description: "The shared durable file (~/.pi/agent/harness-state.md)" },
+            { value: "project", description: "This project's durable file (harness-state/<slug>.md)" },
+          ],
+          last,
+          before,
+        );
+      }
+    } else if (positionals.length > 0) {
+      return null; // id already chosen; nothing left to complete
+    }
     const items = getState()
       .items.filter((i) => i.active && i.id.startsWith(last))
       .map((i: HarnessItem) => ({
@@ -193,12 +227,18 @@ export function registerHarness(pi: ExtensionAPI): void {
         case "drop":
           await handleBump(pi, ctx, rest, -0.1, "drop");
           return;
+        case "move":
+          await handleMove(pi, ctx, rest);
+          return;
+        case "split":
+          await handleSplit(pi, ctx);
+          return;
         case "push-mem":
           await handlePushMem(pi, ctx, rest);
           return;
         case "status":
         default:
-          await handleStatus(ctx, rest);
+          await handleStatus(ctx);
           return;
       }
     },
@@ -206,11 +246,9 @@ export function registerHarness(pi: ExtensionAPI): void {
   });
 }
 
-async function resolvePath(rest: string[], ctx: ExtensionCommandContext): Promise<string> {
-  const explicit = rest.find((a) => !a.startsWith("-"));
-  if (explicit) return explicit;
-  const config = await loadConfig();
-  return resolveDurablePath(config, ctx.cwd);
+/** Explicit path argument, if any (flags like --prune are skipped). */
+function explicitPath(rest: string[]): string | undefined {
+  return rest.find((a) => !a.startsWith("-"));
 }
 
 async function handleImport(
@@ -219,22 +257,38 @@ async function handleImport(
   rest: string[],
 ): Promise<void> {
   const prune = rest.includes("--prune");
-  const path = await resolvePath(rest, ctx);
+  const explicit = explicitPath(rest);
   ctx.ui.setStatus("harness", `Importing durable state${prune ? " (prune)" : ""}…`);
   try {
-    const res = await reconstructFromDurable(path, { prune }, (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    });
-    if (res.missingFile) {
-      ctx.ui.notify(
-        `No durable file at ${path}. Run /refine --commit or /harness export first.`,
-        "warning",
-      );
-      return;
+    let res;
+    if (explicit) {
+      // Single-file semantics; untagged items adopt the layer the path
+      // represents (global file → global; project dir → that project).
+      const defaultScope = defaultScopeForPath(explicit);
+      res = await reconstructFromDurable(explicit, { prune }, (snapshot, ver) => {
+        pi.appendEntry("harness-state", { state: snapshot, version: ver });
+      }).then((r) => ({ ...r, path: explicit }));
+      if (res.missingFile) {
+        ctx.ui.notify(`No durable file at ${explicit}. Run /refine --commit or /harness export first.`, "warning");
+        return;
+      }
+    } else {
+      // Layered: global always + the current project's file, merged in one
+      // pass (project wins id collisions; --prune is union-scoped).
+      res = await importDurableLayers(layerFilesFor(ctx.cwd), { prune }, (snapshot, ver) => {
+        pi.appendEntry("harness-state", { state: snapshot, version: ver });
+      });
+      if (res.missingFile) {
+        ctx.ui.notify(
+          `No durable files at ${DEFAULT_DURABLE_PATH} (or ${projectDurablePath(ctx.cwd)}). Run /refine --commit or /harness export first.`,
+          "warning",
+        );
+        return;
+      }
     }
     const bits = [`${res.created} created`, `${res.updated} updated`];
     if (prune) bits.push(`${res.pruned} pruned`);
-    ctx.ui.notify(`Imported ${res.imported} item(s) from ${path} (${bits.join(", ")}).`, "info");
+    ctx.ui.notify(`Imported ${res.imported} item(s) (${bits.join(", ")}).`, "info");
   } catch (err) {
     ctx.ui.notify(`Harness import failed: ${(err as Error).message}`, "error");
   }
@@ -242,12 +296,24 @@ async function handleImport(
 }
 
 async function handleExport(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
-  const path = await resolvePath(rest, ctx);
   ctx.ui.setStatus("harness", "Exporting durable state…");
   try {
-    const written = await exportDurable(path);
-    const n = getState().items.filter((i) => i.active).length;
-    ctx.ui.notify(`Exported ${n} active item(s) to ${written}`, "info");
+    const explicit = explicitPath(rest);
+    if (explicit) {
+      // Full single-file snapshot (both scopes; project items tagged with a
+      // `scope:` sub-line so the file round-trips from anywhere).
+      const written = await exportDurable(explicit);
+      const n = getState().items.filter((i) => i.active).length;
+      ctx.ui.notify(`Exported ${n} active item(s) to ${written}`, "info");
+    } else {
+      // Layered: partition by each item's own scope.
+      const written = await exportDurableLayers(
+        { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR },
+        projectSlug(ctx.cwd),
+      );
+      const n = getState().items.filter((i) => i.active).length;
+      ctx.ui.notify(`Exported ${n} active item(s) to ${written.length} layer file(s): ${written.join(", ")}`, "info");
+    }
   } catch (err) {
     ctx.ui.notify(`Harness export failed: ${(err as Error).message}`, "error");
   }
@@ -305,6 +371,84 @@ async function handleBump(
   }
   const preview = item.content.length > 60 ? `${item.content.slice(0, 60)}…` : item.content;
   ctx.ui.notify(`${label}: "${preview}" → importance ${item.importance.toFixed(2)}`, "info");
+}
+
+/** /harness move <id> <global|project> — flip an item's durable layer.
+ *  Implemented as an audited update delta (no actor model: like keep/drop,
+ *  this is cross-model user maintenance). "project" is stamped with the
+ *  CURRENT session's slug so the item lands in this project's file. */
+async function handleMove(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const positionals = rest.filter((a) => a && !a.startsWith("-"));
+  const id = positionals[0];
+  const scope = positionals[1];
+  if (!id || (scope !== "global" && scope !== "project")) {
+    ctx.ui.notify(`/harness move requires: <id> <global|project> (ids via /harness status).`, "warning");
+    return;
+  }
+  const delta: Delta =
+    scope === "project"
+      ? { op: "update", id, scope, project: projectSlug(ctx.cwd) }
+      : { op: "update", id, scope };
+  try {
+    const [applied] = applyDeltas([delta], (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    });
+    if (applied?.op === "update") {
+      const target =
+        scope === "project"
+          ? `project "${applied.after.project ?? ""}"`
+          : "global";
+      ctx.ui.notify(
+        `Moved ${id} → ${target}: "${preview(applied.after.content)}" (run /harness export to update the layer files).`,
+        "info",
+      );
+    }
+  } catch (err) {
+    ctx.ui.notify(`/harness move failed: ${(err as Error).message}`, "error");
+  }
+}
+
+/** Compose the /harness split steering message: the agent classifies every
+ *  active item global-vs-project and applies the classification as ONE
+ *  harness_mutate batch of scope-only update deltas — visible in the
+ *  transcript, audited, and /tree-rollback-able, exactly like push-mem. */
+function buildSplitPrompt(items: HarnessItem[], slug: string, cwd: string): string {
+  const lines = [
+    `/harness split — classify ${items.length} Continual Harness item(s) into durable scopes`,
+    "",
+    `Current project: ${cwd} (slug \"${slug}\").`,
+    "",
+    "For EACH item below, decide its durable scope:",
+    "- `project` — only useful when working in THIS project (deploy procedures, project architecture, local conventions, project-specific quirks).",
+    "- `global` — useful in every project (model quirks, owner preferences, general engineering practices).",
+    "",
+    "Then apply the whole classification in ONE harness_mutate call: one update delta per item, changing ONLY the scope field, e.g.",
+    '{ "op": "update", "id": "h_xxx", "scope": "project" }',
+    `(the "project" slug is stamped server-side to "${slug}"; content/evidence/importance stay untouched). Give every item an explicit decision — skip nothing. If an item is project-specific only in part, choose "project" and leave generalizing it for a later /refine.`,
+    "",
+    "Items:",
+  ];
+  items.forEach((i, n) => {
+    lines.push(
+      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
+      `   evidence: ${i.evidence}`,
+    );
+  });
+  return lines.join("\n");
+}
+
+async function handleSplit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+  const items = getState().items.filter((i) => i.active);
+  if (items.length === 0) {
+    ctx.ui.notify("No active items to split (run /refine first).", "warning");
+    return;
+  }
+  pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd));
+  ctx.ui.notify(`Steering agent to classify ${items.length} item(s) global vs project "${projectSlug(ctx.cwd)}".`, "info");
 }
 
 /** Compose a steering message that asks the agent to persist the given active
@@ -374,8 +518,7 @@ async function handlePushMem(
   ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
 }
 
-async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
-  const path = await resolvePath(rest, ctx);
+async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
   const items = getState().items;
   const active = items.filter((i) => i.active);
   const key = modelKey(ctx.model);
@@ -385,19 +528,25 @@ async function handleStatus(ctx: ExtensionCommandContext, rest: string[]): Promi
   // the current model's share so the per-model picture is still visible.
   const counts: Record<ComponentKind, number> = { prompt: 0, memory: 0, skill: 0, subagent: 0 };
   for (const i of active) counts[i.kind] += 1;
-  let fileState: string;
-  try {
-    const st = await stat(path);
-    fileState = `${path} (modified ${st.mtime.toISOString()})`;
-  } catch {
-    fileState = `none at ${path}`;
+  const nProject = active.filter((i) => i.scope === "project").length;
+  async function layerState(path: string): Promise<string> {
+    try {
+      const st = await stat(path);
+      return `${path} (modified ${st.mtime.toISOString()})`;
+    } catch {
+      return `none at ${path}`;
+    }
   }
+  const durable =
+    ` Durable: global ${await layerState(DEFAULT_DURABLE_PATH)};` +
+    ` project ${await layerState(projectDurablePath(ctx.cwd))}.`;
   ctx.ui.setStatus("harness", undefined);
   ctx.ui.notify(
     `Harness: ${active.length} active / ${items.length} total — ` +
-      `prompt ${counts.prompt}, memory ${counts.memory}, skill ${counts.skill}, subagent ${counts.subagent}.` +
+      `prompt ${counts.prompt}, memory ${counts.memory}, skill ${counts.skill}, subagent ${counts.subagent}` +
+      ` — scope ${active.length - nProject} global / ${nProject} project.` +
       (key ? ` ${mine} active for [${key}] across ${models.length} model(s).` : "") +
-      ` Durable: ${fileState}.`,
+      durable,
     "info",
   );
 }

@@ -5,13 +5,16 @@ import { join } from "node:path";
 import {
   DEFAULT_CONFIG,
   DEFAULT_REF_BUMP,
+  defaultScopeForPath,
+  layerFilesFor,
   loadConfig,
+  projectDurablePath,
   projectSlug,
   resetConfigCache,
   resolveDurablePath,
 } from "../src/config.js";
 import { DEFAULT_INJECTION } from "../src/select.js";
-import { DEFAULT_DURABLE_PATH } from "../src/store.js";
+import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR } from "../src/store.js";
 
 function tempFile(): string {
   return join(tmpdir(), `harness-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -174,6 +177,50 @@ describe("config", () => {
     it("project scope returns a per-project file under .pi/agent/harness-state/", () => {
       const p = resolveDurablePath({ durableScope: "project" }, "/home/me/proj");
       expect(p).toBe(join(homedir(), ".pi", "agent", "harness-state", "home-me-proj.md"));
+    });
+  });
+
+  describe("autoImport (durable sync, issue #7)", () => {
+    it("defaults to false", async () => {
+      expect(DEFAULT_CONFIG.autoImport).toBe(false);
+      expect((await loadConfig(tempFile())).autoImport).toBe(false);
+    });
+
+    it("merges an explicit opt-in; garbage stays off", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ autoImport: true }), "utf8");
+        expect((await loadConfig(file)).autoImport).toBe(true);
+        resetConfigCache();
+        await writeFile(file, JSON.stringify({ autoImport: "yes" }), "utf8");
+        expect((await loadConfig(file)).autoImport).toBe(false);
+      });
+    });
+  });
+
+  describe("layer paths", () => {
+    it("projectDurablePath derives the slug file under PROJECT_DURABLE_DIR", () => {
+      expect(projectDurablePath("/home/me/proj")).toBe(
+        join(PROJECT_DURABLE_DIR, "home-me-proj.md"),
+      );
+    });
+
+    it("layerFilesFor orders global first, project second (project wins collisions)", () => {
+      const files = layerFilesFor("/home/me/proj");
+      expect(files).toHaveLength(2);
+      expect(files[0]).toEqual({ path: DEFAULT_DURABLE_PATH, defaultScope: { scope: "global" } });
+      expect(files[1]).toEqual({
+        path: join(PROJECT_DURABLE_DIR, "home-me-proj.md"),
+        defaultScope: { scope: "project", project: "home-me-proj" },
+      });
+    });
+
+    it("defaultScopeForPath maps the global file, project files, and other paths", () => {
+      expect(defaultScopeForPath(DEFAULT_DURABLE_PATH)).toEqual({ scope: "global" });
+      expect(defaultScopeForPath(join(PROJECT_DURABLE_DIR, "my-proj.md"))).toEqual({
+        scope: "project",
+        project: "my-proj",
+      });
+      expect(defaultScopeForPath(join(tmpdir(), "unrelated.md"))).toEqual({ scope: "global" });
     });
   });
 });

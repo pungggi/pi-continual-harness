@@ -8,6 +8,54 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.9.0] — 2026-09-17
+
+The project-scope split (issue #7). Scope becomes a property of each item, the
+durable file becomes durable **layers**, and one opt-in flag makes `/refine`
+output survive into new sessions without export/import ceremony.
+
+### Added
+
+- **Per-item durable scope** — `HarnessItem.scope: "global" | "project"`
+  (+ `project` slug). Scope decides which durable layer an item is exported to
+  / imported from; it never filters per-turn injection.
+  - **`/harness move <id> <global|project>`** — flip an item's layer
+    (audited update delta, `/tree`-rollback-able; `project` stamps the current
+    session's slug). Autocompletes ids then scope values.
+  - **`/harness split`** — the interactive migration helper: steers the agent
+    to classify every active item global-vs-project and apply the result as one
+    `harness_mutate` batch of scope-only updates (visible, audited,
+    rollback-able — the push-mem pattern).
+  - **Layered durable I/O** — `/harness export` (no path) partitions items
+    into `~/.pi/agent/harness-state.md` + `harness-state/<slug>.md`;
+    `/harness import` (no path) merges global first then the current project's
+    file (project wins id collisions; `--prune` is union-scoped across
+    layers). Explicit paths keep classic single-file semantics. Project items
+    carry a `scope: project (<slug>)` sub-line so any copy round-trips.
+    `/refine --commit` now exports the layers too. `/harness status` shows
+    both layers + the scope split.
+  - **`scope` on `harness_mutate` create/update deltas** — server-side slug
+    stamping from the session cwd (the tool never sees raw slugs).
+- **Opt-in durable sync: `"autoImport": true`** (`src/durable.ts`) — bundles
+  both directions: `session_start` layered auto-import (loss-free merge,
+  silent when nothing changes — imports are now idempotent and skip the
+  persist when the live store already matches the files) + `turn_end` layered
+  auto-export whenever the store version changed since the last export. Every
+  action is visible and uses the same `harness-state` entries (`/tree`
+  rollback covers them).
+
+### Changed
+
+- **`durableScope` is deprecated** (no-op): durable I/O is always layered on
+  per-item scope now. The key still parses so existing configs keep loading;
+  migration is one layered `/harness import` + `/harness move`/`split`.
+- Import merge is **idempotent**: an import that changes nothing persists
+  nothing (no session-tree noise from repeated or auto imports).
+- Layered import handles the same id in **both** layers (project copy wins,
+  no duplicate items).
+
+[0.9.0]: https://github.com/pungggi/pi-continual-harness/compare/v0.8.1...v0.9.0
+
 ## [0.8.1] — 2026-09-13
 
 The completions release. `/harness` now registers `getArgumentCompletions`, so

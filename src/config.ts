@@ -1,19 +1,24 @@
 // User configuration for continual-harness: ~/.pi/agent/harness.json
 //
-// Phase 2 introduces this file (optional; missing → defaults) to configure:
-//  - durableScope: where the durable markdown lives. "global" (default,
-//    ~/.pi/agent/harness-state.md — backward compatible) or "project"
-//    (~/.pi/agent/harness-state/<slug>.md, slug derived from cwd) so different
-//    projects keep separate harness state for pi-reflect.
-//  - remindRefine: opt-in turn_end nudge to run /refine (Phase 2 = reminder
-//    only; Phase 3 adds opt-in auto-refine).
+// This file (optional; missing → defaults) configures:
+//  - autoImport: opt-in durable sync (issue #7). `true` bundles BOTH
+//    directions: session_start layered auto-import (global file always + the
+//    current project's file) and turn_end layered auto-export whenever the
+//    live store changed since the last export. Off by default — importing is
+//    normally an explicit, reviewable /harness import.
+//  - durableScope: DEPRECATED (0.9.0). Items now carry their own scope
+//    (`/harness move <id> global|project`); durable I/O is layered on top of
+//    per-item scope and this key no longer switches anything. Still parsed so
+//    existing configs keep loading; will be removed in a future release.
+//  - remindRefine / autoRefine / outcomeImportance / injection / proposer:
+//    unchanged (see below).
 //
 // Robust by design: missing or malformed file → DEFAULT_CONFIG, never throws.
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { DEFAULT_DURABLE_PATH } from "./store.js";
+import { basename, dirname, join } from "node:path";
+import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
@@ -22,7 +27,12 @@ export const DEFAULT_AUTO_EVERY_TURNS = 100;
 export const DEFAULT_REF_BUMP = 0.03;
 
 export interface HarnessConfig {
+  /** DEPRECATED (0.9.0): items carry their own scope now (see /harness move);
+   *  durable I/O is always layered. Parsed for compatibility, ignored. */
   durableScope?: "global" | "project";
+  /** Opt-in durable sync (issue #7): session_start layered auto-import +
+   *  turn_end layered auto-export when the store changed. Default false. */
+  autoImport?: boolean;
   remindRefine?: {
     enabled?: boolean;
     everyTurns?: number;
@@ -47,6 +57,7 @@ export interface HarnessConfig {
 
 export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
+  autoImport: false,
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "steering",
@@ -65,6 +76,7 @@ let cached: HarnessConfig | undefined;
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   return {
     durableScope: over.durableScope === "project" ? "project" : "global",
+    autoImport: over.autoImport === true,
     remindRefine: {
       enabled: over.remindRefine?.enabled ?? false,
       everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
@@ -113,13 +125,41 @@ export function resetConfigCache(): void {
 }
 
 /**
- * Resolve the durable markdown path for the configured scope.
- *  - global  → ~/.pi/agent/harness-state.md (the default, unchanged)
- *  - project → ~/.pi/agent/harness-state/<slug>.md (slug derived from cwd)
+ * @deprecated Durable I/O is layered on per-item scope (0.9.0); this key no
+ * longer switches the durable path. Kept so old configs keep loading.
  */
 export function resolveDurablePath(config: HarnessConfig, cwd?: string): string {
   if (config.durableScope !== "project") return DEFAULT_DURABLE_PATH;
-  return join(homedir(), ".pi", "agent", "harness-state", `${projectSlug(cwd)}.md`);
+  return projectDurablePath(cwd);
+}
+
+/** Path of a project's durable layer file: <projectDir>/<slug>.md. */
+export function projectDurablePath(cwd?: string): string {
+  return join(PROJECT_DURABLE_DIR, `${projectSlug(cwd)}.md`);
+}
+
+/** The two layers a layered import reads for a session in `cwd`: global first
+ *  (so the project layer wins id collisions), the project layer only when its
+ *  slug matches the session cwd. Scope defaults for untagged items ride along
+ *  (a layer file's items belong to that layer). */
+export function layerFilesFor(cwd?: string): LayerFile[] {
+  return [
+    { path: DEFAULT_DURABLE_PATH, defaultScope: { scope: "global" } },
+    { path: projectDurablePath(cwd), defaultScope: { scope: "project", project: projectSlug(cwd) } },
+  ];
+}
+
+/** Derive the layer scope a file at `path` represents — used when a user
+ *  imports a file by explicit path: the global file → global; anything under
+ *  the project dir → project + slug from the filename stem; other paths →
+ *  global. Pure path-layout knowledge. */
+export function defaultScopeForPath(path: string): ScopeInfo {
+  if (path === DEFAULT_DURABLE_PATH) return { scope: "global" };
+  if (dirname(path) === PROJECT_DURABLE_DIR) {
+    const stem = basename(path, ".md");
+    if (stem) return { scope: "project", project: stem };
+  }
+  return { scope: "global" };
 }
 
 /** Stable, filesystem-safe slug from a directory path. Falls back to "default". */
