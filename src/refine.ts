@@ -19,9 +19,10 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, exportDurable, modelKey, REFINE_ENTRY, snapshotState } from "./store.js";
+import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, modelKey, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import { projectSlug } from "./config.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
@@ -151,11 +152,15 @@ export async function runRefine(
   });
 
   if (commit) {
-    // Flush current state to the durable file first so the agent refines
-    // against the same view pi-reflect / pi-mem would see.
+    // Flush current state to the durable layers first so the agent refines
+    // against the same view pi-reflect / pi-mem would see (layered: items land
+    // in the file their own scope selects).
     try {
-      const path = await exportDurable();
-      ctx.ui.notify(`Durable state exported to ${path}`, "info");
+      const written = await exportDurableLayers(
+        { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR },
+        projectSlug(ctx.cwd),
+      );
+      ctx.ui.notify(`Durable state exported to ${written.length} layer file(s)`, "info");
     } catch (err) {
       ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
     }

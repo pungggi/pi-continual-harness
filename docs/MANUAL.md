@@ -85,7 +85,7 @@ Every item carries an `importance` in `[0, 1]`. Items below the floor
 | Layer | Where | Lifetime | Purpose |
 |---|---|---|---|
 | **Session-scoped** (core) | session tree entries of type `harness-state` | the session branch | the authoritative live state; `/tree` rollback works here |
-| **Durable** (seam) | `~/.pi/agent/harness-state.md` (or project-scoped) | across sessions | the composition hand-off with pi-reflect / pi-mem |
+| **Durable** (seam) | `~/.pi/agent/harness-state.md` + `harness-state/<slug>.md` (per-item scope) | across sessions | the composition hand-off with pi-reflect / pi-mem |
 
 The session layer is the source of truth at runtime. The durable file is a
 **best-effort export/import** that closes the loop with offline tools.
@@ -188,6 +188,8 @@ interface HarnessItem {
   importance: number;  // [0,1] fitness; < 0.3 is prune-eligible
   active: boolean;     // injected into the system prompt when true
   ownerModel: string;  // "provider/id" — only injected for this model ("" = orphan)
+  scope: "global" | "project"; // which durable LAYER the item exports to (never filters injection)
+  project?: string;    // project slug; set iff scope === "project"
   createdAt: number;   // epoch ms
   updatedAt: number;   // epoch ms — touched by bumps/decay; decay proxy
 }
@@ -199,10 +201,15 @@ The unit of mutation (see [`src/types.ts`](../src/types.ts)):
 
 ```ts
 type Delta =
-  | { op: "create";   kind: ComponentKind; content: string; evidence: string; importance?: number; ownerModel?: string }
-  | { op: "update";   id: string; content?: string; evidence?: string; importance?: number; active?: boolean; ownerModel?: string }
+  | { op: "create";   kind: ComponentKind; content: string; evidence: string; importance?: number; ownerModel?: string; scope?: "global" | "project" }
+  | { op: "update";   id: string; content?: string; evidence?: string; importance?: number; active?: boolean; ownerModel?: string; scope?: "global" | "project" }
   | { op: "delete";   id: string; reason: string };
 ```
+
+`scope` on a delta is optional and normally managed by `/harness move` /
+`/harness split`; `"project"` without an explicit slug is stamped server-side
+with the session's cwd slug. A slugless project scope throws (and the batch
+rolls back) — a project item without a slug could not be placed in any layer.
 
 ### How state persists in the session
 
@@ -284,51 +291,86 @@ arguments intentionally get no menu (use editor path completion).
 
 Subcommands:
 
-#### `status [path]`
+#### `status`
 
 ```
 /harness status
-/harness status ./some-file.md
 ```
 
 Reports whole-store active/total counts broken down by kind (status is a
-whole-store command), annotated with the active model's share, plus the durable
-file's presence and last-modified time. The path defaults to the resolved
-durable path (global or project scope); an explicit non-flag argument overrides
-it.
+whole-store command), annotated with the active model's share, the scope split
+(`X global / Y project`), and **both durable layers**' presence and
+last-modified time (the global file + the current project's file).
 
 #### `export [path]`
 
 ```
-/harness export
-/harness export ./snapshot.md
+/harness export               # layered: partition items into their scope's file
+/harness export ./snapshot.md # full single-file snapshot (both scopes, tagged)
 ```
 
-Writes all **active** items to the durable markdown file (see [§7](#7-the-durable-file-format)).
-Inactive items are never exported. Returns the count written and the path.
+Without a path, writes **both layers** from each item's own scope: global items
+to `~/.pi/agent/harness-state.md`, project items to
+`~/.pi/agent/harness-state/<slug>.md` (one file per slug among the active
+items; the current project's file is also rewritten when it exists, so
+deleting its last item empties the layer instead of leaving a stale file that
+import would resurrect). With an explicit path, writes a full snapshot of all
+active items to that one file (project items carry a `scope:` sub-line so the
+copy round-trips). Inactive items are never exported.
 
 #### `import [--prune] [path]`
 
 ```
-/harness import
+/harness import               # layered: global file + current project file
 /harness import --prune
-/harness import ./snapshot.md --prune
+/harness import ./snapshot.md # single file
 ```
 
-Parses a durable markdown file and **merges** it into the live store, then
-persists a snapshot. **Merge semantics:**
+Without a path, reads **both layers** (global first, then the current
+project's file — the project layer wins id collisions) and merges them in ONE
+pass, so `--prune` drops only items absent from **every** layer (union
+semantics). Items without a `scope:` sub-line adopt the layer they were read
+from (the global file → global; a project file → that project). With an
+explicit path, single-file semantics; the layer default is derived from the
+path (see `defaultScopeForPath`). Then:
 
 | Situation | Result |
 |---|---|
-| Parsed item's `id` matches an existing item | **UPDATE** in place — durable wins on `content`/`evidence`/`importance`; item reactivated; `createdAt` preserved. |
+| Parsed item's `id` matches an existing item | **UPDATE** in place — durable wins on `content`/`evidence`/`importance`/`owner`/`scope`; item reactivated; `createdAt` preserved. When nothing differs the update is a **NO-OP** (no persist — repeated imports are tree-silent). |
 | Parsed item has a new/foreign id | **CREATE** (id kept if it matches `/^h_/`, else a fresh id is generated). |
-| Store item absent from the file | **KEPT** by default. With `--prune`: dropped **only if** it was active before the import (inactive items are *always* preserved — they can never have been "deleted" by pi-reflect, since the export never contains them). |
+| Store item absent from the file(s) | **KEPT** by default. With `--prune`: dropped **only if** it was active before the import (inactive items are *always* preserved — they can never have been "deleted" by pi-reflect, since the export never contains them). |
 
-`--prune` therefore makes the file the source of truth: everything active not in
-the file is removed. Without it, import is purely additive/reconciliatory.
+`--prune` therefore makes the layer(s) the source of truth: everything active
+not in them is removed. Without it, import is purely additive/reconciliatory.
 Returns counts of `imported`, `created`, `updated`, and (with `--prune`) `pruned`.
 
-**Missing file** → warning, no-op (run `/refine --commit` or `/harness export` first).
+**Missing file(s)** → warning, no-op (run `/refine --commit` or `/harness export` first).
+
+#### `move <id> <global|project>`
+
+```
+/harness move h_lz3k9p2_a1b2c project
+/harness move h_lz3k9p2_a1b2c global
+```
+
+Moves an item between durable layers. `project` is stamped with the **current
+session's slug** (from `ctx.cwd`). Applied as an audited `update` delta —
+rollback-able via `/tree`, visible in the transcript. Run `/harness export`
+afterwards to update the layer files (or have `"autoImport": true` do it on
+the next `turn_end`).
+
+#### `split`
+
+```
+/harness split
+```
+
+Agent-mediated classification (the interactive split wizard): sends a steering
+message listing every **active** item and asking the agent to decide `global`
+vs `project` for each, applying the result as ONE `harness_mutate` batch of
+scope-only update deltas. The model's `harness_mutate` call is visible,
+audited, and `/tree`-rollback-able; the command itself mutates nothing.
+Everything with an empty store → warning.
 
 #### `prune [--decay <days>]`
 
@@ -452,11 +494,13 @@ rollback covers it.
 
 ---
 
-## 7. The durable file format
+## 7. The durable file format (layers)
 
-The durable markdown file is the composition seam. `/harness export` writes it;
-`/harness import` parses it back. The format is intentionally human-editable and
-**tolerant** of pi-reflect's edits.
+The durable markdown **layers** are the composition seam: the shared
+`harness-state.md` (global items) and `harness-state/<slug>.md` (project
+items). `/harness export` writes them; `/harness import` parses them back.
+The format is intentionally human-editable and **tolerant** of pi-reflect's
+edits — identical in every layer file.
 
 ### Grammar
 
@@ -468,11 +512,12 @@ The durable markdown file is the composition seam. `/harness export` writes it;
 - **[h_xxx]** (importance 0.62) <content>
   - evidence: <evidence>
   - model: <provider/id>      ← optional; the owner model (omitted for orphans)
+  - scope: project (<slug>)   ← optional; written only for project-scoped items
 
 ## <Section title>
 ...
 
-_(no active items)_      ← written only when the store is empty
+_(no active items)_      ← written only when that layer has no active items
 ```
 
 ### Section titles
@@ -496,9 +541,14 @@ Two bullet forms are recognized on import:
    - **[h_lz3k9p2_a1b2c]** (importance 0.62) The content text
      - evidence: Why it exists
      - model: provider/id
+     - scope: project (my-proj)
    ```
    The `model:` line is optional; items without it import as orphans and are
-   adopted by the active model on first contact.
+   adopted by the active model on first contact. The `scope:` line is optional
+   too: when absent, the item adopts the **layer it was read from** (global
+   file → global; a project file → that project) — that is how a layer file's
+   contents stay project-scoped without every bullet carrying a tag. A
+   `scope: project` tag without any resolvable slug degrades to global.
 2. **Plain bullet** (lenient — for hand-written / pi-reflect-added items):
    ```
    - **[h_xxx]** content here
@@ -512,13 +562,15 @@ non-numeric → `0.5`.
 ### Two-way loop
 
 ```
-/refine --commit  ──►  harness-state.md  ──►  /reflect edits it offline
-                                                 │
-       live store  ◄──  /harness import  ◄───────┘
+/refine --commit  ──►  harness-state.md + harness-state/<slug>.md  ──►  /reflect edits offline
+                                                                        │
+       live store  ◄──  /harness import (layered)  ◄────────────────────┘
 ```
 
-Offline edits **win** on conflict (durable content/evidence/importance replace
-the live values). This is what makes pi-reflect refinements flow back online.
+Offline edits **win** on conflict (durable content/evidence/importance/owner/
+scope replace the live values). This is what makes pi-reflect refinements flow
+back online. With `"autoImport": true` the loop runs itself: layers in on
+`session_start`, layers out on `turn_end` whenever the store changed.
 
 ---
 
@@ -529,7 +581,7 @@ defaults (the loader never throws).
 
 ```jsonc
 {
-  "durableScope": "global",                 // "global" (default) | "project"
+  "autoImport": false,                      // opt-in durable sync (import + export bundle)
   "proposer": "steering",                   // steering | dedupe | <custom>
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": false, "everyTurns": 50 },
@@ -542,7 +594,7 @@ defaults (the loader never throws).
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `durableScope` | `"global"` | `"global"` \| `"project"` | Where the durable file lives. See [paths](#15-file--path-layout). |
+| `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `injection.enabled` | `true` | bool | Master switch for the [injection selection policy](#injection-selection-on-by-default). `false` → legacy "all items, in store order". |
 | `injection.maxTokens` | `1500` | number > 0 | Total token budget for the rendered block (intro + headers + items). |
@@ -589,24 +641,37 @@ the sizing arithmetic). `selectForInjection` is pure and re-exported, so a
 companion package can layer a richer policy (e.g. relevance to the current turn)
 without touching `inject.ts`.
 
-### Scope resolution
+### Scope resolution (per item, layered)
 
-- **`global`** (default, backward compatible) → `~/.pi/agent/harness-state.md`
-- **`project`** → `~/.pi/agent/harness-state/<slug>.md`, where `<slug>` is derived
-  from the current working directory (path separators → `-`, non-alnum stripped,
-  collapsed, lowercased, last 80 chars, fallback `"default"`).
+Since 0.9.0 scope is a property of **each item**, not the whole store:
 
-Use `"project"` when different codebases should keep separate harness state for
-pi-reflect to refine independently.
+- `scope: "global"` (default) → the shared `~/.pi/agent/harness-state.md`
+- `scope: "project"` → `~/.pi/agent/harness-state/<slug>.md`, where `<slug>` is
+  derived from the session's working directory (path separators → `-`,
+  non-alnum stripped, collapsed, lowercased, last 80 chars, fallback
+  `"default"`) and stamped on the item when it is moved (`/harness move`) or
+  imported from that layer.
+
+`/harness export` (no path) writes **both** layers partitioned by each item's
+scope; `/harness import` (no path) merges global first, then the current
+project's file (the project layer wins id collisions; `--prune` is
+union-scoped). Scope governs durable placement only — it never filters
+per-turn injection.
+
+> **Deprecated:** the store-wide `durableScope` config key (pre-0.9.0) is
+> still parsed but ignored — items carry their own scope now. Migrating a
+> `durableScope: "project"` setup: run `/harness import` once in the project
+> (its file's items adopt project scope), then `/harness move` or
+> `/harness split` for any strays.
 
 ### Robustness
 
 - Missing/malformed file → `DEFAULT_CONFIG` (never throws).
-- `durableScope` other than `"project"` → treated as `"global"`.
+- `autoImport` other than `true` → treated as `false`.
 - `outcomeImportance.bump` is **coerced to a finite number** — a string like
   `"0.03"` would otherwise corrupt importance to `NaN` (it is an arithmetic
   operand); non-finite values fall back to the default.
-- Unknown keys are ignored.
+- Unknown keys are ignored (including the deprecated `durableScope`).
 - Config is **cached** for the process lifetime after first read.
 
 ---
@@ -862,25 +927,34 @@ No config file needed — everything is off by default.
 /refine --commit             # snapshot the cleaned state
 ```
 
-### C. Project isolation
+### C. Project isolation (per-item scope)
 
-`~/.pi/agent/harness.json`:
-```json
-{ "durableScope": "project" }
+```bash
+/harness split          # the agent classifies every item global vs project
+/harness move h_x project   # …or place individual items by hand
+/harness export             # write the layers (global + this project)
 ```
-Each project now keeps its own `~/.pi/agent/harness-state/<slug>.md`, so pi-reflect
-refines them independently.
+Project-scoped items live in `~/.pi/agent/harness-state/<slug>.md`, so pi-reflect
+refines each project independently; global items stay in the shared file.
+
+To never think about export/import again, opt into durable sync
+(`~/.pi/agent/harness.json`):
+```json
+{ "autoImport": true }
+```
+New sessions then start with both layers merged in, and every turn that
+changed the store re-exports the layers.
 
 ### D. Offline round-trip with pi-reflect
 
 ```bash
-/refine --commit                              # 1. export
+/refine --commit                              # 1. export the layers
 /reflect ~/.pi/agent/harness-state.md         # 2. refine offline (edits the file)
 # (next session, or now:)
 /harness import                               # 3. merge offline edits back in
 ```
 
-To make the file authoritative (drop active items pi-reflect removed):
+To make the layers authoritative (drop active items pi-reflect removed):
 ```bash
 /harness import --prune
 ```
@@ -960,8 +1034,8 @@ to the current turn) on top (see [§8 → Injection selection](#injection-select
 | Path | What |
 |---|---|
 | `~/.pi/agent/harness.json` | optional config (see [§8](#8-configuration)) |
-| `~/.pi/agent/harness-state.md` | durable file, **global** scope (default) |
-| `~/.pi/agent/harness-state/<slug>.md` | durable file, **project** scope |
+| `~/.pi/agent/harness-state.md` | durable layer, **global** items |
+| `~/.pi/agent/harness-state/<slug>.md` | durable layer, **project** items (slug from session cwd) |
 | session tree, entry type `harness-state` | authoritative live state snapshots |
 | session tree, entry type `harness-refinement` | refine audit entries |
 
@@ -988,17 +1062,30 @@ to the current turn) on top (see [§8 → Injection selection](#injection-select
 | Dedupe threshold | `0.6` Jaccard | `proposer.ts` `DEDUPE_THRESHOLD` |
 | `harness_mutate` batch size | `1`–`20` deltas | `tools.ts` |
 | Default create importance | `0.5` | `store.ts` `applyOne` |
+| Default item scope | `"global"` | `store.ts` `applyOne` |
+| Durable sync (autoImport) | `false` (off; opt-in) | `config.ts` `DEFAULT_CONFIG` |
 | Item id format | `h_<base36 ms>_<5-char random>` | `store.ts` `genId` |
 
 ---
 
 ## 17. Troubleshooting & FAQ
 
-**`/harness status` says "Durable: none at …"**
+**`/harness status` says "Durable: … none at …"**
 You haven't exported yet. Run `/refine --commit` or `/harness export`.
 
-**`/harness import` says "No durable file at …"**
+**`/harness import` says "No durable files at …"**
 Same cause — export first. Or point import at an explicit path.
+
+**I set `durableScope: "project"` and nothing changed.**
+The key is deprecated (0.9.0): scope is per item now. Migrate with one
+layered `/harness import` in the project, then `/harness move`/`split` any
+strays. See [Scope resolution](#scope-resolution-per-item-layered).
+
+**A `/harness move h_x project` threw "requires a project slug".**
+The session cwd slug is cached at `session_start`; the error means no session
+had started when the delta applied (e.g. a direct-apply proposer ran outside a
+session). Re-run from a normal session, or pass the slug explicitly via the
+`project` field on the delta.
 
 **I enabled `outcomeImportance` and nothing happened on the first turn.**
 By design — the first observed turn seeds the scan cursor (no retroactive bump

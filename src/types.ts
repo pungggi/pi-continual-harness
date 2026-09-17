@@ -33,6 +33,16 @@ export interface HarnessItem {
    * Orphans are adopted by the active model on first contact (see store.ts).
    */
   ownerModel: string;
+  /**
+   * Durable-layer scope: "global" (default) → the shared durable file
+   * (~/.pi/agent/harness-state.md); "project" → the per-project file
+   * (~/.pi/agent/harness-state/<slug>.md). Scope decides WHERE an item is
+   * exported / imported from — it does NOT affect per-turn injection.
+   * Undefined is treated as "global" (legacy snapshots / durable files).
+   */
+  scope?: "global" | "project";
+  /** Project slug (see projectSlug in config.ts); set iff scope === "project". */
+  project?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -52,6 +62,11 @@ export type Delta =
       /** Owner "provider/id". Stamped server-side from the active model when the
        *  agent omits it; set explicitly by direct-apply proposers. Absent → orphan. */
       ownerModel?: string;
+      /** Durable-layer scope (default "global"). "project" requires a slug:
+       *  taken from the session cwd (stamped at session_start) when omitted. */
+      scope?: "global" | "project";
+      /** Explicit project slug for scope:"project" (server-side use). */
+      project?: string;
     }
   | {
       op: "update";
@@ -62,6 +77,12 @@ export type Delta =
       active?: boolean;
       /** Reassign ownership (rare; used by migration/import). Absent → keep current. */
       ownerModel?: string;
+      /** Move the item between durable layers. Absent → keep current scope.
+       *  "project" requires `project` (set by /harness move) or a cached
+       *  session slug; "global" clears the project binding. */
+      scope?: "global" | "project";
+      /** Explicit project slug for scope:"project" (server-side use). */
+      project?: string;
     }
   | { op: "delete"; id: string; reason: string };
 

@@ -10,15 +10,23 @@
 //     to a markdown file pi-reflect can read and refine offline, and pi-mem can
 //     ingest. Best-effort; the package works without it.
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState } from "./types.js";
+
+/** Resolved durable-layer scope for a parsed item. */
+export interface ScopeInfo {
+  scope: "global" | "project";
+  project?: string;
+}
 
 const STATE_ENTRY = "harness-state";
 const REFINE_ENTRY = "harness-refinement";
 
 export const DEFAULT_DURABLE_PATH = join(homedir(), ".pi", "agent", "harness-state.md");
+/** Directory holding per-project durable files: <slug>.md (see projectSlug). */
+export const PROJECT_DURABLE_DIR = join(homedir(), ".pi", "agent", "harness-state");
 
 const IMPORTANCE_FLOOR = 0.3;
 
@@ -38,6 +46,12 @@ let version = 0;
 // "model unknown" — tools fall back gracefully (create orphans, list all).
 let activeModelKey: string | undefined;
 
+// Same pattern for the session's project slug: the durable-layer stamp for
+// scope:"project" deltas that arrive without an explicit slug (the
+// model-facing tools have no ctx). Cached once per session_start from ctx.cwd
+// so scope stamps are stable no matter where a delta originates.
+let sessionProject: string | undefined;
+
 /** Canonical owner key for a model: "provider/id". Accepts the structural
  *  shape of pi-ai's Model (provider + id) without importing the type. */
 export function modelKey(m?: { provider: string; id: string }): string | undefined {
@@ -52,6 +66,18 @@ export function setActiveModelKey(key: string | undefined): void {
 /** Read the cached active model key (called from the model-facing tools). */
 export function getActiveModelKey(): string | undefined {
   return activeModelKey;
+}
+
+/** Cache the session's project slug (called from session_start). */
+export function setSessionProject(slug: string | undefined): void {
+  sessionProject = slug;
+}
+
+/** Current store version — bumped by every persisted mutation, reset by
+ *  reconstruct. The auto-export loop compares it to detect "store changed
+ *  since the last durable export". */
+export function getVersion(): number {
+  return version;
 }
 
 export function getState(): HarnessState {
@@ -93,9 +119,13 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       // Owner: explicit delta wins; else the actor model; else orphan (""),
       // adopted by the active model on first contact.
       ownerModel: delta.ownerModel ?? actorModel ?? "",
+      // Durable-layer scope: global unless the delta says project (which
+      // requires a slug — explicit or the cached session slug).
+      scope: "global",
       createdAt: now,
       updatedAt: now,
     };
+    applyDeltaScope(item, delta);
     state.items.push(item);
     return { op: "create", item };
   }
@@ -117,6 +147,7 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       ownerModel: delta.ownerModel ?? before.ownerModel,
       updatedAt: Date.now(),
     };
+    applyDeltaScope(after, delta);
     state.items[idx] = after;
     return { op: "update", before, after };
   }
@@ -127,6 +158,28 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
   assertOwnsItem("delete", delta.id, state.items[idx]!, actorModel);
   state.items.splice(idx, 1);
   return { op: "delete", id: delta.id, reason: delta.reason };
+}
+
+/** Stamp a delta's scope onto an item. No-op when the delta is silent about
+ *  scope. "project" needs a slug: explicit delta.project (set by
+ *  /harness move) or the cached session slug (model-driven scope updates);
+ *  throws otherwise so the surrounding applyDeltas rolls the batch back. */
+function applyDeltaScope(
+  item: HarnessItem,
+  delta: { scope?: "global" | "project"; project?: string },
+): void {
+  if (delta.scope === undefined) return;
+  if (delta.scope === "global") {
+    item.scope = "global";
+    delete item.project;
+    return;
+  }
+  const slug = delta.project ?? sessionProject;
+  if (!slug) {
+    throw new Error('scope: "project" requires a project slug (no session cwd cached)');
+  }
+  item.scope = "project";
+  item.project = slug;
 }
 
 /** Enforce that `actorModel` owns `item`; no-op when the actor is unknown
@@ -178,10 +231,23 @@ export function reconstruct(entries: Iterable<unknown>): void {
       last = entry.data.state;
     }
   }
-  // Normalize legacy snapshots that predate ownerModel: missing → orphan (""),
-  // adopted by the active model on first contact (see adoptOrphans).
+  // Normalize legacy snapshots: missing ownerModel → orphan (""), adopted by
+  // the active model on first contact (see adoptOrphans); missing/corrupt
+  // scope → "global" (a project item without a slug cannot be placed in a
+  // layer, so it falls back to the global durable file).
   state = last
-    ? { items: last.items.map((i) => ({ ...i, ownerModel: i.ownerModel ?? "" })) }
+    ? {
+        items: last.items.map((i): HarnessItem => {
+          const item: HarnessItem = { ...i, ownerModel: i.ownerModel ?? "", scope: "global" };
+          if (i.scope === "project" && i.project) {
+            item.scope = "project";
+            item.project = i.project;
+          } else {
+            delete item.project;
+          }
+          return item;
+        }),
+      }
     : { items: [] };
   version = 0;
 }
@@ -256,26 +322,93 @@ export function adoptOrphans(
 export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };
 
 // ---- Durable export (composition seam with pi-reflect / pi-mem) -------------
+//
+// Two write modes:
+//  - exportDurable(path): a FULL single-file snapshot (every active item,
+//    both scopes, project items tagged with a `scope:` sub-line so any copy of
+//    the file round-trips). Used for explicit-path /harness export and
+//    /refine --commit's legacy single-file output.
+//  - exportDurableLayers(paths, currentSlug): the LAYERED mode — partitions
+//    active items by their own scope: global-scoped → paths.globalPath,
+//    project-scoped → paths.projectDir/<slug>.md (one file per slug).
 
-export async function exportDurable(path = DEFAULT_DURABLE_PATH): Promise<string> {
+/** Render the durable markdown for a set of items (empty → placeholder). */
+function renderDurable(items: HarnessItem[]): string {
   const lines: string[] = ["# Continual Harness State", ""];
   const kinds: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
   for (const kind of kinds) {
-    const items = state.items.filter((i) => i.kind === kind && i.active);
-    if (items.length === 0) continue;
+    const forKind = items.filter((i) => i.kind === kind);
+    if (forKind.length === 0) continue;
     lines.push(`## ${titleFor(kind)}`, "");
-    for (const i of items) {
+    for (const i of forKind) {
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
       if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
+      if (i.scope === "project") lines.push(`  - scope: project (${i.project ?? ""})`);
     }
     lines.push("");
   }
   if (lines.length <= 2) lines.push("_(no active items)_", "");
-  const body = lines.join("\n");
+  return lines.join("\n");
+}
+
+async function writeFileDur(path: string, body: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, body, "utf8");
+}
+
+export async function exportDurable(path = DEFAULT_DURABLE_PATH): Promise<string> {
+  await writeFileDur(path, renderDurable(state.items.filter((i) => i.active)));
   return path;
+}
+
+/** Where the layered export writes each project's items. */
+export interface LayerPaths {
+  globalPath: string;
+  projectDir: string;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Layered export: global file always; one file per project slug that has
+ * active items; the CURRENT session's project file is also rewritten when it
+ * already exists on disk (so deleting the last project item empties that
+ * layer instead of leaving a stale file that auto-import would resurrect).
+ * Project files the store has no items for are never created.
+ */
+export async function exportDurableLayers(paths: LayerPaths, currentSlug?: string): Promise<string[]> {
+  const active = state.items.filter((i) => i.active);
+  const globalItems = active.filter((i) => !(i.scope === "project" && i.project));
+  const bySlug = new Map<string, HarnessItem[]>();
+  for (const i of active) {
+    if (i.scope === "project" && i.project) {
+      const arr = bySlug.get(i.project) ?? [];
+      arr.push(i);
+      bySlug.set(i.project, arr);
+    }
+  }
+  const written: string[] = [];
+  await writeFileDur(paths.globalPath, renderDurable(globalItems));
+  written.push(paths.globalPath);
+  const slugs = new Set(bySlug.keys());
+  if (currentSlug) slugs.add(currentSlug);
+  for (const slug of slugs) {
+    const file = join(paths.projectDir, `${slug}.md`);
+    const items = bySlug.get(slug) ?? [];
+    // Don't create empty per-project files as a side effect of visiting.
+    if (items.length === 0 && !(await fileExists(file))) continue;
+    await writeFileDur(file, renderDurable(items));
+    written.push(file);
+  }
+  return written;
 }
 
 function titleFor(kind: ComponentKind): string {
@@ -299,7 +432,10 @@ function titleFor(kind: ComponentKind): string {
 //
 // Merge semantics (predictable, loss-free by default):
 //   - parsed item whose id matches an existing item → UPDATE in place
-//     (durable wins on content/evidence/importance; reactivated; createdAt kept).
+//     (durable wins on content/evidence/importance/owner/scope; reactivated;
+//     createdAt kept). When nothing actually differs the update is a NO-OP —
+//     no version bump, no persist — so repeated imports (and the opt-in
+//     session_start auto-import) stay idempotent and don't spam the tree.
 //   - parsed item with a new/foreign id → CREATE.
 //   - items in the store but absent from the file → KEPT by default.
 //     Pass { prune: true } to also drop active items whose id is not in the
@@ -317,13 +453,16 @@ export interface DurableImportResult {
   missingFile: boolean;
 }
 
-interface ParsedItem {
+export interface ParsedItem {
   id?: string;
   kind: ComponentKind;
   importance: number;
   content: string;
   evidence: string;
   ownerModel?: string;
+  /** Only set when the file carries an explicit `scope:` sub-line. */
+  scope?: "global" | "project";
+  project?: string;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -349,6 +488,7 @@ const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.
 const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
 const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
+const RE_SCOPE = /^\s+-\s+scope:\s*(global|project)\b\s*(?:\(([^)]*)\))?/i;
 
 /** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
 export function parseDurable(text: string): ParsedItem[] {
@@ -386,6 +526,20 @@ export function parseDurable(text: string): ParsedItem[] {
       continue;
     }
 
+    const scp = line.match(RE_SCOPE);
+    if (scp) {
+      if (pending) {
+        if (scp[1]!.toLowerCase() === "project") {
+          pending.scope = "project";
+          const slug = (scp[2] ?? "").trim();
+          if (slug) pending.project = slug;
+        } else {
+          pending.scope = "global";
+        }
+      }
+      continue;
+    }
+
     const idm = line.match(RE_ID_BULLET);
     if (idm) {
       flush();
@@ -419,44 +573,51 @@ export function parseDurable(text: string): ParsedItem[] {
   return out.filter((p) => p.content && !/^\(?no active items\)?$/i.test(p.content));
 }
 
-/**
- * Parse the durable file and merge it into the live store, then persist a
- * snapshot. See the file-level comment above for merge semantics.
- */
-export async function reconstructFromDurable(
-  path: string,
+/** Merge parsed items (with fully-resolved scope) into the live store.
+ *  Shared by the single-file and layered import paths. */
+function mergeParsed(
+  parsed: Array<ParsedItem & ScopeInfo>,
   options: { prune?: boolean },
   persist: (snapshot: HarnessState, version: number) => void,
-): Promise<DurableImportResult> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
-  }
-
-  const parsed = parseDurable(text);
+): DurableImportResult {
   const fileIds = new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id)));
   const existingById = new Map(state.items.map((i) => [i.id, i] as const));
   const preActiveIds = new Set(state.items.filter((i) => i.active).map((i) => i.id));
 
   let created = 0;
   let updated = 0;
+  let dirty = false;
   const now = Date.now();
   for (const p of parsed) {
     const existing = p.id ? existingById.get(p.id) : undefined;
     if (existing) {
-      // Durable wins; reactivate; keep createdAt.
+      const importance = clamp(p.importance);
+      const ownerModel = p.ownerModel ?? "";
+      // Durable wins; reactivate; keep createdAt. Idempotent imports skip the
+      // write (and the persist) when the live item already matches the file.
+      const unchanged =
+        existing.content === p.content &&
+        existing.evidence === p.evidence &&
+        existing.importance === importance &&
+        existing.active &&
+        existing.ownerModel === ownerModel &&
+        (existing.scope ?? "global") === p.scope &&
+        (existing.scope === "project" ? existing.project : undefined) === p.project;
+      if (unchanged) continue;
       existing.content = p.content;
       existing.evidence = p.evidence;
-      existing.importance = clamp(p.importance);
+      existing.importance = importance;
       existing.active = true;
       // Durable wins on owner too: a present tag sets the owner; an absent tag
       // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
       // active model on first contact — matching the documented round-trip.
-      existing.ownerModel = p.ownerModel ?? "";
+      existing.ownerModel = ownerModel;
+      existing.scope = p.scope;
+      if (p.scope === "project" && p.project) existing.project = p.project;
+      else delete existing.project;
       existing.updatedAt = now;
       updated += 1;
+      dirty = true;
     } else {
       const id = p.id && /^h_/.test(p.id) ? p.id : genId();
       state.items.push({
@@ -467,10 +628,16 @@ export async function reconstructFromDurable(
         importance: clamp(p.importance),
         active: true,
         ownerModel: p.ownerModel ?? "",
+        ...(p.scope === "project" && p.project ? { scope: "project" as const, project: p.project } : { scope: "global" as const }),
         createdAt: now,
         updatedAt: now,
       });
       created += 1;
+      dirty = true;
+      // Keep the lookup current so a later layer's copy of the same id
+      // UPDATES the item we just created instead of duplicating it (the same
+      // id in both layers is the normal collision case, not an anomaly).
+      if (p.id) existingById.set(p.id, state.items[state.items.length - 1]!);
     }
   }
 
@@ -484,9 +651,80 @@ export async function reconstructFromDurable(
       return false; // was active before, absent from the file → drop
     });
     pruned = before - state.items.length;
+    if (pruned > 0) dirty = true;
   }
 
+  if (!dirty) return { imported: parsed.length, created, updated, pruned, missingFile: false };
   version += 1;
   persist(state, version);
   return { imported: parsed.length, created, updated, pruned, missingFile: false };
+}
+
+/** Resolve a parsed item's scope against the layer default (for items without
+ *  an explicit `scope:` sub-line: the layer they were read from decides).
+ *  A `scope: project` tag without any resolvable slug degrades to global —
+ *  the invariant is scope==="project" ⟹ project (a slugless project item
+ *  could not be placed in any layer file). */
+function withDefaultScope(p: ParsedItem, def: ScopeInfo): ParsedItem & ScopeInfo {
+  if (p.scope === "project") {
+    const project = p.project ?? def.project;
+    return project ? { ...p, scope: "project", project } : { ...p, scope: "global" };
+  }
+  if (p.scope === "global") return { ...p, scope: "global" };
+  return { ...p, ...def };
+}
+
+/**
+ * Parse the durable file and merge it into the live store, then persist a
+ * snapshot. Untagged items default to global scope (single-file semantics).
+ * See the file-level comment above for merge semantics.
+ */
+export async function reconstructFromDurable(
+  path: string,
+  options: { prune?: boolean },
+  persist: (snapshot: HarnessState, version: number) => void,
+): Promise<DurableImportResult> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
+  }
+  return mergeParsed(parseDurable(text).map((p) => withDefaultScope(p, { scope: "global" })), options, persist);
+}
+
+/** One layer of a layered import: items without an explicit `scope:` sub-line
+ *  adopt this layer's scope (the global file → global; a project file → that
+ *  project's slug). */
+export interface LayerFile {
+  path: string;
+  defaultScope: ScopeInfo;
+}
+
+/**
+ * Layered import (issue #7): read every layer file that exists, then merge
+ * ALL of them in one pass — so { prune: true } drops only items absent from
+ * EVERY layer (union semantics), not from each file in turn. Earlier layers
+ * lose id collisions to later ones; callers pass the global file first so the
+ * project layer wins on conflicts.
+ */
+export async function importDurableLayers(
+  files: LayerFile[],
+  options: { prune?: boolean },
+  persist: (snapshot: HarnessState, version: number) => void,
+): Promise<DurableImportResult> {
+  const all: Array<ParsedItem & ScopeInfo> = [];
+  let foundAny = false;
+  for (const f of files) {
+    let text: string;
+    try {
+      text = await readFile(f.path, "utf8");
+    } catch {
+      continue;
+    }
+    foundAny = true;
+    for (const p of parseDurable(text)) all.push(withDefaultScope(p, f.defaultScope));
+  }
+  if (!foundAny) return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
+  return mergeParsed(all, options, persist);
 }

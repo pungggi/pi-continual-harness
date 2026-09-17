@@ -13,10 +13,12 @@ with:
   → behavioral-file refinement (the "deep" path).
 - **pi-mem / pi-memory** — durable memory storage.
 
-The durable markdown file (`~/.pi/agent/harness-state.md`) is the composition seam,
-and it is **two-way**: `/refine --commit` and `/harness export` write it;
-`/harness import` parses it back and merges into the live store (offline edits
-win on conflict), so refinements pi-reflect makes flow back online. `/harness push-mem`
+The durable markdown layers are the composition seam — the shared
+`~/.pi/agent/harness-state.md` plus per-project files under
+`~/.pi/agent/harness-state/<slug>.md` — and they are **two-way**:
+`/refine --commit` and `/harness export` write them; `/harness import` parses
+them back and merges into the live store (offline edits win on conflict), so
+refinements pi-reflect makes flow back online. `/harness push-mem`
 pushes active items into pi-mem's semantic store (see
 [Composing with pi-mem](#composing-with-pi-mem)).
 
@@ -58,26 +60,42 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 Durable I/O (round-trip with pi-reflect):
 
 ```
-/harness status                  # counts + durable file presence/mtime
-/harness export [path]           # write active items to a markdown file
-/harness import [--prune] [path] # parse it back and merge (offline edits win)
+/harness status                  # counts + durable layer presence/mtime
+/harness export [path]           # layered export (or full snapshot to a path)
+/harness import [--prune] [path] # layered import (or single file from a path)
 /harness prune [--decay <days>]  # drop items below the importance floor
 /harness keep <id>               # nudge importance up (+0.1)
 /harness drop <id>               # nudge importance down (−0.1)
+/harness move <id> global|project  # move an item between durable layers
+/harness split                   # steer the agent to classify every item's scope
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
 ```
 
-Subcommands, flags, `--kind`/`--model` values, and `keep`/`drop` item ids all
-autocomplete in the TUI as you type after `/harness `.
+Subcommands, flags, `--kind`/`--model` values, `move` scopes, and `keep`/
+`drop`/`move` item ids all autocomplete in the TUI as you type after
+`/harness `.
 
-`import` reconciles the file into the live store: items whose id matches an
+**Durable layers.** Every item carries its own durable scope: `global`
+(the shared `~/.pi/agent/harness-state.md`) or `project`
+(`~/.pi/agent/harness-state/<slug>.md`, slug derived from the session `cwd`).
+`/harness export` without a path partitions items by their scope into the
+layer files; `/harness import` without a path merges the global file always,
+plus the current project's file (the project layer wins id collisions;
+`--prune` drops only items absent from **every** layer). An explicit path keeps
+the classic single-file semantics. Move items between layers with
+`/harness move`, or classify the whole store at once with `/harness split`
+(the agent proposes scope-only `harness_mutate` updates — visible in the
+transcript, `/tree`-rollback-able).
+
+`import` reconciles the file(s) into the live store: items whose id matches an
 existing entry are updated (offline edits win on content/evidence/importance),
 new entries are created. By default nothing is deleted — `--prune` also drops
-active items whose id is no longer in the file (inactive items are always
-preserved). Point pi-reflect at the same file to refine it offline:
+active items whose id is no longer in the file(s) (inactive items are always
+preserved). Point pi-reflect at either layer to refine it offline:
 
 ```
 /reflect ~/.pi/agent/harness-state.md
+/reflect ~/.pi/agent/harness-state/<project-slug>.md
 ```
 
 The model-facing tools:
@@ -117,7 +135,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 
 ```json
 {
-  "durableScope": "global",
+  "autoImport": false,
   "proposer": "steering",
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
@@ -126,10 +144,15 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 }
 ```
 
-- **`durableScope`** — `"global"` (default) writes the durable markdown to
-  `~/.pi/agent/harness-state.md`; `"project"` writes to
-  `~/.pi/agent/harness-state/<slug>.md` (slug derived from `cwd`) so each
-  project keeps separate state for pi-reflect.
+- **`autoImport`** — opt-in **durable sync** (off by default). `true` bundles
+  both directions: on `session_start` the durable layers are imported
+  automatically (global file always + the current project's file, with the same
+  loss-free merge as `/harness import` — an import that changes nothing stays
+  silent), and on `turn_end` the layers are re-exported whenever the live store
+  changed since the last export. This is what makes `/refine` output survive
+  into **new** sessions without manual export/import ceremony. Both halves are
+  visible (one notify line) and use the same persisted `harness-state` entries
+  as every other mutation (`/tree` rollback covers them).
 - **`injection`** — the selection policy for WHAT gets surfaced in the system
   prompt each turn (see [Injection selection](#injection-selection-on-by-default)).
   ON by default: items are importance-ordered, capped at `maxPerKind` (default
@@ -156,6 +179,13 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
   outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
   `prune --decay`, or the `dedupe` proposer for that.
+
+> **Deprecated:** `durableScope` (0.9.0). Items now carry their own scope
+> (`/harness move`), and durable I/O is always layered — the key no longer
+> switches anything but is still parsed so existing configs keep loading.
+> Migration from a `durableScope: "project"` setup: run `/harness import` once
+> in the project (its file's items adopt project scope), then move any strays
+> with `/harness move` (or classify the whole store with `/harness split`).
 
 ## How it works
 
@@ -313,19 +343,26 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 ## Status
 
-0.8.x. Implemented:
+0.9.x. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
-- Two-way durable round-trip with pi-reflect (`/harness import|export|status`).
+- Two-way durable round-trip with pi-reflect (`/harness import|export|status`),
+  **layered on per-item scope**: every item is `global` or `project`
+  (`/harness move`, `/harness split`), and `/harness export|import` operate on
+  both layers.
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
 - **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent
   to persist active items into pi-mem (soft-fail; no dependency).
-- Optional config (`~/.pi/agent/harness.json`): project-local durable scope, an
+- **Opt-in durable sync** (`"autoImport": true`): session_start layered
+  auto-import + turn_end layered auto-export when the store changed —
+  `/refine` output survives into new sessions with zero ceremony. Off by
+  default; every action visible and `/tree`-rollback-able.
+- Optional config (`~/.pi/agent/harness.json`): the durable-sync opt-in, an
   opt-in `turn_end` reminder, opt-in `turn_end` auto-refine, and an opt-in
-  `turn_end` outcome-importance loop — the package's two opt-in autonomous
-  paths (both off by default).
+  `turn_end` outcome-importance loop — the package's opt-in autonomous
+  paths (all off by default).
 - **Pluggable delta proposers** with a registry: `steering` (default) and
   `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
 - **Per-model isolation**: every item is bound to a `provider/id` and injected

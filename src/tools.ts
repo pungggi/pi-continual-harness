@@ -24,6 +24,12 @@ const CreateShape = Type.Object({
   // ownerModel is intentionally NOT exposed to the model: it is stamped
   // server-side from the active model so items bind to the model driving the
   // turn without the agent having to (or being able to) name it.
+  scope: Type.Optional(
+    StringEnum(["global", "project"], {
+      description:
+        "Durable-layer scope (default global). \"project\" binds the item to this session's project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.",
+    }),
+  ),
 });
 
 const UpdateShape = Type.Object({
@@ -33,6 +39,12 @@ const UpdateShape = Type.Object({
   evidence: Type.Optional(Type.String()),
   importance: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   active: Type.Optional(Type.Boolean()),
+  scope: Type.Optional(
+    StringEnum(["global", "project"], {
+      description:
+        "Move the item between durable layers (global file vs this session's project file). Use during a /harness split classification; leave unchanged otherwise.",
+    }),
+  ),
 });
 
 const DeleteShape = Type.Object({

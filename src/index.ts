@@ -14,7 +14,9 @@ import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
-import { getState, reconstruct, setActiveModelKey, STATE_ENTRY } from "./store.js";
+import { registerAutoExport, resetDurableSync, syncDurableOnStart } from "./durable.js";
+import { getState, reconstruct, setActiveModelKey, setSessionProject, STATE_ENTRY } from "./store.js";
+import { projectSlug } from "./config.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
   // Rebuild in-memory state from the current branch on every session start /
@@ -26,14 +28,22 @@ export default function continualHarness(pi: ExtensionAPI): void {
     resetAutoRefine();
     resetReminder();
     resetOutcome();
+    resetDurableSync();
     // Drop any stale active-model key from the previous session: the next
     // before_agent_start re-caches it before any tool can run.
     setActiveModelKey(undefined);
+    // Cache the session's project slug BEFORE any tool delta can arrive: it is
+    // the server-side stamp for scope:"project" (harness_mutate has no ctx).
+    setSessionProject(projectSlug(ctx.cwd));
     reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
     const n = getState().items.length;
     if (n > 0) {
       ctx.ui.notify(`Continual Harness: ${n} item(s) restored`, "info");
     }
+    // Opt-in durable sync (issue #7): layered auto-import on top of the
+    // branch-restored state, so refinements made in OTHER sessions reach this
+    // one. No-op (and quiet) when autoImport is off or nothing changed.
+    await syncDurableOnStart(pi, ctx);
   });
 
   registerInjection(pi);
@@ -41,9 +51,9 @@ export default function continualHarness(pi: ExtensionAPI): void {
   registerRefine(pi);
   registerHarness(pi);
   registerReminder(pi);
-  // Register outcome BEFORE auto-refine: the test fake overwrites turn_end on
-  // each registration (Map.set), and the auto-refine integration tests assume
-  // auto-refine is the surviving handler. In production pi, all three run.
+  // Durable sync's turn_end export (opt-in via autoImport) registers before
+  // outcome/auto-refine; in production pi every turn_end handler runs.
+  registerAutoExport(pi);
   registerOutcome(pi);
   registerAutoRefine(pi);
 }

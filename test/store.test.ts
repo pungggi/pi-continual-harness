@@ -12,18 +12,22 @@ import {
   bumpImportance,
   decayAndPrune,
   exportDurable,
+  exportDurableLayers,
   getState,
+  importDurableLayers,
   IMPORTANCE_FLOOR,
   listItems,
   modelKey,
   parseDurable,
   reconstruct,
   reconstructFromDurable,
+  setSessionProject,
 } from "../src/store.js";
 import type { Delta } from "../src/types.js";
 
 function reset(): void {
   reconstruct([]);
+  setSessionProject(undefined);
 }
 
 describe("applyDeltas — create", () => {
@@ -569,6 +573,309 @@ describe("model binding — durable round-trip", () => {
       // durable wins on owner: the absent tag orphans the item (→ adopted by the
       // active model on first contact), matching the documented round-trip.
       expect(getState().items[0]!.ownerModel).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---- per-item durable scope (issue #7) --------------------------------------
+
+describe("scope — create/update via deltas", () => {
+  beforeEach(reset);
+
+  it("creates items global by default", () => {
+    applyDeltas([{ op: "create", kind: "memory", content: "m", evidence: "e" }], vi.fn());
+    expect(getState().items[0]!.scope).toBe("global");
+    expect(getState().items[0]!.project).toBeUndefined();
+  });
+
+  it(`scope:"project" on create stamps the cached session slug; explicit project wins`, () => {
+    setSessionProject("my-proj");
+    applyDeltas([{ op: "create", kind: "memory", content: "m", evidence: "e", scope: "project" }], vi.fn());
+    expect(getState().items[0]!.scope).toBe("project");
+    expect(getState().items[0]!.project).toBe("my-proj");
+
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "m2", evidence: "e", scope: "project", project: "other" }],
+      vi.fn(),
+    );
+    expect(getState().items[1]!.project).toBe("other");
+  });
+
+  it(`scope:"project" without any resolvable slug throws and rolls the batch back`, () => {
+    expect(() =>
+      applyDeltas(
+        [
+          { op: "create", kind: "memory", content: "ok", evidence: "e" },
+          { op: "create", kind: "memory", content: "bad", evidence: "e", scope: "project" },
+        ],
+        vi.fn(),
+      ),
+    ).toThrow(/project slug/);
+    expect(getState().items).toHaveLength(0); // atomic rollback
+  });
+
+  it(`update re-scopes an item; "global" clears the project binding`, () => {
+    setSessionProject("my-proj");
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "m", evidence: "e", scope: "project" }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    expect(getState().items[0]!.project).toBe("my-proj");
+
+    applyDeltas([{ op: "update", id, scope: "global" }], vi.fn());
+    expect(getState().items[0]!.scope).toBe("global");
+    expect(getState().items[0]!.project).toBeUndefined();
+  });
+
+  it("reconstruct normalizes legacy snapshots (missing scope → global, slugless project → global)", () => {
+    reconstruct([
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: {
+          state: {
+            items: [
+              { id: "h_a", kind: "memory", content: "legacy", evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: 1, updatedAt: 1 },
+              { id: "h_b", kind: "memory", content: "broken", evidence: "e", importance: 0.5, active: true, ownerModel: "", scope: "project", createdAt: 1, updatedAt: 1 },
+              { id: "h_c", kind: "memory", content: "ok", evidence: "e", importance: 0.5, active: true, ownerModel: "", scope: "project", project: "p1", createdAt: 1, updatedAt: 1 },
+            ],
+          },
+        },
+      },
+    ]);
+    const byId = new Map(getState().items.map((i) => [i.id, i]));
+    expect(byId.get("h_a")!.scope).toBe("global");
+    expect(byId.get("h_b")!.scope).toBe("global"); // slugless project degrades
+    expect(byId.get("h_b")!.project).toBeUndefined();
+    expect(byId.get("h_c")!.scope).toBe("project");
+    expect(byId.get("h_c")!.project).toBe("p1");
+  });
+});
+
+describe("durable layers — export", () => {
+  beforeEach(reset);
+
+  it("exportDurable tags project items with a scope: sub-line; parseDurable inverts it", async () => {
+    setSessionProject("p1");
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "global fact", evidence: "e" },
+        { op: "create", kind: "memory", content: "project fact", evidence: "e", scope: "project" },
+      ],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-scope-rt-"));
+    const file = join(dir, "snapshot.md");
+    try {
+      await exportDurable(file);
+      const body = readFileSync(file, "utf8");
+      expect(body).toContain("- scope: project (p1)");
+      expect(body).not.toContain("- scope: global"); // globals stay untagged
+
+      const parsed = parseDurable(body);
+      const byContent = new Map(parsed.map((p) => [p.content, p]));
+      expect(byContent.get("project fact")!.scope).toBe("project");
+      expect(byContent.get("project fact")!.project).toBe("p1");
+      expect(byContent.get("global fact")!.scope).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exportDurableLayers partitions by scope and never creates empty foreign files", async () => {
+    setSessionProject("cur");
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "g", evidence: "e" },
+        { op: "create", kind: "memory", content: "cur-1", evidence: "e", scope: "project" },
+        { op: "create", kind: "memory", content: "other-1", evidence: "e", scope: "project", project: "other" },
+      ],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-layers-"));
+    const paths = { globalPath: join(dir, "harness-state.md"), projectDir: join(dir, "harness-state") };
+    try {
+      const written = await exportDurableLayers(paths, "cur");
+      expect(written).toEqual([
+        paths.globalPath,
+        join(paths.projectDir, "cur.md"),
+        join(paths.projectDir, "other.md"),
+      ]);
+      expect(readFileSync(paths.globalPath, "utf8")).toContain(") g");
+      expect(readFileSync(paths.globalPath, "utf8")).not.toContain("cur-1");
+      expect(readFileSync(paths.globalPath, "utf8")).not.toContain("other-1");
+      expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain("cur-1");
+      expect(readFileSync(join(paths.projectDir, "other.md"), "utf8")).toContain("other-1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exportDurableLayers empties the current project layer when its last item goes away", async () => {
+    setSessionProject("cur");
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "cur-1", evidence: "e", scope: "project" }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-layers-del-"));
+    const paths = { globalPath: join(dir, "harness-state.md"), projectDir: join(dir, "harness-state") };
+    try {
+      await exportDurableLayers(paths, "cur");
+      expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain("cur-1");
+
+      applyDeltas([{ op: "delete", id, reason: "moved on" }], vi.fn());
+      await exportDurableLayers(paths, "cur");
+      expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain("_(no active items)_");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("durable layers — import", () => {
+  beforeEach(reset);
+
+  function layerFile(dir: string, name: string, defaultScope: { scope: "global" | "project"; project?: string }, bullets: string[]): { path: string; defaultScope: typeof defaultScope } {
+    const file = join(dir, name);
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        ...bullets,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    return { path: file, defaultScope };
+  }
+
+  it("importDurableLayers merges both layers; the project layer wins id collisions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-layers-"));
+    try {
+      const files = [
+        layerFile(dir, "global.md", { scope: "global" }, [
+          "- **[h_shared]** (importance 0.50) global copy",
+          "  - evidence: e",
+          "- **[h_g]** (importance 0.50) global only",
+          "  - evidence: e",
+        ]),
+        layerFile(dir, "proj.md", { scope: "project", project: "proj" }, [
+          "- **[h_shared]** (importance 0.80) project copy",
+          "  - evidence: e",
+          "- **[h_p]** (importance 0.50) project only",
+          "  - evidence: e",
+        ]),
+      ];
+      const res = await importDurableLayers(files, {}, vi.fn());
+      expect(res.missingFile).toBe(false);
+      expect(res.imported).toBe(4); // h_shared parsed from BOTH layers
+      expect(res.created).toBe(3);
+      expect(res.updated).toBe(1); // h_shared's project copy updates its global copy
+
+      const byId = new Map(getState().items.map((i) => [i.id, i]));
+      expect(byId.get("h_shared")!.content).toBe("project copy"); // later layer wins
+      expect(byId.get("h_shared")!.scope).toBe("project");
+      expect(byId.get("h_shared")!.project).toBe("proj");
+      expect(byId.get("h_g")!.scope).toBe("global");
+      expect(byId.get("h_p")!.project).toBe("proj");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("{ prune: true } is union-scoped: items present in ANY layer survive", async () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "live-global", evidence: "e" },
+        { op: "create", kind: "memory", content: "live-project", evidence: "e", scope: "project", project: "proj" },
+        { op: "create", kind: "memory", content: "doomed", evidence: "e" },
+      ],
+      vi.fn(),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-union-"));
+    try {
+      const liveGlobal = getState().items.find((i) => i.content === "live-global")!;
+      const liveProject = getState().items.find((i) => i.content === "live-project")!;
+      const files = [
+        layerFile(dir, "global.md", { scope: "global" }, [
+          `- **[${liveGlobal.id}]** (importance 0.60) live-global`,
+          "  - evidence: e",
+        ]),
+        layerFile(dir, "proj.md", { scope: "project", project: "proj" }, [
+          `- **[${liveProject.id}]** (importance 0.60) live-project`,
+          "  - evidence: e",
+        ]),
+      ];
+      const res = await importDurableLayers(files, { prune: true }, vi.fn());
+      expect(res.pruned).toBe(1); // only "doomed" (absent from every layer)
+      const contents = getState().items.map((i) => i.content);
+      expect(contents).toContain("live-global");
+      expect(contents).toContain("live-project");
+      expect(contents).not.toContain("doomed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("missingFile when NO layer file exists", async () => {
+    const persist = vi.fn();
+    const res = await importDurableLayers(
+      [
+        { path: join(tmpdir(), `nope-g-${Date.now()}.md`), defaultScope: { scope: "global" } },
+        { path: join(tmpdir(), `nope-p-${Date.now()}.md`), defaultScope: { scope: "project", project: "x" } },
+      ],
+      {},
+      persist,
+    );
+    expect(res.missingFile).toBe(true);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("a slugless `scope: project` tag degrades to global on import", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-degrade-"));
+    const file = join(dir, "global.md");
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        "- **[h_slugless]** (importance 0.50) no slug",
+        "  - evidence: e",
+        "  - scope: project",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      await importDurableLayers([{ path: file, defaultScope: { scope: "global" } }], {}, vi.fn());
+      const item = getState().items.find((i) => i.id === "h_slugless")!;
+      expect(item.scope).toBe("global");
+      expect(item.project).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotent: re-importing an unchanged file persists nothing (no tree noise)", async () => {
+    applyDeltas([{ op: "create", kind: "memory", content: "fact", evidence: "e", importance: 0.5, ownerModel: "m/x" }], vi.fn());
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-idem-"));
+    const file = join(dir, "harness-state.md");
+    await exportDurable(file);
+    const persist = vi.fn();
+    try {
+      const first = await reconstructFromDurable(file, {}, persist);
+      expect(first.updated).toBe(0); // export reflects the live item exactly
+      expect(first.created).toBe(0);
+      expect(persist).not.toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
