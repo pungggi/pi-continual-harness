@@ -10,9 +10,10 @@
 // original behavior exactly (delegates to the agent via a steering message,
 // reusing the agent loop — model-agnostic, fully visible). Alternate proposers
 // produce deltas directly:
-//   - `dedupeProposer` (rule-based): drops near-duplicate active items by token
-//     overlap, keeping the higher-importance one. Pure function of state —
-//     deterministic, no model call, fully testable.
+//   - `dedupeProposer` (rule-based): merges near-duplicate active items by
+//     token overlap (threshold configurable), unioning their evidence into the
+//     higher-importance keeper; `merge: false` restores delete-only. Pure
+//     function of state — deterministic, no model call, fully testable.
 //
 // The interface supports a dedicated-model proposer — one that makes its own
 // hidden LLM call to produce deltas directly, instead of delegating to the
@@ -27,6 +28,7 @@
 // named proposer, then select it via /refine --proposer <name> or config.
 
 import type { Delta, HarnessItem, HarnessState } from "./types.js";
+import type { HarnessConfig } from "./config.js";
 
 /** Options for the one-shot model completion injected into ProposeInput. */
 export interface CompleteOptions {
@@ -69,6 +71,11 @@ export interface ProposeInput {
   state: HarnessState;
   /** Lookback window in turns. */
   lookback: number;
+  /** Loaded harness config (harness.json), passed by runRefine so proposers
+   *  can read tuned knobs (e.g. the dedupe threshold / merge policy) without
+   *  file I/O. Optional — direct/legacy callers omit it and proposers fall
+   *  back to their built-in defaults. */
+  config?: HarnessConfig;
   /** One-shot model completion, injected by runRefine when a model is available.
    *  Dedicated-model proposers call this to make a hidden completion; rule-based
    *  and steering proposers ignore it. Undefined when no model is resolvable, so
@@ -131,9 +138,30 @@ export const steeringProposer: DeltaProposer = {
   },
 };
 
-// ---- rule-based alternate: dedupe -----------------------------------------
+// ---- rule-based alternate: dedupe (merge-capable) -------------------------
 
 export const DEDUPE_THRESHOLD = 0.6;
+
+/** Options for the dedupe planner. */
+export interface DedupeOptions {
+  /** Token-overlap threshold in (0,1]: pairs at/above it are duplicates.
+   *  1 means "identical token sets only". */
+  threshold: number;
+  /** Merge duplicates into their keeper (one evidence-union update + deletes)
+   *  instead of delete-only. */
+  merge: boolean;
+  /** Similarity in [0,1]; defaults to tokenOverlap. The seam for the semantic
+   *  upgrade path (see docs/PLAN-dedupe-merge.md, Research grounding): a
+   *  companion package injects cosine similarity over embeddings without
+   *  forking planDedupe. */
+  similarity?: (a: string, b: string) => number;
+}
+
+/** Shipped defaults: merge ON at the historical 0.6 threshold. */
+export const DEFAULT_DEDUPE: DedupeOptions = { threshold: DEDUPE_THRESHOLD, merge: true };
+
+/** Cap (chars) on a merged item's evidence so durable layers stay lean. */
+export const EVIDENCE_MERGE_CAP = 2000;
 
 /** Tokenize for overlap comparison: lowercase alnum tokens. */
 export function tokenize(text: string): string[] {
@@ -154,50 +182,116 @@ function truncate(s: string, n = 48): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/** Durable placement of an item: "global" or "project:<slug>". Only items in
+ *  the SAME layer merge — a merge must never silently move an item between
+ *  durable files or projects. */
+function durableLayer(i: HarnessItem): string {
+  return i.scope === "project" ? `project:${i.project ?? ""}` : "global";
+}
+
+/** Union evidence strings line-wise: trim, drop empty and exact-duplicate
+ *  lines (first occurrence wins, keeper's lines first), cap the total. */
+export function unionEvidence(sources: string[]): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const src of sources) {
+    for (const raw of src.split("\n")) {
+      const line = raw.trim();
+      if (!line || seen.has(line)) continue;
+      seen.add(line);
+      lines.push(line);
+    }
+  }
+  const joined = lines.join("\n");
+  return joined.length > EVIDENCE_MERGE_CAP
+    ? `${joined.slice(0, EVIDENCE_MERGE_CAP)}\n[…merged evidence truncated…]`
+    : joined;
+}
+
 /**
- * Rule-based proposer: drops near-duplicate ACTIVE items (same kind, Jaccard
- * token overlap >= DEDUPE_THRESHOLD), keeping the higher-importance one.
+ * Pure dedupe planner: merges (or, with merge:false, drops) near-duplicate
+ * ACTIVE items. Two items are duplicates iff they share the key fields —
+ * kind, ownerModel, durable layer (scope+project) — and their content
+ * similarity is >= opts.threshold.
+ *
+ * Merge semantics (ACE-style deterministic merge, never a prose rewrite):
+ * the higher-importance item is the KEEPER and keeps its content verbatim;
+ * each keeper that absorbed duplicates gets ONE update whose evidence is the
+ * line-wise union of its own and every absorbed duplicate's evidence (one
+ * final union — applyOne replaces evidence wholesale, so per-duplicate
+ * updates would clobber each other); each absorbed duplicate is deleted with
+ * a reason naming its keeper. Updates are emitted before deletes.
  *
  * Greedy and contradiction-free: items are considered in importance-descending
- * order; the first item is always a keeper, and each later item is compared
- * only against keepers, so a keeper is never subsequently dropped.
+ * order (ties keep store order); the first item is always a keeper, and each
+ * later item is compared only against keepers, so a keeper is never
+ * subsequently dropped. A duplicate matching several keepers joins the
+ * best-overlap one.
  */
-export const dedupeProposer: DeltaProposer = {
-  name: "dedupe",
-  async propose({ state }): Promise<ProposeResult> {
-    const ordered = state.items
-      .filter((i) => i.active)
-      .sort((a, b) => b.importance - a.importance);
-    const keepers: HarnessItem[] = [];
-    const proposals: ProposedDelta[] = [];
-    for (const cand of ordered) {
-      let dup: HarnessItem | undefined;
-      let best = 0;
-      for (const k of keepers) {
-        if (k.kind !== cand.kind) continue;
-        // Per-model isolation: each model keeps its own copy, so two near-
-        // identical items bound to different models are NOT duplicates.
-        if (k.ownerModel !== cand.ownerModel) continue;
-        const sim = tokenOverlap(k.content, cand.content);
-        if (sim >= DEDUPE_THRESHOLD && sim > best) {
-          best = sim;
-          dup = k;
-        }
-      }
-      if (dup) {
-        proposals.push({
-          delta: {
-            op: "delete",
-            id: cand.id,
-            reason: `near-duplicate of ${dup.id} (overlap ${best.toFixed(2)})`,
-          },
-          rationale: `dedupe: "${truncate(cand.content)}" ≈ keeper "${truncate(dup.content)}" (Jaccard ${best.toFixed(2)}); kept higher-importance ${dup.id}.`,
-        });
-      } else {
-        keepers.push(cand);
+export function planDedupe(state: HarnessState, opts: DedupeOptions = DEFAULT_DEDUPE): ProposedDelta[] {
+  const similarity = opts.similarity ?? tokenOverlap;
+  const ordered = state.items
+    .filter((i) => i.active)
+    .sort((a, b) => b.importance - a.importance);
+  const keepers: Array<{ item: HarnessItem; absorbed: Array<{ dup: HarnessItem; overlap: number }> }> = [];
+  for (const cand of ordered) {
+    let target: (typeof keepers)[number] | undefined;
+    let best = 0;
+    for (const k of keepers) {
+      if (k.item.kind !== cand.kind) continue;
+      // Per-model isolation: each model keeps its own copy, so two near-
+      // identical items bound to different models are NOT duplicates.
+      if (k.item.ownerModel !== cand.ownerModel) continue;
+      // Same durable layer only (see durableLayer).
+      if (durableLayer(k.item) !== durableLayer(cand)) continue;
+      const sim = similarity(k.item.content, cand.content);
+      if (sim >= opts.threshold && sim > best) {
+        best = sim;
+        target = k;
       }
     }
-    return proposals.length ? { deltas: proposals } : {};
+    if (target) target.absorbed.push({ dup: cand, overlap: best });
+    else keepers.push({ item: cand, absorbed: [] });
+  }
+
+  const updates: ProposedDelta[] = [];
+  const deletes: ProposedDelta[] = [];
+  for (const k of keepers) {
+    if (k.absorbed.length === 0) continue;
+    if (opts.merge) {
+      const merged = unionEvidence([k.item.evidence, ...k.absorbed.map((a) => a.dup.evidence)]);
+      // Skip the no-op: identical evidence → the merge degenerates to a plain
+      // delete for this pair (no update delta).
+      if (merged !== k.item.evidence) {
+        updates.push({
+          delta: { op: "update", id: k.item.id, evidence: merged },
+          rationale: `dedupe: merged ${k.absorbed.length} duplicate(s) (${k.absorbed.map((a) => a.dup.id).join(", ")}) into ${k.item.id}; evidence unioned (${k.absorbed.length + 1} sources).`,
+        });
+      }
+    }
+    for (const { dup, overlap } of k.absorbed) {
+      deletes.push({
+        delta: {
+          op: "delete",
+          id: dup.id,
+          reason: opts.merge
+            ? `merged into ${k.item.id} (overlap ${overlap.toFixed(2)})`
+            : `near-duplicate of ${k.item.id} (overlap ${overlap.toFixed(2)})`,
+        },
+        rationale: `dedupe: "${truncate(dup.content)}" ≈ keeper "${truncate(k.item.content)}" (Jaccard ${overlap.toFixed(2)}); ${opts.merge ? `merged into ${k.item.id}.` : `kept higher-importance ${k.item.id}.`}`,
+      });
+    }
+  }
+  return [...updates, ...deletes];
+}
+
+/** Rule-based proposer wrapping planDedupe with the configured (or default)
+ *  options — merges near-duplicates; `merge: false` restores delete-only. */
+export const dedupeProposer: DeltaProposer = {
+  name: "dedupe",
+  async propose({ state, config }): Promise<ProposeResult> {
+    const deltas = planDedupe(state, config?.dedupe ?? DEFAULT_DEDUPE);
+    return deltas.length ? { deltas } : {};
   },
 };
 

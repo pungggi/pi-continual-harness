@@ -74,10 +74,16 @@ export {
 // (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>
 // or the `proposer` config key.
 export {
+  DEFAULT_DEDUPE,
+  DEDUPE_THRESHOLD,
+  EVIDENCE_MERGE_CAP,
   listProposers,
+  planDedupe,
   registerProposer,
+  unionEvidence,
   type CompleteOptions,
   type CompleteResult,
+  type DedupeOptions,
   type DeltaProposer,
   type ModelCallTelemetry,
   type ProposeInput,

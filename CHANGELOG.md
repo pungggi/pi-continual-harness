@@ -8,6 +8,38 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.10.0] — 2026-09-18
+
+The merge-capable dedupe proposer: fuzzy-corrections take 1. Spec and research
+grounding in [docs/PLAN-dedupe-merge.md](docs/PLAN-dedupe-merge.md).
+
+### Added
+
+- **`dedupe` proposer merges instead of deleting** — two active items sharing
+  the key fields (kind, owner model, durable layer: scope + project slug) with
+  token overlap ≥ the threshold merge into the higher-importance keeper: one
+  audited `update` (evidence = line-wise union, capped at 2000 chars) + one
+  `delete` per duplicate (`merged into h_x (overlap …)`). The keeper's content
+  is never prose-merged (ACE); injection is content-only, so the prompt block
+  is unchanged. Identical evidence degenerates to a plain delete.
+- **Config keys** `dedupe: { "threshold": 0.6, "merge": true }` in
+  `harness.json` — threshold valid in `(0,1]` (bad values degrade to `0.6`),
+  `merge: false` restores the pre-0.10 delete-only behavior.
+- **`/refine --threshold <t>`** — one-shot threshold override for the run
+  (affects the `dedupe` proposer; invalid values are ignored with a warning).
+- **`ProposeInput.config`** — `runRefine` now threads the loaded `harness.json`
+  into every proposer (optional, additive), so proposers read tuned knobs
+  without file I/O.
+- **Public API**: `planDedupe(state, opts)` (the pure planner), `DedupeOptions`
+  (with a `similarity?` seam for the future semantic upgrade), `DEFAULT_DEDUPE`,
+  `EVIDENCE_MERGE_CAP`, `unionEvidence`, `DEDUPE_THRESHOLD` re-exported from
+  the package entry.
+
+### Changed
+
+- The `dedupe` proposer's default behavior (was: delete-only, hardcoded 0.6).
+  Rollback path: set `"dedupe": { "merge": false }`.
+
 ## [0.9.0] — 2026-09-17
 
 The project-scope split (issue #7). Scope becomes a property of each item, the

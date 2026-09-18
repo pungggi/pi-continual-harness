@@ -20,9 +20,9 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, modelKey, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
-import { getProposer } from "./proposer.js";
+import { getProposer, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
-import { projectSlug } from "./config.js";
+import { loadConfig, projectSlug } from "./config.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
@@ -41,10 +41,18 @@ type AnyEntry = {
 export function registerRefine(pi: ExtensionAPI): void {
   pi.registerCommand("refine", {
     description:
-      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe]",
+      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe] [--threshold 0.75]",
     handler: async (args, ctx) => {
-      const { lookback, commit, proposer } = parseArgs(args);
-      await runRefine(pi, ctx, { lookback, commit, ...(proposer ? { proposer } : {}) });
+      const { lookback, commit, proposer, threshold, thresholdInvalid } = parseArgs(args);
+      if (thresholdInvalid) {
+        ctx.ui.notify("Invalid --threshold ignored (expected 0 < t ≤ 1).", "warning");
+      }
+      await runRefine(pi, ctx, {
+        lookback,
+        commit,
+        ...(proposer ? { proposer } : {}),
+        ...(threshold !== undefined ? { threshold } : {}),
+      });
     },
   });
 }
@@ -54,6 +62,10 @@ export interface RefineOptions {
   commit?: boolean;
   /** Proposer name (see proposer.ts registry). Defaults to "steering". */
   proposer?: string;
+  /** Dedupe similarity threshold override in (0,1], applied for this run only
+   *  (overrides `dedupe.threshold` in harness.json). Affects the rule-based
+   *  `dedupe` proposer; ignored by others. */
+  threshold?: number;
 }
 
 export interface RefineResult {
@@ -85,6 +97,14 @@ export async function runRefine(
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback);
+  // Load the (cached) config and thread it into ProposeInput so proposers read
+  // tuned knobs (e.g. the dedupe threshold/merge policy) without file I/O. An
+  // explicit --threshold overrides the configured dedupe threshold for this run.
+  const config = await loadConfig();
+  const proposerConfig =
+    options.threshold !== undefined
+      ? { ...config, dedupe: { ...(config.dedupe ?? DEFAULT_DEDUPE), threshold: options.threshold } }
+      : config;
   // Inject a one-shot model completion (built from ctx) so dedicated-model
   // proposers can make a hidden LLM call. Undefined when no model is resolvable.
   const complete = buildComplete(ctx);
@@ -94,6 +114,7 @@ export async function runRefine(
     evidence,
     state: snapshotState(),
     lookback,
+    config: proposerConfig,
     ...(complete ? { complete } : {}),
   });
   const proposedDeltas = result.deltas ?? [];
@@ -184,19 +205,30 @@ function parseArgs(args: string): {
   lookback: number;
   commit: boolean;
   proposer: string | undefined;
+  threshold: number | undefined;
+  thresholdInvalid: boolean;
 } {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let lookback = DEFAULT_LOOKBACK_TURNS;
   let commit = false;
   let proposer: string | undefined;
+  let threshold: number | undefined;
+  let thresholdInvalid = false;
+  const readThreshold = (raw: string): void => {
+    const v = Number(raw);
+    if (Number.isFinite(v) && v > 0 && v <= 1) threshold = v;
+    else thresholdInvalid = true;
+  };
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i]!;
     if (p === "--commit") commit = true;
     else if (p === "--proposer" && i + 1 < parts.length) proposer = parts[++i];
     else if (p.startsWith("--proposer=")) proposer = p.slice("--proposer=".length);
+    else if (p === "--threshold" && i + 1 < parts.length) readThreshold(parts[++i]!);
+    else if (p.startsWith("--threshold=")) readThreshold(p.slice("--threshold=".length));
     else if (/^\d+$/.test(p)) lookback = Math.max(1, Math.min(200, Number(p)));
   }
-  return { lookback, commit, proposer };
+  return { lookback, commit, proposer, threshold, thresholdInvalid };
 }
 
 function gatherEvidence(ctx: ExtensionContext, lookback: number): string {

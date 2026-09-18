@@ -231,7 +231,7 @@ The package registers two commands: `/refine` (the optimizer) and `/harness`
 ### `/refine`
 
 ```
-/refine [lookback-turns] [--commit] [--proposer <name>]
+/refine [lookback-turns] [--commit] [--proposer <name>] [--threshold <t>]
 ```
 
 The online self-improvement command. Reviews recent trajectory evidence and
@@ -242,6 +242,7 @@ proposes evidence-backed CRUD deltas.
 | `lookback-turns` | `25` | `1`–`200` (clamped) | how many recent turns to review |
 | `--commit` | off | flag | also export durable state after refining |
 | `--proposer <name>` | `steering` | `steering` \| `dedupe` \| any registered name | which [proposer](#9-delta-proposers) runs |
+| `--threshold <t>` | *(config)* | `0 < t ≤ 1` | one-shot dedupe similarity threshold for this run (overrides `dedupe.threshold`; ignored by other proposers). Invalid values are ignored with a warning. |
 
 **Flow:**
 
@@ -249,8 +250,9 @@ proposes evidence-backed CRUD deltas.
    messages, capped at **16000 bytes**, truncated if longer).
 2. Resolves the proposer (from `--proposer`, else the `proposer` config key,
    else `steering`). **Unknown names fall back to `steering`.**
-3. Calls `propose({ evidence, state, lookback })` with a **defensive copy** of
-   state (proposers cannot mutate the live store).
+3. Calls `propose({ evidence, state, lookback, config })` with a **defensive copy** of
+   state (proposers cannot mutate the live store) and the loaded config (so
+   proposers read tuned knobs without file I/O).
 4. If the proposer returns `deltas`, they are applied directly (persisted via a
    `harness-state` entry → `/tree` rollback covers them).
 5. Writes a `harness-refinement` **audit entry** recording `lookback`, `commit`,
@@ -268,6 +270,7 @@ proposes evidence-backed CRUD deltas.
 /refine 25 --commit        # also write ~/.pi/agent/harness-state.md
 /refine --proposer dedupe  # rule-based dedupe, no model reasoning
 /refine 25 --commit --proposer dedupe
+/refine --proposer dedupe --threshold 0.75  # looser match for this run only
 ```
 
 > **Why a steering message as the default?** It reuses the existing agent loop
@@ -583,6 +586,7 @@ defaults (the loader never throws).
 {
   "autoImport": false,                      // opt-in durable sync (import + export bundle)
   "proposer": "steering",                   // steering | dedupe | <custom>
+  "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": false, "everyTurns": 50 },
   "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false },
@@ -596,6 +600,8 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
+| `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
+| `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |
 | `injection.enabled` | `true` | bool | Master switch for the [injection selection policy](#injection-selection-on-by-default). `false` → legacy "all items, in store order". |
 | `injection.maxTokens` | `1500` | number > 0 | Total token budget for the rendered block (intro + headers + items). |
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
@@ -687,13 +693,23 @@ propose stage is **pluggable** via a registry ([`src/proposer.ts`](../src/propos
 | Name | Strategy | Model call? | Select with |
 |---|---|---|---|
 | `steering` (default) | Delegates reasoning to the agent via a steering message; reuses the agent loop. | No (uses the main loop) | default, or `--proposer steering` |
-| `dedupe` | Rule-based: drops near-duplicate **active** items by token Jaccard ≥ **0.6** (same kind **and same owner model** — never across models), keeping the higher-importance one. Greedy, contradiction-free. | No | `--proposer dedupe`, or `"proposer": "dedupe"` |
+| `dedupe` | Rule-based: **merges** near-duplicate **active** items (token Jaccard ≥ `dedupe.threshold`, default **0.6**; same kind, same owner model, same durable layer) into the higher-importance keeper — one evidence-union update + deletes. Greedy, contradiction-free. `"dedupe": { "merge": false }` restores delete-only. | No | `--proposer dedupe`, or `"proposer": "dedupe"` |
 
 The `dedupe` proposer orders active items by importance descending; the first is
 always a keeper, and each later item is compared only against keepers, so a
-keeper is never subsequently dropped. Its `rationale`s (e.g.
-`dedupe: "foo…" ≈ keeper "bar…" (Jaccard 0.73); kept higher-importance h_x`)
-land in the audit entry.
+keeper is never subsequently dropped. The keeper keeps its **content verbatim**
+(never prose-merged — the ACE anti-collapse rule); what merges is the
+evidence: each absorbing keeper gets **one** update whose evidence is the
+line-wise union of its own and every absorbed duplicate's evidence (capped at
+2000 chars), and each duplicate is deleted with a reason naming its keeper
+(`merged into h_x (overlap 0.73)`). Only items sharing the key fields — kind,
+owner model, and durable layer (scope + project slug) — merge, so a merge
+never silently moves an item between `harness-state.md` and a project file.
+Its `rationale`s (e.g.
+`dedupe: "foo…" ≈ keeper "bar…" (Jaccard 0.73); merged into h_x`)
+land in the audit entry. Tuning: `dedupe.threshold` / `dedupe.merge` in
+[config](#8-configuration), or `/refine --proposer dedupe --threshold 0.75`
+for one run.
 
 ### Selecting a proposer
 
@@ -708,7 +724,7 @@ applied directly.
 ### The contract
 
 ```ts
-interface ProposeInput  { evidence: string; state: HarnessState; lookback: number; }
+interface ProposeInput  { evidence: string; state: HarnessState; lookback: number; config?: HarnessConfig; }
 interface ProposedDelta { delta: Delta; rationale: string; }
 interface ProposeResult { deltas?: ProposedDelta[]; steeringMessage?: string; }
 interface DeltaProposer { readonly name: string; propose(input: ProposeInput): Promise<ProposeResult>; }

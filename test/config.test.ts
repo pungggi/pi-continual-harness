@@ -145,6 +145,54 @@ describe("config", () => {
     });
   });
 
+  describe("dedupe (merge policy, 0.10.0)", () => {
+    it("DEFAULT_CONFIG ships merge ON at the historical 0.6 threshold", () => {
+      expect(DEFAULT_CONFIG.dedupe).toEqual({ threshold: 0.6, merge: true });
+    });
+
+    it("a missing file yields the resolved dedupe defaults", async () => {
+      const cfg = await loadConfig(tempFile());
+      expect(cfg.dedupe).toEqual({ threshold: 0.6, merge: true });
+    });
+
+    it("merges a partial dedupe over the defaults (threshold only)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ dedupe: { threshold: 0.75 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.dedupe).toEqual({ threshold: 0.75, merge: true }); // merge default retained
+      });
+    });
+
+    it("honors the delete-only opt-out (merge: false)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ dedupe: { merge: false } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.dedupe).toEqual({ threshold: 0.6, merge: false });
+      });
+    });
+
+    it("coerces bad thresholds back to 0.6 (comparison operand — no silent match-all/none)", async () => {
+      // 0 would match everything, >1 nothing, strings/NaN corrupt the compare.
+      for (const bad of [0, -0.5, 1.5, "0.7", NaN]) {
+        await withTempDir(async (file) => {
+          await writeFile(file, JSON.stringify({ dedupe: { threshold: bad } }), "utf8");
+          const cfg = await loadConfig(file);
+          expect(cfg.dedupe?.threshold).toBe(0.6);
+        });
+      }
+    });
+
+    it("accepts thresholds in (0,1] including 1 (identical token sets only)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ dedupe: { threshold: 1 } }), "utf8");
+        expect((await loadConfig(file)).dedupe?.threshold).toBe(1);
+        resetConfigCache();
+        await writeFile(file, JSON.stringify({ dedupe: { threshold: 0.05 } }), "utf8");
+        expect((await loadConfig(file)).dedupe?.threshold).toBe(0.05);
+      });
+    });
+  });
+
   describe("projectSlug", () => {
     it("sanitizes a Windows absolute path", () => {
       const s = projectSlug("C:\\Users\\Alessandro\\source\\pi\\packages\\pi-continual-harness");
