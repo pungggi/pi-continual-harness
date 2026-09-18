@@ -53,7 +53,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 ```
 /refine              # review last 25 turns, propose deltas
 /refine 50           # review last 50 turns
-/refine 25 --commit  # also export durable state to ~/.pi/agent/harness-state.md
+/refine 25 --commit  # also export durable state (global + project layers)
 /refine --proposer dedupe  # run the rule-based dedupe proposer instead of steering
 ```
 
@@ -106,6 +106,9 @@ The model-facing tools:
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
   `delete` deltas. Every `create` requires `evidence`. New items are stamped
   automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).
+  `create`/`update` deltas also accept `scope: "global" | "project"` (the
+  project slug is stamped server-side from the session cwd — used by
+  `/harness split`; normally managed via `/harness move`).
 
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
@@ -235,9 +238,9 @@ How the binding is set and respected:
   `model: provider/id`; `/harness import` restores it. An item whose tag
   pi-reflect stripped becomes an orphan and is adopted by the active model.
 
-Manual commands (`export`, `import`, `keep`, `drop`, `prune`, `push-mem`,
-`status`) operate on the **whole store** by design — they are explicit human
-actions with full control. Isolation is enforced only where pollution would
+Manual commands (`export`, `import`, `move`, `split`, `keep`, `drop`, `prune`,
+`push-mem`, `status`) operate on the **whole store** by design — they are
+explicit human actions with full control. Isolation is enforced only where pollution would
 leak automatically: injection, listing, create-stamping, and the outcome loop.
 In particular, `/harness push-mem` pushes *every* model's active items into
 pi-mem by default (which can yield near-duplicate memories across models); pass
