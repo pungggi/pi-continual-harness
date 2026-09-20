@@ -1,9 +1,9 @@
-// Calibration corpus exporter — the S1 half of the pi-jev consumer contract
-// (CONTRACT-harness.md §4 in the pi-jev project; issue #12 here).
+// Calibration corpus exporter — the S1 half of the pi-reflex consumer contract
+// (formerly pi-jev; CONTRACT-harness.md §4 in that project; issue #12 here).
 //
 // Turns the session's OWN audit trail — `harness-state` snapshots and
 // `harness-refinement` entries — into two JSONL corpora for calibrating and
-// evaluating a semantic decision engine (pi-jev) against real harness
+// evaluating a semantic decision engine (pi-reflex) against real harness
 // decisions:
 //
 //   dedupe-pairs.jsonl  one record per compared item pair

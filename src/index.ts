@@ -92,7 +92,7 @@ export {
   type SimilarityResult,
 } from "./proposer.js";
 
-// Calibration corpus exporter (pi-jev contract §4). Re-exported so companion
+// Calibration corpus exporter (pi-reflex contract §4, formerly pi-jev). Re-exported so companion
 // packages can build corpora from exported session branches without reaching
 // into internal paths.
 export {

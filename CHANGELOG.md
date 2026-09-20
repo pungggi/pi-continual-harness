@@ -13,7 +13,7 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 ### Added
 
 - **`/harness export-corpus [path]`** — the calibration corpus exporter for
-  the pi-jev consumer contract (§4, issue #12). Reconstructs two JSONL corpora
+  the pi-reflex consumer contract (§4, issue #12). Reconstructs two JSONL corpora
   from the session branch's own audit trail: `dedupe-pairs.jsonl` (merged
   pairs as ground-truth `dup` records parsed from delete reasons; same
   key-field non-merged pairs with informative overlap as `needs_review`
@@ -64,7 +64,7 @@ grounding in [docs/PLAN-dedupe-merge.md](docs/PLAN-dedupe-merge.md).
 - **`SimilarityResult` abstain seam** — `DedupeOptions.similarity` may return
   `{ score, abstain }` instead of a plain number: an abstaining pair is treated
   as NOT duplicates (keep both), so a semantic engine with conformal-style
-  uncertainty (e.g. pi-jev, local-only for now) can decline to
+  uncertainty (e.g. pi-reflex, formerly pi-jev — local-only for now) can decline to
   merge on uncertainty. `SimilarityResult` is re-exported from the package
   entry; plain numeric comparators keep working unchanged.
 

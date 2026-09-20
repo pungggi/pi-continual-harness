@@ -63,7 +63,7 @@ Durable I/O (round-trip with pi-reflect):
 ```
 /harness status                  # counts + durable layer presence/mtime
 /harness export [path]           # layered export (or full snapshot to a path)
-/harness export-corpus [path]    # calibration corpus JSONL for pi-jev (local-only; dedupe pairs + lifecycle)
+/harness export-corpus [path]    # calibration corpus JSONL for pi-reflex (local-only; dedupe pairs + lifecycle)
 /harness import [--prune] [path] # layered import (or single file from a path)
 /harness prune [--decay <days>]  # drop items below the importance floor
 /harness keep <id>               # nudge importance up (+0.1)
@@ -316,7 +316,7 @@ deltas directly). The propose stage is pluggable via a registry
 
 The dedupe planner's `similarity` seam (`DedupeOptions.similarity`, re-exported
 from the package entry) is how a companion package upgrades the comparison —
-e.g. embedding cosine similarity, or a local decision engine such as pi-jev
+e.g. embedding cosine similarity, or a local decision engine such as pi-reflex
 (a local-only project for now). A comparator may return
 `{ score, abstain }` instead of a plain number: **an abstaining pair is
 treated as not duplicates** — both items are kept — so an engine with
