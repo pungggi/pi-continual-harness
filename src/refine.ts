@@ -22,6 +22,7 @@ import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, modelKey, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import type { AppliedDelta } from "./types.js";
 import { loadConfig, projectSlug } from "./config.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
@@ -125,6 +126,7 @@ export async function runRefine(
   const ownerKey = modelKey(ctx.model);
 
   let applied = 0;
+  let appliedDeltas: AppliedDelta[] = [];
   let applyError: string | undefined;
   if (proposedDeltas.length > 0) {
     // Direct-apply path (rule-based / model proposers): persist each batch the
@@ -134,7 +136,7 @@ export async function runRefine(
     // race during the await above. It rolls back in-memory state before throwing,
     // so we surface the failure as an audited no-op rather than crashing /refine.
     try {
-      const appliedDeltas = applyDeltas(
+      appliedDeltas = applyDeltas(
         proposedDeltas.map((d) => {
           const delta = d.delta;
           return ownerKey !== undefined && delta.op === "create"
@@ -164,6 +166,10 @@ export async function runRefine(
     source,
     proposer: proposer.name,
     applied,
+    // Full applied-delta list (incl. delete reasons) — richer than the count:
+    // the calibration-corpus exporter (corpus.ts) reconstructs dedupe pairs
+    // from it. Legacy readers only consuming `applied` are unaffected.
+    appliedDeltas,
     rationales: proposedDeltas.map((d) => d.rationale),
     // Hidden model spend made visible: dedicated-model proposers report what the
     // call cost (model, tokens, latency, ok/error). Absent for rule-based/steering.

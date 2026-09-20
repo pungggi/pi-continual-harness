@@ -92,6 +92,19 @@ export {
   type SimilarityResult,
 } from "./proposer.js";
 
+// Calibration corpus exporter (pi-jev contract §4). Re-exported so companion
+// packages can build corpora from exported session branches without reaching
+// into internal paths.
+export {
+  buildCorpus,
+  NOT_DUP_FLOOR,
+  parseDedupeDelete,
+  type CorpusResult,
+  type DedupePairRecord,
+  type LifecycleEvent,
+  type LifecycleRecord,
+} from "./corpus.js";
+
 // Injection selection policy (on by default). Re-exported so companion packages
 // and tests can reuse the pure selection/normalization without reaching into
 // internal paths.

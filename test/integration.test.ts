@@ -281,6 +281,7 @@ describe("/harness command", () => {
     expect(items.map((i) => i.value)).toEqual([
       "import",
       "export",
+      "export-corpus",
       "status",
       "prune",
       "keep",

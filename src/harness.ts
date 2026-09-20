@@ -25,6 +25,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { stat } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   applyDeltas,
   bumpImportance,
@@ -41,11 +43,13 @@ import {
 import {
   defaultScopeForPath,
   layerFilesFor,
+  loadConfig,
   projectDurablePath,
   projectSlug,
 } from "./config.js";
 import { KIND_LABEL } from "./types.js";
 import type { ComponentKind, Delta, HarnessItem } from "./types.js";
+import { buildCorpus } from "./corpus.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
 interface CompletionEntry {
@@ -56,6 +60,7 @@ interface CompletionEntry {
 const SUBCOMMANDS: CompletionEntry[] = [
   { name: "import", description: "Import durable state, layered (--prune to prune stale items)" },
   { name: "export", description: "Export active items to durable layers (or one file with a path)" },
+  { name: "export-corpus", description: "Export calibration corpus JSONL for pi-jev (dedupe pairs + lifecycle)" },
   { name: "status", description: "Show harness status (active/total, per-kind counts, durable layers)" },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },
@@ -218,6 +223,9 @@ export function registerHarness(pi: ExtensionAPI): void {
         case "export":
           await handleExport(ctx, rest);
           return;
+        case "export-corpus":
+          await handleExportCorpus(ctx, rest);
+          return;
         case "prune":
           await handlePrune(pi, ctx, rest);
           return;
@@ -316,6 +324,38 @@ async function handleExport(ctx: ExtensionCommandContext, rest: string[]): Promi
     }
   } catch (err) {
     ctx.ui.notify(`Harness export failed: ${(err as Error).message}`, "error");
+  }
+  ctx.ui.setStatus("harness", undefined);
+}
+
+function toJsonl(rows: unknown[]): string {
+  return rows.length > 0 ? `${rows.map((r) => JSON.stringify(r)).join("\n")}\n` : "";
+}
+
+/** `/harness export-corpus [path]` — write the calibration corpora (contract
+ *  §4) from THIS session branch's audit trail. Default dir:
+ *  ./harness-corpus/<yyyy-mm-dd>/. Local file output only — contract invariant:
+ *  nothing leaves the machine. */
+async function handleExportCorpus(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
+  const explicit = explicitPath(rest);
+  const dir = explicit ?? join("harness-corpus", new Date().toISOString().slice(0, 10));
+  ctx.ui.setStatus("harness", "Exporting calibration corpus…");
+  try {
+    // Config-aware citation classification: the outcome loop's bump is
+    // configurable (default 0.03), so the classifier must not hardcode it.
+    const { outcomeImportance } = await loadConfig();
+    const corpus = buildCorpus(ctx.sessionManager.getBranch() as Iterable<unknown>, {
+      citeBump: outcomeImportance?.bump,
+    });
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "dedupe-pairs.jsonl"), toJsonl(corpus.pairs));
+    await writeFile(join(dir, "lifecycle.jsonl"), toJsonl(corpus.lifecycle));
+    ctx.ui.notify(
+      `Calibration corpus → ${dir}: ${corpus.pairs.length} dedupe pair(s), ${corpus.lifecycle.length} lifecycle event(s). Local files only — nothing leaves the machine.`,
+      "info",
+    );
+  } catch (err) {
+    ctx.ui.notify(`/harness export-corpus failed: ${(err as Error).message}`, "error");
   }
   ctx.ui.setStatus("harness", undefined);
 }

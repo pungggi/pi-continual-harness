@@ -8,6 +8,33 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+### Added
+
+- **`/harness export-corpus [path]`** — the calibration corpus exporter for
+  the pi-jev consumer contract (§4, issue #12). Reconstructs two JSONL corpora
+  from the session branch's own audit trail: `dedupe-pairs.jsonl` (merged
+  pairs as ground-truth `dup` records parsed from delete reasons; same
+  key-field non-merged pairs with informative overlap as `needs_review`
+  `not_dup` candidates) and `lifecycle.jsonl` (`created` / `cited` / `kept` /
+  `dropped` / `pruned` / `deleted`, classified from consecutive snapshot
+  diffs). Pure `buildCorpus()` core in `src/corpus.ts` (+
+  `parseDedupeDelete`), re-exported from the package entry. Default output
+  `./harness-corpus/<yyyy-mm-dd>/`; local file writes only — nothing leaves
+  the machine.
+
+- **Review fixes (PR #14 feedback)** — three correctness issues in the first
+  cut: (1) the dedupe audit entry now records the full `appliedDeltas` list
+  (incl. delete reasons) alongside the legacy `applied` count — without it,
+  dup pairs were unreconstructable and the exporter crashed on the count-only
+  legacy shape; (2) `not_dup` candidates now emit from the CURRENT state — a
+  no-merge dedupe run writes no snapshot, so the previous two-snapshot walk
+  read a stale state; (3) citation classification is config-aware
+  (`buildCorpus(entries, { citeBump })`, wired to `outcomeImportance.bump`,
+  default 0.03) instead of a hardcoded `(0, 0.06]` band; keep/drop (±0.1) are
+  checked first, so a configured bump of exactly 0.1 classifies as keep.
+
 ## [0.10.0] — 2026-09-20
 
 The merge-capable dedupe proposer: fuzzy-corrections take 1. Spec and research
