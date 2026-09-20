@@ -12,6 +12,7 @@ import {
   steeringProposer,
   tokenOverlap,
   tokenize,
+  type SimilarityResult,
 } from "../src/proposer.js";
 
 function item(over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">): HarnessItem {
@@ -260,5 +261,45 @@ describe("DEDUPE_THRESHOLD", () => {
   it("is a sane default in (0,1)", () => {
     expect(DEDUPE_THRESHOLD).toBeGreaterThan(0);
     expect(DEDUPE_THRESHOLD).toBeLessThan(1);
+  });
+});
+
+describe("similarity seam (SimilarityResult)", () => {
+  const mergeOn = { threshold: 0.6, merge: true };
+
+  it("accepts { score } objects exactly like plain numbers", () => {
+    const keep = item({ id: "h_k", kind: "memory", content: "a b c d e", importance: 0.9 });
+    const dup = item({ id: "h_d", kind: "memory", content: "a b c d e", importance: 0.4 });
+    const deltas = planDedupe(state([dup, keep]), { ...mergeOn, similarity: () => ({ score: 0.9 }) });
+    // Identical default evidence "e" → merge degenerates to a plain delete.
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]!.delta).toMatchObject({ op: "delete", id: "h_d" });
+  });
+
+  it("an abstaining pair is never merged, even with score ≥ threshold", () => {
+    const keep = item({ id: "h_k", kind: "prompt", content: "always use the foo pattern", importance: 0.9, evidence: "e1" });
+    const dup = item({ id: "h_d", kind: "prompt", content: "use the foo pattern always", importance: 0.4, evidence: "e2" });
+    const deltas = planDedupe(state([dup, keep]), {
+      ...mergeOn,
+      similarity: () => ({ score: 0.99, abstain: true }),
+    });
+    expect(deltas).toHaveLength(0); // keep both — uncertainty never deletes state
+  });
+
+  it("abstain on the best keeper still allows merging into a lower-overlap keeper", () => {
+    const a = item({ id: "h_a", kind: "skill", content: "alpha beta gamma", importance: 0.9, evidence: "ea" });
+    const b = item({ id: "h_b", kind: "skill", content: "alpha beta delta", importance: 0.7, evidence: "eb" });
+    const c = item({ id: "h_c", kind: "skill", content: "alpha beta epsilon", importance: 0.4, evidence: "ec" });
+    const similarity = (x: string, y: string): number | SimilarityResult => {
+      const pair = [x, y].sort().join("|");
+      if (pair === "alpha beta delta|alpha beta gamma") return { score: 0.95, abstain: true }; // A~B
+      if (pair === "alpha beta epsilon|alpha beta gamma") return { score: 0.95, abstain: true }; // A~C
+      return { score: 0.8 }; // B~C merges
+    };
+    const deltas = planDedupe(state([c, b, a]), { ...mergeOn, similarity });
+    // A and B both stay keepers (A abstains against everyone); C joins B.
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0]!.delta).toMatchObject({ op: "update", id: "h_b" });
+    expect(deltas[1]!.delta).toMatchObject({ op: "delete", id: "h_c", reason: expect.stringMatching(/merged into h_b/) });
   });
 });

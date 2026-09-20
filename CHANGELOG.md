@@ -8,7 +8,7 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
-## [0.10.0] — 2026-09-18
+## [0.10.0] — 2026-09-20
 
 The merge-capable dedupe proposer: fuzzy-corrections take 1. Spec and research
 grounding in [docs/PLAN-dedupe-merge.md](docs/PLAN-dedupe-merge.md).
@@ -34,6 +34,12 @@ grounding in [docs/PLAN-dedupe-merge.md](docs/PLAN-dedupe-merge.md).
   (with a `similarity?` seam for the future semantic upgrade), `DEFAULT_DEDUPE`,
   `EVIDENCE_MERGE_CAP`, `unionEvidence`, `DEDUPE_THRESHOLD` re-exported from
   the package entry.
+- **`SimilarityResult` abstain seam** — `DedupeOptions.similarity` may return
+  `{ score, abstain }` instead of a plain number: an abstaining pair is treated
+  as NOT duplicates (keep both), so a semantic engine with conformal-style
+  uncertainty (e.g. pi-jev, local-only for now) can decline to
+  merge on uncertainty. `SimilarityResult` is re-exported from the package
+  entry; plain numeric comparators keep working unchanged.
 
 ### Changed
 
