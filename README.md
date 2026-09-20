@@ -63,6 +63,7 @@ Durable I/O (round-trip with pi-reflect):
 ```
 /harness status                  # counts + durable layer presence/mtime
 /harness export [path]           # layered export (or full snapshot to a path)
+/harness export-corpus [path]    # calibration corpus JSONL for pi-jev (local-only; dedupe pairs + lifecycle)
 /harness import [--prune] [path] # layered import (or single file from a path)
 /harness prune [--decay <days>]  # drop items below the importance floor
 /harness keep <id>               # nudge importance up (+0.1)

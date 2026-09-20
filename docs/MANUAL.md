@@ -321,6 +321,31 @@ import would resurrect). With an explicit path, writes a full snapshot of all
 active items to that one file (project items carry a `scope:` sub-line so the
 copy round-trips). Inactive items are never exported.
 
+#### `export-corpus [path]`
+
+```
+/harness export-corpus            # ./harness-corpus/<yyyy-mm-dd>/
+/harness export-corpus ./my-corpus
+```
+
+Writes the **calibration corpora** defined by the pi-jev consumer contract
+(§4) from *this session branch's* audit trail:
+
+- `dedupe-pairs.jsonl` — one record per compared item pair. Merged pairs are
+  ground-truth `dup` records (keeper/duplicate contents + the run's overlap,
+  parsed from delete reasons); same-key-field pairs the planner did **not**
+  merge with token overlap in `[0.3, 0.6)` are `not_dup` candidates flagged
+  `needs_review` (the threshold decided, not a human).
+- `lifecycle.jsonl` — one record per item event, classified from consecutive
+  `harness-state` snapshot diffs: `created` · `kept` (+0.1) · `dropped` (−0.1)
+  · `cited` (small positive bump — the opt-in outcome loop) · `pruned`
+  (removed below the importance floor) · `deleted` (removed otherwise).
+  Contents are sha256-hashed, not carried.
+
+Local file writes only — a contract invariant: nothing leaves the machine
+unless you push it. The pure core (`buildCorpus`) is exported from the package
+entry for offline use on exported sessions.
+
 #### `import [--prune] [path]`
 
 ```

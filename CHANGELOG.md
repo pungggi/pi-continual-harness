@@ -8,6 +8,22 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+### Added
+
+- **`/harness export-corpus [path]`** — the calibration corpus exporter for
+  the pi-jev consumer contract (§4, issue #12). Reconstructs two JSONL corpora
+  from the session branch's own audit trail: `dedupe-pairs.jsonl` (merged
+  pairs as ground-truth `dup` records parsed from delete reasons; same
+  key-field non-merged pairs with informative overlap as `needs_review`
+  `not_dup` candidates) and `lifecycle.jsonl` (`created` / `cited` / `kept` /
+  `dropped` / `pruned` / `deleted`, classified from consecutive snapshot
+  diffs). Pure `buildCorpus()` core in `src/corpus.ts` (+
+  `parseDedupeDelete`), re-exported from the package entry. Default output
+  `./harness-corpus/<yyyy-mm-dd>/`; local file writes only — nothing leaves
+  the machine.
+
 ## [0.10.0] — 2026-09-20
 
 The merge-capable dedupe proposer: fuzzy-corrections take 1. Spec and research
