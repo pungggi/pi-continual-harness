@@ -134,6 +134,28 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 8 — DONE (0.10.0)
+
+- **Merge-capable dedupe (the "fuzzy corrections" take 1).** The `dedupe`
+  proposer now **merges** instead of blind-deleting: two active items sharing
+  the key fields (kind, owner model, **durable layer** — scope + project slug)
+  with token overlap ≥ a configurable threshold merge into the higher-
+  importance keeper — the keeper's content stays verbatim (ACE anti-collapse;
+  injection is content-only, so the prompt block is untouched), its `evidence`
+  becomes the line-wise union (capped), applied as ONE audited `update` +
+  `delete` pair; identical evidence degenerates to a plain delete. Pure planner
+  (`planDedupe(state, opts)`, exported) + wrapper reading new config keys
+  `dedupe: { threshold, merge }` (bad values coerced); `/refine --threshold`
+  overrides for one run; `ProposeInput.config` threads the loaded config to any
+  proposer. `merge: false` restores delete-only. Spec + research grounding
+  (incl. the Cactus/Needle papers behind the future hooks — threshold
+  auto-tuning, semantic similarity via the `DedupeOptions.similarity` seam,
+  token-aware tokenization, calibrated two-band gating):
+  [PLAN-dedupe-merge.md](PLAN-dedupe-merge.md).
+  **Effort:** ~180 lines (proposer/config/refine) + 25 tests. **Risk:** low —
+  no schema change (existing `update`+`delete` ops), atomic batches with
+  rollback, everything audited and `/tree`-rollbackable.
+
 ## Future extensions (not on the phase plan)
 
 Two items were flagged during the phases as deferred decisions. Neither needs
@@ -158,7 +180,9 @@ prose.
   correction-side signals are high-false-positive; demotion-from-outcomes is
   the natural future extension, and it belongs in the proposer registry
   (auditable, selectable, reviewable) rather than as a silent `turn_end`
-  mutation.
+  mutation. The **merge/dedupe half** of this extension shipped as Phase 8
+  (threshold + key-field merge); what remains open is the correction-side
+  signal itself.
 
 These are open backlog, not commitments. The broader composition space
 (auto-push to pi-mem on a cadence, bi-directional pi-mem sync) is similarly

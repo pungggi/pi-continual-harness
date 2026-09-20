@@ -20,11 +20,21 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
+import { DEDUPE_THRESHOLD } from "./proposer.js";
 
 export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
+
+/** Resolved dedupe policy (merge-capable, 0.10.0). Populated by loadConfig. */
+export interface NormalizedDedupe {
+  /** Token-overlap threshold in (0,1]; pairs at/above it merge. Default 0.6. */
+  threshold: number;
+  /** Merge duplicates into the keeper (evidence union) instead of delete-only.
+   *  Default true; `false` restores the pre-0.10 delete-only behavior. */
+  merge: boolean;
+}
 
 export interface HarnessConfig {
   /** DEPRECATED (0.9.0): items carry their own scope now (see /harness move);
@@ -53,6 +63,9 @@ export interface HarnessConfig {
   /** Injection selection policy (on by default). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/select.ts. */
   injection?: NormalizedInjection;
+  /** Dedupe proposer policy (merge-capable). Resolved by loadConfig, so the
+   *  value here is always fully-populated. See src/proposer.ts. */
+  dedupe?: NormalizedDedupe;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
@@ -62,6 +75,10 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
   proposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
+  // Dedupe (merge-capable): merge ON at the historical 0.6 threshold — a
+  // near-duplicate merges into its keeper (evidence unioned) instead of being
+  // deleted cold. `merge: false` restores delete-only.
+  dedupe: { threshold: DEDUPE_THRESHOLD, merge: true },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
@@ -95,6 +112,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     // malformed `injection` object degrades to the shipped defaults rather than
     // corrupting the block sizing arithmetic.
     injection: normalizeInjection(over.injection as Partial<{ enabled: boolean; maxTokens: number; maxPerKind: number; charsPerToken: number }> | undefined),
+    dedupe: {
+      threshold: coerceThreshold(over.dedupe?.threshold),
+      merge: over.dedupe?.merge !== false,
+    },
   };
 }
 
@@ -104,6 +125,14 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
  *  pruned as below-floor on the next decay. */
 function coerceBump(raw: unknown): number {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : DEFAULT_REF_BUMP;
+}
+
+/** Coerce a user-provided dedupe threshold to a finite number in (0,1], else
+ *  the default. The threshold is a COMPARISON operand (similarity >= threshold);
+ *  out-of-range or non-numeric values must degrade to the default rather than
+ *  silently matching everything (0/-1) or nothing (>1). */
+function coerceThreshold(raw: unknown): number {
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEDUPE_THRESHOLD;
 }
 
 /** Load the config, merged over defaults. Tolerant: missing/malformed → defaults.

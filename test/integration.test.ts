@@ -720,11 +720,14 @@ describe("proposer selection (Phase 4)", () => {
     expect(sentMessages).toHaveLength(0);
     expect(getState().items).toHaveLength(1);
     expect(getState().items[0]!.importance).toBe(0.9);
+    // merge semantics (0.10.0): the keeper absorbed the duplicate — its
+    // evidence is the line-wise union, applied as update + delete (2 deltas).
+    expect(getState().items[0]!.evidence).toBe("t1\nt2");
     // audit records which proposer ran + how many it applied
     const audits = entries.filter((e) => e.customType === "harness-refinement");
     expect(audits).toHaveLength(1);
     expect((audits[0]!.data as { proposer: string }).proposer).toBe("dedupe");
-    expect((audits[0]!.data as { applied: number }).applied).toBe(1);
+    expect((audits[0]!.data as { applied: number }).applied).toBe(2);
   });
 
   it("/refine --proposer dedupe routes through the command path", async () => {

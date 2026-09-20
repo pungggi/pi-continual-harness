@@ -55,6 +55,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 /refine 50           # review last 50 turns
 /refine 25 --commit  # also export durable state (global + project layers)
 /refine --proposer dedupe  # run the rule-based dedupe proposer instead of steering
+/refine --proposer dedupe --threshold 0.75  # dedupe with a one-shot threshold
 ```
 
 Durable I/O (round-trip with pi-reflect):
@@ -140,6 +141,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 {
   "autoImport": false,
   "proposer": "steering",
+  "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false },
@@ -163,7 +165,15 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   restore the legacy "inject all items, in store order" behaviour.
 - **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
   to `steering` (the agent reasons via a steering message). `dedupe` applies a
-  rule-based dedupe directly. See [Proposers](#proposers).
+  rule-based merge directly. See [Proposers](#proposers).
+- **`dedupe`** — the rule-based dedupe proposer's policy. `threshold` (default
+  `0.6`, valid `(0,1]`) is the token-overlap level at which two items sharing
+  the key fields (kind, owner model, durable layer) count as duplicates;
+  `merge` (default `true`) **merges** each duplicate into its keeper — the
+  keeper keeps its content verbatim, its `evidence` becomes the line-wise union
+  of both, applied as one audited `update` + `delete` pair — while `false`
+  restores the pre-0.10 delete-only behavior. `/refine --proposer dedupe
+  --threshold 0.75` overrides the threshold for one run.
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
@@ -297,7 +307,7 @@ deltas directly). The propose stage is pluggable via a registry
 | Name | What it does |
 |---|---|
 | `steering` (default) | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
-| `dedupe` | Rule-based: drops near-duplicate active items (token-overlap ≥ 0.6), keeping the higher-importance one. No model call. |
+| `dedupe` | Rule-based: **merges** near-duplicate active items (token-overlap ≥ the configured threshold, same kind / owner model / durable layer) into the higher-importance keeper — one evidence-union update per keeper, then deletes the duplicates. `"dedupe": { "merge": false }` restores delete-only. No model call. |
 
 Select a proposer per run with `/refine --proposer <name>`, or set the default
 for auto-refine via `proposer` in the [config](#configuration). Both paths are
