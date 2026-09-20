@@ -315,8 +315,8 @@ deltas directly). The propose stage is pluggable via a registry
 
 The dedupe planner's `similarity` seam (`DedupeOptions.similarity`, re-exported
 from the package entry) is how a companion package upgrades the comparison —
-e.g. embedding cosine similarity, or a local decision engine such as
-[pi-jev](https://github.com/pungggi/pi-jev). A comparator may return
+e.g. embedding cosine similarity, or a local decision engine such as pi-jev
+(a local-only project for now). A comparator may return
 `{ score, abstain }` instead of a plain number: **an abstaining pair is
 treated as not duplicates** — both items are kept — so an engine with
 conformal uncertainty guarantees can safely decline to merge. Plain numeric
