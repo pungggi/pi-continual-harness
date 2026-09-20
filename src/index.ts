@@ -89,6 +89,7 @@ export {
   type ProposeInput,
   type ProposedDelta,
   type ProposeResult,
+  type SimilarityResult,
 } from "./proposer.js";
 
 // Injection selection policy (on by default). Re-exported so companion packages

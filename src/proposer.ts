@@ -142,6 +142,17 @@ export const steeringProposer: DeltaProposer = {
 
 export const DEDUPE_THRESHOLD = 0.6;
 
+/** Enriched similarity return: a score plus an explicit per-pair abstain.
+ *  The shape pinned by the pi-jev consumer contract (a conformal decision
+ *  engine abstains when its prediction set is not a singleton). */
+export interface SimilarityResult {
+  /** Similarity in [0,1], compared against DedupeOptions.threshold. */
+  score: number;
+  /** True = the engine abstains on this pair (uncertain). An abstaining
+   *  pair is conservatively treated as NOT duplicates: both items are kept. */
+  abstain?: boolean;
+}
+
 /** Options for the dedupe planner. */
 export interface DedupeOptions {
   /** Token-overlap threshold in (0,1]: pairs at/above it are duplicates.
@@ -153,8 +164,10 @@ export interface DedupeOptions {
   /** Similarity in [0,1]; defaults to tokenOverlap. The seam for the semantic
    *  upgrade path (see docs/PLAN-dedupe-merge.md, Research grounding): a
    *  companion package injects cosine similarity over embeddings without
-   *  forking planDedupe. */
-  similarity?: (a: string, b: string) => number;
+   *  forking planDedupe. May return a SimilarityResult to ABSTAIN per pair
+   *  (e.g. a conformal engine below confidence): an abstaining pair is never
+   *  treated as duplicates, whatever the score. */
+  similarity?: (a: string, b: string) => number | SimilarityResult;
 }
 
 /** Shipped defaults: merge ON at the historical 0.6 threshold. */
@@ -189,6 +202,11 @@ function durableLayer(i: HarnessItem): string {
   return i.scope === "project" ? `project:${i.project ?? ""}` : "global";
 }
 
+/** Normalize a similarity return: plain number or { score, abstain }. */
+function asSimilarity(r: number | SimilarityResult): SimilarityResult {
+  return typeof r === "number" ? { score: r } : r;
+}
+
 /** Union evidence strings line-wise: trim, drop empty and exact-duplicate
  *  lines (first occurrence wins, keeper's lines first), cap the total. */
 export function unionEvidence(sources: string[]): string {
@@ -212,7 +230,8 @@ export function unionEvidence(sources: string[]): string {
  * Pure dedupe planner: merges (or, with merge:false, drops) near-duplicate
  * ACTIVE items. Two items are duplicates iff they share the key fields —
  * kind, ownerModel, durable layer (scope+project) — and their content
- * similarity is >= opts.threshold.
+ * similarity is >= opts.threshold. A similarity engine MAY abstain per pair
+ * (see SimilarityResult): an abstaining pair is treated as NOT duplicates.
  *
  * Merge semantics (ACE-style deterministic merge, never a prose rewrite):
  * the higher-importance item is the KEEPER and keeps its content verbatim;
@@ -244,8 +263,9 @@ export function planDedupe(state: HarnessState, opts: DedupeOptions = DEFAULT_DE
       if (k.item.ownerModel !== cand.ownerModel) continue;
       // Same durable layer only (see durableLayer).
       if (durableLayer(k.item) !== durableLayer(cand)) continue;
-      const sim = similarity(k.item.content, cand.content);
-      if (sim >= opts.threshold && sim > best) {
+      const { score: sim, abstain } = asSimilarity(similarity(k.item.content, cand.content));
+      // Abstain = keep both: an uncertain engine must never cause a merge.
+      if (!abstain && sim >= opts.threshold && sim > best) {
         best = sim;
         target = k;
       }

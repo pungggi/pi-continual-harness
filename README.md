@@ -173,7 +173,11 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   keeper keeps its content verbatim, its `evidence` becomes the line-wise union
   of both, applied as one audited `update` + `delete` pair — while `false`
   restores the pre-0.10 delete-only behavior. `/refine --proposer dedupe
-  --threshold 0.75` overrides the threshold for one run.
+  --threshold 0.75` overrides the threshold for one run. A fourth key,
+  `similarity`, is API-only (functions cannot come from `harness.json`):
+  companion packages inject a richer comparator whose return may **abstain**
+  per pair (`{ score, abstain }` — see [`SimilarityResult`](#proposers)); an
+  abstaining pair is always kept, never merged or deleted.
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
   informational only — it never mutates state.
@@ -308,6 +312,15 @@ deltas directly). The propose stage is pluggable via a registry
 |---|---|
 | `steering` (default) | Delegates reasoning to the agent via a steering message — reuses the agent loop, model-agnostic, fully visible. |
 | `dedupe` | Rule-based: **merges** near-duplicate active items (token-overlap ≥ the configured threshold, same kind / owner model / durable layer) into the higher-importance keeper — one evidence-union update per keeper, then deletes the duplicates. `"dedupe": { "merge": false }` restores delete-only. No model call. |
+
+The dedupe planner's `similarity` seam (`DedupeOptions.similarity`, re-exported
+from the package entry) is how a companion package upgrades the comparison —
+e.g. embedding cosine similarity, or a local decision engine such as
+[pi-jev](https://github.com/pungggi/pi-jev). A comparator may return
+`{ score, abstain }` instead of a plain number: **an abstaining pair is
+treated as not duplicates** — both items are kept — so an engine with
+conformal uncertainty guarantees can safely decline to merge. Plain numeric
+returns keep working (the default remains token Jaccard).
 
 Select a proposer per run with `/refine --proposer <name>`, or set the default
 for auto-refine via `proposer` in the [config](#configuration). Both paths are
