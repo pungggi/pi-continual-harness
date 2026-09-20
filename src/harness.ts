@@ -60,7 +60,7 @@ interface CompletionEntry {
 const SUBCOMMANDS: CompletionEntry[] = [
   { name: "import", description: "Import durable state, layered (--prune to prune stale items)" },
   { name: "export", description: "Export active items to durable layers (or one file with a path)" },
-  { name: "export-corpus", description: "Export calibration corpus JSONL for pi-jev (dedupe pairs + lifecycle)" },
+  { name: "export-corpus", description: "Export calibration corpus JSONL for pi-reflex (dedupe pairs + lifecycle)" },
   { name: "status", description: "Show harness status (active/total, per-kind counts, durable layers)" },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },

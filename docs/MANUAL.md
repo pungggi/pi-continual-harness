@@ -328,7 +328,7 @@ copy round-trips). Inactive items are never exported.
 /harness export-corpus ./my-corpus
 ```
 
-Writes the **calibration corpora** defined by the pi-jev consumer contract
+Writes the **calibration corpora** defined by the pi-reflex consumer contract
 (§4) from *this session branch's* audit trail:
 
 - `dedupe-pairs.jsonl` — one record per compared item pair. Merged pairs are
