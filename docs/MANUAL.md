@@ -930,7 +930,7 @@ Two session entry types:
 | Entry type | Written by | Contains |
 |---|---|---|
 | `harness-state` | every mutation (`harness_mutate`, direct-apply proposers, bumps, prune, import) | `{ state, version }` — a full snapshot |
-| `harness-refinement` | every `/refine`/auto-refine | `{ lookback, commit, startedAt, source, proposer, applied, rationales[] }` |
+| `harness-refinement` | every `/refine`/auto-refine | `{ lookback, commit, startedAt, source, proposer, applied, appliedDeltas[], rationales[] }` — `applied` is a count; `appliedDeltas` (0.11.0+) is the full delta list incl. delete reasons |
 
 `source` is `"manual"` or `"auto"` so autonomous runs are distinguishable in the
 tree.

@@ -32,6 +32,7 @@
 import { createHash } from "node:crypto";
 import { IMPORTANCE_FLOOR, REFINE_ENTRY, STATE_ENTRY } from "./store.js";
 import { DEDUPE_THRESHOLD, tokenOverlap } from "./proposer.js";
+import { DEFAULT_REF_BUMP } from "./config.js";
 import type { ComponentKind, HarnessItem, HarnessState } from "./types.js";
 
 // ---- record types (contract §4; `v` follows the contract's major.minor) -----
@@ -70,30 +71,39 @@ export interface CorpusResult {
   lifecycle: LifecycleRecord[];
 }
 
+/** Options for buildCorpus. */
+export interface CorpusOptions {
+  /** The CONFIGURED outcome-loop citation bump (harness.json
+   *  `outcomeImportance.bump`; default 0.03 = DEFAULT_REF_BUMP). Classification
+   *  is config-aware: keep/drop (±0.1) are checked FIRST, so a configured
+   *  bump of exactly 0.1 collides and keep/drop win — documented behavior. */
+  citeBump?: number | undefined;
+}
+
 // ---- tuning knobs -----------------------------------------------------------
 
 /** Overlap floor for "not_dup" candidates: below it a pair is uninformative. */
 export const NOT_DUP_FLOOR = 0.3;
 /** keep/drop bump magnitude (harness.ts handleBump). */
 const KEEP_DROP_BUMP = 0.1;
-/** Classification tolerance around ±0.1 (float safety, clamped bumps). */
+/** Classification tolerance around each bump (float safety, clamped bumps). */
 const BUMP_TOL = 0.02;
-/** Cited: positive bump in (0, 0.06] that is not a keep (outcome default 0.03;
- *  a keep clamped at importance 1.0 lands at +0.05 and still reads as cited). */
-const CITE_MAX = 0.06;
 /** Smallest importance delta worth classifying at all. */
 const EPSILON = 0.005;
 
 // ---- helpers ----------------------------------------------------------------
 
-/** Loose entry shape, kept decoupled from pi's internal session types. */
+/** Loose entry shape, kept decoupled from pi's internal session types.
+ *  `applied` is a legacy COUNT; the full delta list lives in `appliedDeltas`
+ *  (0.11.0+ audit entries — see refine.ts). */
 type AnyEntry = {
   type?: string;
   customType?: string;
   data?: {
     state?: HarnessState;
     proposer?: string;
-    applied?: unknown[];
+    applied?: unknown;
+    appliedDeltas?: unknown[];
   };
 };
 
@@ -125,8 +135,14 @@ function durableLayer(i: HarnessItem): string {
 
 // ---- lifecycle ---------------------------------------------------------------
 
-/** Classify one snapshot → next-snapshot transition into lifecycle records. */
-function diffSnapshots(prev: HarnessState, next: HarnessState, out: LifecycleRecord[]): void {
+/** Classify one snapshot → next-snapshot transition into lifecycle records.
+ *  `citeBump` is the CONFIGURED outcome-loop bump (see CorpusOptions). */
+function diffSnapshots(
+  prev: HarnessState,
+  next: HarnessState,
+  citeBump: number,
+  out: LifecycleRecord[],
+): void {
   const prevById = new Map(prev.items.map((i) => [i.id, i]));
   const nextById = new Map(next.items.map((i) => [i.id, i]));
 
@@ -138,10 +154,13 @@ function diffSnapshots(prev: HarnessState, next: HarnessState, out: LifecycleRec
     }
     const d = item.importance - before.importance;
     if (Math.abs(d) < EPSILON) continue;
+    // keep/drop FIRST: a configured citation bump of exactly ±0.1 collides and
+    // keep/drop win (documented in CorpusOptions).
     if (Math.abs(d - KEEP_DROP_BUMP) <= BUMP_TOL) out.push(lifecycle(item, "kept", item.importance));
     else if (Math.abs(d + KEEP_DROP_BUMP) <= BUMP_TOL)
       out.push(lifecycle(item, "dropped", item.importance));
-    else if (d > 0 && d <= CITE_MAX) out.push(lifecycle(item, "cited", item.importance));
+    else if (citeBump > 0 && Math.abs(d - citeBump) <= BUMP_TOL)
+      out.push(lifecycle(item, "cited", item.importance));
     // else: explicit harness_mutate importance set — not a lifecycle signal.
   }
   for (const item of prev.items) {
@@ -157,29 +176,36 @@ function lifecycle(item: HarnessItem, event: LifecycleEvent, importance: number)
 
 // ---- dedupe pairs --------------------------------------------------------------
 
-/** Emit pair records for one dedupe refinement run. `pre` is the snapshot
- *  before the run (dup contents live there), `post` the snapshot the run wrote
- *  (keeper contents, post-merge evidence). Non-merge runs (applied = []) still
- *  yield "not_dup" candidates from `pre`. */
+/** Emit pair records for one dedupe refinement run.
+ *
+ *  `current` is the store state AT AUDIT TIME — a run that applied nothing
+ *  writes NO harness-state snapshot, so "last snapshot" is correct whether or
+ *  not this run wrote one (no-merge runs: current IS the pre-run state).
+ *  `pre` (previous snapshot, only meaningful when the run applied deletes)
+ *  supplies DELETED items' contents; keepers are read from `current`.
+ *
+ *  `deltas` comes from the audit entry's `appliedDeltas` (0.11.0+). Legacy
+ *  entries carry only a numeric count — pass [] there: dup reconstruction is
+ *  impossible without delete reasons, but not_dup candidates still emit. */
 function collectDedupePairs(
+  current: HarnessState,
   pre: HarnessState,
-  post: HarnessState,
-  applied: unknown[],
+  deltas: unknown[],
   seen: Set<string>,
   out: DedupePairRecord[],
 ): void {
+  const currentById = new Map(current.items.map((i) => [i.id, i]));
   const preById = new Map(pre.items.map((i) => [i.id, i]));
-  const postById = new Map(post.items.map((i) => [i.id, i]));
 
-  const deletes = (applied as Array<{ op?: string; id?: string; reason?: string }>).filter(
-    (d) => d.op === "delete" && d.id && typeof d.reason === "string",
+  const deletes = (deltas as Array<{ op?: string; id?: string; reason?: string }>).filter(
+    (d) => d && d.op === "delete" && d.id && typeof d.reason === "string",
   );
   const deletedIds = new Set(deletes.map((d) => d.id!));
 
   for (const d of deletes) {
     const parsed = parseDedupeDelete(d.reason!);
     if (!parsed) continue;
-    const keeper = postById.get(parsed.keeperId) ?? preById.get(parsed.keeperId);
+    const keeper = currentById.get(parsed.keeperId) ?? preById.get(parsed.keeperId);
     const dup = preById.get(d.id!);
     if (!keeper || !dup) continue;
     pushPair(
@@ -194,10 +220,9 @@ function collectDedupePairs(
   }
 
   // not_dup candidates: everything the planner COULD have compared (same key
-  // fields, both active, neither deleted this run) but did not merge, with an
-  // informative overlap. The run's threshold is not recorded in the audit
-  // entry, so the shipped default decides the boundary.
-  const candidates = pre.items.filter((i) => i.active && !deletedIds.has(i.id));
+  // fields, active, not deleted this run) but did not merge, with an
+  // informative overlap. Always relative to the CURRENT state.
+  const candidates = current.items.filter((i) => i.active && !deletedIds.has(i.id));
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
       const a = candidates[i]!;
@@ -245,11 +270,17 @@ function pushPair(
  * Build the calibration corpora from an ordered session-branch entry iterable
  * (e.g. `ctx.sessionManager.getBranch()`). Pure and deterministic.
  *
- * Walk order note: a dedupe run appends its post-run `harness-state` snapshot
- * BEFORE its `harness-refinement` audit entry, so at an audit entry the last
- * two snapshots are (pre-run, post-run).
+ * Walk notes:
+ *  - A dedupe run that APPLIED deltas appends its post-run `harness-state`
+ *    snapshot immediately before its `harness-refinement` audit entry, so at
+ *    an audit entry the last snapshot is the CURRENT state either way.
+ *  - A no-merge run writes NO snapshot: the last snapshot is an older state
+ *    that is still the current store (candidates emit from it).
+ *  - Legacy audit entries (pre-0.11.0) carry `applied` as a COUNT with no
+ *    delta details: dup reconstruction is skipped, candidates still emit.
  */
-export function buildCorpus(entries: Iterable<unknown>): CorpusResult {
+export function buildCorpus(entries: Iterable<unknown>, opts: CorpusOptions = {}): CorpusResult {
+  const citeBump = opts.citeBump ?? DEFAULT_REF_BUMP;
   const pairs: DedupePairRecord[] = [];
   const lifecycle: LifecycleRecord[] = [];
   const seen = new Set<string>();
@@ -259,7 +290,7 @@ export function buildCorpus(entries: Iterable<unknown>): CorpusResult {
     if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
       const next = entry.data.state;
       const prev = snapshots.at(-1);
-      if (prev) diffSnapshots(prev, next, lifecycle);
+      if (prev) diffSnapshots(prev, next, citeBump, lifecycle);
       snapshots.push(next);
       continue;
     }
@@ -268,9 +299,11 @@ export function buildCorpus(entries: Iterable<unknown>): CorpusResult {
       entry.customType === REFINE_ENTRY &&
       entry.data?.proposer === "dedupe"
     ) {
-      const post = snapshots.at(-1);
+      const current = snapshots.at(-1);
+      if (!current) continue; // no state seen yet — nothing to compare
+      const deltas = Array.isArray(entry.data.appliedDeltas) ? entry.data.appliedDeltas : [];
       const pre = snapshots.at(-2) ?? { items: [] };
-      if (post) collectDedupePairs(pre, post, entry.data.applied ?? [], seen, pairs);
+      collectDedupePairs(current, pre, deltas, seen, pairs);
     }
   }
   return { pairs, lifecycle };

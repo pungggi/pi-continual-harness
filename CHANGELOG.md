@@ -24,6 +24,17 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `./harness-corpus/<yyyy-mm-dd>/`; local file writes only — nothing leaves
   the machine.
 
+- **Review fixes (PR #14 feedback)** — three correctness issues in the first
+  cut: (1) the dedupe audit entry now records the full `appliedDeltas` list
+  (incl. delete reasons) alongside the legacy `applied` count — without it,
+  dup pairs were unreconstructable and the exporter crashed on the count-only
+  legacy shape; (2) `not_dup` candidates now emit from the CURRENT state — a
+  no-merge dedupe run writes no snapshot, so the previous two-snapshot walk
+  read a stale state; (3) citation classification is config-aware
+  (`buildCorpus(entries, { citeBump })`, wired to `outcomeImportance.bump`,
+  default 0.03) instead of a hardcoded `(0, 0.06]` band; keep/drop (±0.1) are
+  checked first, so a configured bump of exactly 0.1 classifies as keep.
+
 ## [0.10.0] — 2026-09-20
 
 The merge-capable dedupe proposer: fuzzy-corrections take 1. Spec and research

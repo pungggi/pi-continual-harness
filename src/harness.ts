@@ -43,6 +43,7 @@ import {
 import {
   defaultScopeForPath,
   layerFilesFor,
+  loadConfig,
   projectDurablePath,
   projectSlug,
 } from "./config.js";
@@ -340,7 +341,12 @@ async function handleExportCorpus(ctx: ExtensionCommandContext, rest: string[]):
   const dir = explicit ?? join("harness-corpus", new Date().toISOString().slice(0, 10));
   ctx.ui.setStatus("harness", "Exporting calibration corpus…");
   try {
-    const corpus = buildCorpus(ctx.sessionManager.getBranch() as Iterable<unknown>);
+    // Config-aware citation classification: the outcome loop's bump is
+    // configurable (default 0.03), so the classifier must not hardcode it.
+    const { outcomeImportance } = await loadConfig();
+    const corpus = buildCorpus(ctx.sessionManager.getBranch() as Iterable<unknown>, {
+      citeBump: outcomeImportance?.bump,
+    });
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "dedupe-pairs.jsonl"), toJsonl(corpus.pairs));
     await writeFile(join(dir, "lifecycle.jsonl"), toJsonl(corpus.lifecycle));

@@ -17,7 +17,15 @@ const stateEntry = (items: HarnessItem[]) => ({
   data: { state: { items } satisfies HarnessState, version: items.length },
 });
 
-const refineEntry = (applied: unknown[], proposer = "dedupe") => ({
+const refineEntry = (appliedDeltas: unknown[], proposer = "dedupe") => ({
+  type: "custom",
+  customType: "harness-refinement",
+  // Production shape (0.11.0+): count + full delta list incl. delete reasons.
+  data: { proposer, applied: appliedDeltas.length, appliedDeltas, source: "manual" },
+});
+
+/** Pre-0.11.0 legacy shape: `applied` is a bare count, no delta details. */
+const legacyRefineEntry = (applied: number, proposer = "dedupe") => ({
   type: "custom",
   customType: "harness-refinement",
   data: { proposer, applied, source: "manual" },
@@ -63,6 +71,50 @@ describe("buildCorpus — lifecycle", () => {
     const x = (imp: number) => item({ id: "h_x", kind: "skill", content: "s", importance: imp });
     const { lifecycle } = buildCorpus([stateEntry([x(0.8)]), stateEntry([])]);
     expect(lifecycle.map((r) => r.event)).toEqual(["deleted"]);
+  });
+});
+
+describe("buildCorpus — review fixes (PR #14)", () => {
+  it("legacy count-only audit entries do not crash and skip dup reconstruction", () => {
+    const k = item({ id: "h_k", kind: "memory", content: "a b c d e f", importance: 0.9 });
+    const o = item({ id: "h_o", kind: "memory", content: "a b c d g h", importance: 0.5 });
+    // Pre-0.11.0 shape: `applied` is a bare number — must not reach .filter.
+    const { pairs, lifecycle } = buildCorpus([stateEntry([k, o]), legacyRefineEntry(1)]);
+    expect(pairs).toHaveLength(1); // no dup (reasons unavailable), candidates still emit
+    expect(pairs[0]).toMatchObject({ label: "not_dup", needs_review: true, similarity: 0.5 });
+    expect(lifecycle).toHaveLength(0);
+  });
+
+  it("a no-merge run writes no snapshot: candidates come from the current state", () => {
+    const x = item({ id: "h_x", kind: "skill", content: "p q r s t u", importance: 0.9 });
+    const y = item({ id: "h_y", kind: "skill", content: "p q r s v w", importance: 0.4 });
+    // ONE snapshot, then the audit entry — at(-2) does not exist.
+    const { pairs } = buildCorpus([stateEntry([x, y]), refineEntry([])]);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ label: "not_dup", similarity: 0.5, needs_review: true });
+  });
+
+  it("classifies citations with the CONFIGURED bump; keep/drop win collisions", () => {
+    const a = (imp: number) => item({ id: "h_a", kind: "prompt", content: "n", importance: imp });
+    const run = (from: number, to: number, citeBump?: number) =>
+      buildCorpus([stateEntry([a(from)]), stateEntry([a(to)])], citeBump !== undefined ? { citeBump } : {});
+    expect(run(0.5, 0.55, 0.05).lifecycle.map((r) => r.event)).toEqual(["cited"]); // configured bump
+    expect(run(0.5, 0.6, 0.1).lifecycle.map((r) => r.event)).toEqual(["kept"]); // collision: keep wins
+    expect(run(0.5, 0.53).lifecycle.map((r) => r.event)).toEqual(["cited"]); // default 0.03
+    expect(run(0.5, 0.58, 0.03).lifecycle.map((r) => r.event)).toEqual([]); // unclassified explicit set
+  });
+
+  it("reconstructs dup pairs from the enriched audit entry (appliedDeltas with reasons)", () => {
+    const k = item({ id: "h_k", kind: "prompt", content: "same fact text", importance: 0.9, evidence: "e1" });
+    const d = item({ id: "h_d", kind: "prompt", content: "same fact text", importance: 0.4, evidence: "e2" });
+    const merged = { ...k, evidence: "e1\ne2" };
+    const { pairs } = buildCorpus([
+      stateEntry([k, d]),
+      stateEntry([merged]),
+      refineEntry([{ op: "delete", id: "h_d", reason: "merged into h_k (overlap 1.00)" }]),
+    ]);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ label: "dup", similarity: 1, a: k.content, b: d.content });
   });
 });
 
