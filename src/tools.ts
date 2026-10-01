@@ -55,6 +55,34 @@ const DeleteShape = Type.Object({
 
 const DeltaShape = Type.Union([CreateShape, UpdateShape, DeleteShape]);
 
+// outputSchema (pi ≥ 0.99): codemode scripts and ctx.executeTool() callers get
+// structuredContent instead of the text; the model still sees `content`.
+const ItemSchema = Type.Object({
+  id: Type.String(),
+  kind: StringEnum(KIND_VALUES),
+  content: Type.String(),
+  evidence: Type.String(),
+  importance: Type.Number(),
+  active: Type.Boolean(),
+  ownerModel: Type.String(),
+  scope: Type.Optional(StringEnum(["global", "project"])),
+  project: Type.Optional(Type.String()),
+  createdAt: Type.Number(),
+  updatedAt: Type.Number(),
+});
+
+const ListOutputSchema = Type.Object({
+  count: Type.Number(),
+  items: Type.Array(ItemSchema),
+});
+
+const MutateOutputSchema = Type.Object({
+  applied: Type.Number(),
+  created: Type.Number(),
+  updated: Type.Number(),
+  deleted: Type.Number(),
+});
+
 export function registerTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "harness_list",
@@ -74,6 +102,7 @@ export function registerTools(pi: ExtensionAPI): void {
         }),
       ),
     }),
+    outputSchema: ListOutputSchema,
     async execute(_toolCallId, params) {
       const kind = params.kind as ComponentKind | undefined;
       const modelFilter = params.model as string | undefined;
@@ -103,6 +132,22 @@ export function registerTools(pi: ExtensionAPI): void {
           },
         ],
         details: { count: items.length, items },
+        structuredContent: {
+          count: items.length,
+          items: items.map((i) => ({
+            id: i.id,
+            kind: i.kind,
+            content: i.content,
+            evidence: i.evidence,
+            importance: i.importance,
+            active: i.active,
+            ownerModel: i.ownerModel,
+            ...(i.scope ? { scope: i.scope } : {}),
+            ...(i.project ? { project: i.project } : {}),
+            createdAt: i.createdAt,
+            updatedAt: i.updatedAt,
+          })),
+        },
       };
     },
   });
@@ -119,6 +164,7 @@ export function registerTools(pi: ExtensionAPI): void {
     parameters: Type.Object({
       deltas: Type.Array(DeltaShape, { minItems: 1, maxItems: 20 }),
     }),
+    outputSchema: MutateOutputSchema,
     async execute(_toolCallId, params) {
       const incoming = params.deltas as Delta[];
       // The active model is the ACTOR: creates bind to it, and update/delete are
@@ -133,9 +179,13 @@ export function registerTools(pi: ExtensionAPI): void {
         getActiveModelKey(),
       );
       const summary = summarize(applied);
+      const created = applied.filter((a) => a.op === "create").length;
+      const updated = applied.filter((a) => a.op === "update").length;
+      const deleted = applied.filter((a) => a.op === "delete").length;
       return {
         content: [{ type: "text", text: summary }],
         details: { applied, version: getState().items.length },
+        structuredContent: { applied: applied.length, created, updated, deleted },
       };
     },
   });

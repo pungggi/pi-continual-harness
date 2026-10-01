@@ -19,9 +19,11 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, modelKey, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
+import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import { buildClassify } from "./classify.js";
+import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { AppliedDelta } from "./types.js";
 import { loadConfig, projectSlug } from "./config.js";
 
@@ -67,6 +69,13 @@ export interface RefineOptions {
    *  (overrides `dedupe.threshold` in harness.json). Affects the rule-based
    *  `dedupe` proposer; ignored by others. */
   threshold?: number;
+  /** How a steering message is delivered (pi ≥ 0.87 actionable boundaries).
+ *  "steer" (default): send it as a user message via sendUserMessage — the
+   *  manual /refine path. "boundary": do NOT send; return it in RefineResult
+   *  so a turn_end caller can persist it as a structural entry and guarantee
+   *  one next provider request with `{ entries, continue: true }` — no
+   *  steering queue, no follow-up scheduling side effects. */
+  delivery?: "steer" | "boundary";
 }
 
 export interface RefineResult {
@@ -78,6 +87,10 @@ export interface RefineResult {
   proposer: string;
   /** Deltas the proposer applied directly (0 for the steering path). */
   applied: number;
+  /** Set ONLY with delivery "boundary" when the proposer returned a steering
+   *  message: the message was NOT sent — the caller owns persisting it (e.g.
+   *  as a turn_end boundary draft) and ensuring the continuation. */
+  steeringMessage?: string;
 }
 
 /**
@@ -109,6 +122,9 @@ export async function runRefine(
   // Inject a one-shot model completion (built from ctx) so dedicated-model
   // proposers can make a hidden LLM call. Undefined when no model is resolvable.
   const complete = buildComplete(ctx);
+  // Inject the classifier adapter when `classifier.model` is configured and
+  // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
+  const classify = buildClassify(ctx, config.classifier?.model);
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
   const result = await proposer.propose({
@@ -117,13 +133,14 @@ export async function runRefine(
     lookback,
     config: proposerConfig,
     ...(complete ? { complete } : {}),
+    ...(classify ? { classify } : {}),
   });
   const proposedDeltas = result.deltas ?? [];
   // Stamp direct-apply create deltas with the active model so proposer-authored
   // notes bind to the model driving the turn (the steering path is stamped in
   // the harness_mutate tool instead). Orphans result only when the model is
   // unknown; before_agent_start adopts them on the next turn.
-  const ownerKey = modelKey(ctx.model);
+  const ownerKey = resolveBindingKey(ctx.model, branchEntries(ctx), config.virtualBinding);
 
   let applied = 0;
   let appliedDeltas: AppliedDelta[] = [];
@@ -194,7 +211,12 @@ export async function runRefine(
   }
 
   if (result.steeringMessage) {
-    pi.sendUserMessage(result.steeringMessage);
+    if (options.delivery === "boundary") {
+      // Caller owns delivery: persist as a structural boundary entry and
+      // continue — see auto-refine.ts. Returned via RefineResult.
+    } else {
+      pi.sendUserMessage(result.steeringMessage);
+    }
   }
   ctx.ui.setStatus("harness", undefined);
   return {
@@ -204,6 +226,7 @@ export async function runRefine(
     source,
     proposer: proposer.name,
     applied,
+    ...(options.delivery === "boundary" && result.steeringMessage ? { steeringMessage: result.steeringMessage } : {}),
   };
 }
 
@@ -237,7 +260,7 @@ function parseArgs(args: string): {
   return { lookback, commit, proposer, threshold, thresholdInvalid };
 }
 
-function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
+export function gatherEvidence(ctx: ExtensionContext, lookback: number): string {
   const entries = ctx.sessionManager.getBranch() as AnyEntry[];
   const messages = entries.filter((e) => e.type === "message" && e.message);
   const recent = messages.slice(-lookback * 2); // ~2 entries per turn (user+assistant)

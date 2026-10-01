@@ -134,6 +134,37 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 9 — DONE (0.12.0) — pi 0.87/0.99 adoption
+
+Adopted the pi 0.87/0.99 extension APIs across the package (peer dep
+**≥ 0.99.0**). Five upgrades:
+
+- **Live re-injection** (`context_with_system`): the block renders on EVERY
+  provider request, so a mid-run `harness_mutate` lands on the next request;
+  `before_agent_start` is now only the binding bridge (key cache + adoption).
+- **Virtual-model binding policy** (`virtualBinding: virtual|physical`):
+  routers no longer silently split the harness; `physical` keys by the routed
+  model behind the latest successful response. Pure `vmodel.ts` helpers
+  exported.
+- **Classifier integration** (`classifier.model`, pi ≥ 0.99
+  `modelRegistry.classify()`): a minimal structural `ClassifyFn` seam in
+  `ProposeInput` powering (a) classifier-confirmed dedupe — recall-widened
+  candidates confirmed by ONE batched yes/no call (≤20 pairs), errors fall
+  back to the rule-based plan — and (b) the auto-refine `gate`, which skips a
+  cadenced refine when the trajectory holds no durable correction.
+- **Structured tool results**: `outputSchema` + `structuredContent` on both
+  tools for codemode / `ctx.executeTool()` programmatic use.
+- **Boundary delivery for auto-refine** (pi ≥ 0.87 actionable `turn_end`):
+  steering prompt persisted as a structural `harness.auto-refine-request`
+  entry with `{ entries, continue: true }` instead of a synthetic user message
+  (`sendUserMessage` fallback when the boundary can't continue; manual
+  `/refine` still steers).
+
+**Effort:** ~450 lines (src) + 3 new test files. **Risk:** low — every path
+config-gated or behavior-identical without a classifier; the render move is
+covered by the existing injection-selection tests re-driven through
+`context_with_system`.
+
 ## Phase 8 — DONE (0.10.0)
 
 - **Merge-capable dedupe (the "fuzzy corrections" take 1).** The `dedupe`

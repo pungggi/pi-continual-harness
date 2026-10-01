@@ -12,6 +12,59 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **Live re-injection via `context_with_system` (pi 0.87)** — the harness block
+  is now rendered on EVERY provider request (full-transcript system-message
+  transformation), not baked into the base prompt once per agent run. A
+  `harness_mutate` that fixes a stale note mid-run shows up on the very next
+  request. `before_agent_start` remains the model-binding bridge (key cache +
+  orphan adoption) but no longer rewrites the prompt; when there is nothing to
+  inject the extension does not own the transcript at all.
+- **Virtual-model binding policy (pi 0.99)** — `ctx.model` names the *virtual*
+  model when a router extension is selected, which silently split the harness
+  per router. New config `"virtualBinding": "virtual" | "physical"` (default
+  `virtual`, the previous behavior): `physical` keys items by the *physical*
+  model behind the latest successful response on the branch, so notes
+  accumulated under `anthropic/claude-x` keep injecting through a router that
+  routes there; before the first response the binding is unknown (creates stay
+  orphans, adopted on first contact). Pure helpers (`isVirtualModel`,
+  `physicalKeyFromBranch`, `resolveBindingKey`) re-exported from the package
+  entry.
+- **Classifier integration (pi 0.99)** — `ctx.modelRegistry.classify()` behind
+  a minimal structural `ClassifyFn` seam (`ProposeInput.classify`, re-exported):
+  - `"classifier": { "model": "typesafe/jev-latest" }` (or any classifier
+    catalog entry, e.g. a local llama.cpp classifier) enables both paths.
+  - **Classifier-confirmed dedupe**: the `dedupe` proposer recall-widens its
+    candidate pass (threshold − 0.15, floor 0.35) and confirms each pair with
+    ONE batched yes/no call (≤ 20 pairs). Only confirmed pairs merge; a
+    classifier error falls back to the plain rule-based plan — the classifier
+    can narrow merges, never block them. Telemetry (`modelCall`) recorded in
+    the audit entry. `planDedupePairs` / `deltasFromGroups` / `confirmGroups` /
+    `buildPairQuestions` exported for reuse.
+  - **Auto-refine gate**: `"autoRefine": { "gate": true }` asks one yes/no
+    question over the recent trajectory before spending a refine pass;
+    "no durable correction" skips it. Errors fall back to the plain cadence.
+- **Structured tool results (pi 0.99)** — `harness_list` and `harness_mutate`
+  declare `outputSchema` and return `structuredContent` (items array / applied
+  counts), so codemode scripts and `ctx.executeTool()` callers consume the
+  harness programmatically; the model still sees the text content.
+- **Boundary delivery for auto-refine (pi 0.87)** — the steering prompt is no
+  longer sent as a synthetic user message: `runRefine` (with the new
+  `delivery: "boundary"`) returns it undelivered and the `turn_end` handler
+  persists it as a structural `harness.auto-refine-request` custom-message
+  draft with `{ entries, continue: true }` — one guaranteed next provider
+  request with no steering-queue or follow-up-scheduling side effects. Falls
+  back to `sendUserMessage` when the boundary cannot continue. Manual `/refine`
+  still steers (it may run while idle).
+
+### Changed
+
+- **Minimum pi version is now 0.99.0** (peer + dev dependencies). All adopted
+  APIs ship by 0.99.0 (`context_with_system`, actionable `turn_end`
+  boundaries, classifier `classify()`, `outputSchema`/`structuredContent`,
+  virtual models).
+
+### Added (earlier in this release)
+
 - **`/harness export-corpus [path]`** — the calibration corpus exporter for
   the pi-reflex consumer contract (§4, issue #12). Reconstructs two JSONL corpora
   from the session branch's own audit trail: `dedupe-pairs.jsonl` (merged
