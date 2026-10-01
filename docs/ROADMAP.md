@@ -134,6 +134,21 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 10 — DONE (0.13.0) — stale-draft hygiene
+
+Closed the follow-up from Phase 9: boundary-delivered auto-refine drafts
+accumulated in model context forever (each one carries the full steering
+prompt). Now every boundary also appends `context_edit` drafts (pi ≥ 0.87
+`ContextEditEntry`, `replacement: null`) omitting each LIVE prior
+`harness.auto-refine-request`, giving the invariant **at most one auto-refine
+request is ever model-visible**. Idempotent via the projection (already-
+omitted drafts surface with empty `messages` and are skipped); raw history,
+usage, and UI history untouched. Kill-switch `autoRefine.omitStaleDrafts:
+false`. `buildOmissionDrafts` exported.
+
+**Effort:** ~60 lines + 5 tests. **Risk:** low — opt-in path only (auto-refine),
+rollback-able, config kill-switch.
+
 ## Phase 9 — DONE (0.12.0) — pi 0.87/0.99 adoption
 
 Adopted the pi 0.87/0.99 extension APIs across the package (peer dep

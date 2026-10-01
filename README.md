@@ -440,7 +440,9 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 - **Boundary delivery for auto-refine**: the steering prompt is persisted as a
   structural entry with `{ entries, continue: true }` at `turn_end` (no
   synthetic user message, no follow-up-scheduling side effects); manual
-  `/refine` still steers via a user message.
+  `/refine` still steers via a user message. Each new boundary also omits
+  prior auto-refine request drafts from future provider context (pi ≥ 0.87
+  context edits; `autoRefine.omitStaleDrafts: false` to keep them).
 
 Open extension points (see `docs/ROADMAP.md`):
 

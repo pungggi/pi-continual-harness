@@ -673,6 +673,85 @@ describe("runRefine + auto-refine", () => {
     }
   });
 
+  it("boundary omits stale auto-refine drafts from future context (pi ≥ 0.87 context edits); kill-switch off", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-omit-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile);
+    try {
+      // A prior auto-refine draft still LIVE in the projected context, plus an
+      // already-omitted one and an unrelated custom message.
+      const contextEntries = [
+        {
+          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_stale" },
+          messages: [{ role: "custom" }],
+        },
+        {
+          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_gone" },
+          messages: [],
+        },
+        {
+          sourceEntry: { type: "custom_message", customType: "other", id: "e_other" },
+          messages: [{ role: "custom" }],
+        },
+      ];
+      const { pi, fire, ctx } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ]);
+      continualHarness(pi);
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true, contextEntries } }, ctx());
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true, contextEntries } }, ctx())) as Array<{
+        entries?: Array<{ type: string; customType?: string; targetId?: string }>;
+        continue?: boolean;
+      } | undefined>;
+      const boundary = rets.find((r) => r?.continue === true)!;
+      const omissions = boundary.entries!.filter((e) => e.type === "context_edit");
+      // only the stale LIVE draft, not the already-omitted one, not the other message
+      expect(omissions).toEqual([{ type: "context_edit", targetId: "e_stale", replacement: null }]);
+      // the new request draft still rides along, AFTER the omissions
+      const newDraftIdx = boundary.entries!.findIndex((e) => e.type === "custom_message");
+      expect(newDraftIdx).toBeGreaterThan(boundary.entries!.length - 2);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omitStaleDrafts: false disables the context-edit hygiene", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-omit-off-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1, omitStaleDrafts: false } }));
+    await loadConfig(cfgFile);
+    try {
+      const contextEntries = [
+        {
+          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_stale" },
+          messages: [{ role: "custom" }],
+        },
+      ];
+      const { pi, fire, ctx } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ]);
+      continualHarness(pi);
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true, contextEntries } }, ctx());
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true, contextEntries } }, ctx())) as Array<{
+        entries?: Array<{ type: string }>;
+        continue?: boolean;
+      } | undefined>;
+      const boundary = rets.find((r) => r?.continue === true)!;
+      expect(boundary.entries!.some((e) => e.type === "context_edit")).toBe(false);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("turn_end stays inert when auto-refine is disabled (cached disabled config)", async () => {
     resetAutoRefine();
     resetConfigCache();

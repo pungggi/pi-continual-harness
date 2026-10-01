@@ -139,3 +139,14 @@ export {
   type ClassifyBoolResult,
   type ClassifyFn,
 } from "./classify.js";
+
+// Auto-refine boundary helpers (pi ≥ 0.87, 0.12.0–0.13.0): the steering draft
+// and the stale-draft context-edit omissions. Re-exported for tests and
+// companion packages without reaching into internal paths.
+export {
+  AUTO_REFINE_ENTRY,
+  buildOmissionDrafts,
+  buildRefineDraft,
+  type OmissionDraft,
+  type ProjectedLike,
+} from "./auto-refine.js";
