@@ -101,13 +101,26 @@ clean slate.
 - **Stamping.** New items are stamped with the model driving the turn. The
   model-facing tools cannot see the active model, so `before_agent_start`
   caches it (it always fires first in a turn, with the model); `harness_mutate`
-  stamps creates from that cache, and direct-apply proposers stamp from
-  `ctx.model`.
-- **Injection.** `before_agent_start` renders a **selected subset** of the
-  items whose `ownerModel` matches the active model — importance-ordered and
-  capped per kind + by a token budget, on by default (see
-  [§8 → Injection selection](#injection-selection-on-by-default)). An unknown
-  model injects nothing.
+  stamps creates from that cache, and direct-apply proposers stamp from the
+  policy-resolved binding key (see *Virtual models* below).
+- **Injection.** `before_agent_start` resolves and caches the binding key and
+  adopts orphans; the block itself is rendered by the `context_with_system`
+  handler on **every provider request** (pi ≥ 0.99) — a **selected subset** of
+  the items whose `ownerModel` matches the resolved key, importance-ordered
+  and capped per kind + by a token budget, on by default (see
+  [§8 → Injection selection](#injection-selection-on-by-default)). Because the
+  render is per-request, a mid-run `harness_mutate` shows up on the very next
+  request. An unknown model injects nothing — and when there is nothing to
+  inject, the extension does not own the transcript at all.
+- **Virtual models (pi ≥ 0.99).** When a **virtual model** (a router extension,
+  `api: "pi-virtual"`) is selected, `ctx.model` names the *router*, not the
+  model answering. The `"virtualBinding"` config key picks the key:
+  `"virtual"` (default) keys the selection itself; `"physical"` keys the
+  *physical* model behind the latest successful response on the branch (same
+  semantics as pi's own model-change resolution), so physical-model notes
+  survive a router. Before the first response under `"physical"` the key is
+  unknown — creates stay orphans and are adopted on first contact. See
+  [§7 → Configuration](#configuration).
 - **`harness_list`** defaults to the active model's items (`model: "*"` for all,
   or an explicit `"provider/id"`).
 - **Orphan adoption.** Items with no owner (legacy snapshots, old durable
@@ -127,6 +140,10 @@ outcome).
 ---
 
 ## 2. Installation
+
+Requires **pi ≥ 0.99.0** (peer dependency; the adopted extension events —
+`context_with_system`, actionable `turn_end` boundaries — and the classifier /
+structured-tool APIs all ship by 0.99.0).
 
 ```
 pi install npm:pi-continual-harness
@@ -472,7 +489,8 @@ harness_list({ kind?: ComponentKind, model?: string })
 Reads current state. Omit `kind` for everything, or filter by `prompt` |
 `memory` | `skill` | `subagent`. `model` defaults to the **active model's**
 items (what gets injected this turn); pass `"*"` for every model, or an
-explicit `"provider/id"`. Returns one text line per item:
+explicit `"provider/id"`. Returns one text line per item plus a matching
+`structuredContent.items[]` (see below):
 
 ```
 [h_lz3k9p2_a1b2c] (memory, importance 0.62, active, model anthropic/sonnet) <content>
@@ -517,8 +535,12 @@ and `update`/`delete` are unscoped.
 ```
 
 Returns a summary line plus `details.applied` (the `AppliedDelta[]`) and
-`details.version`. Every call persists a `harness-state` snapshot → `/tree`
-rollback covers it.
+`details.version`. Both tools also declare `outputSchema` and return
+`structuredContent` (pi ≥ 0.99): `harness_list` → `{ count, items[] }` (full
+item objects), `harness_mutate` → `{ applied, created, updated, deleted }` —
+codemode scripts and `ctx.executeTool()` callers get the JSON instead of the
+text; the model still sees the text content. Every call persists a
+`harness-state` snapshot → `/tree` rollback covers it.
 
 ---
 
@@ -614,8 +636,10 @@ defaults (the loader never throws).
   "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": false, "everyTurns": 50 },
-  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false },
-  "outcomeImportance": { "enabled": false, "bump": 0.03 }
+  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false },
+  "outcomeImportance": { "enabled": false, "bump": 0.03 },
+  "classifier":    { "model": "typesafe/jev-latest" },   // opt-in classifier (pi ≥ 0.99)
+  "virtualBinding": "virtual"             // "physical" keys by routed model (pi ≥ 0.99)
 }
 ```
 
@@ -636,8 +660,11 @@ defaults (the loader never throws).
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
 | `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
+| `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
+| `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
+| `virtualBinding` | `"virtual"` | `virtual` \| `physical` | How the per-model isolation key treats **virtual models** (routers). `virtual`: key = the selection's own id (pre-0.12 behavior). `physical`: when the selection is virtual, key = the physical model behind the latest successful response on the branch; before the first response the key is unknown (creates orphan, adopted on first contact). |
 
 ### Injection selection (on by default)
 
@@ -804,16 +831,30 @@ This is the gentlest option — autonomy without mutation.
 
 ### Auto-refine (`src/auto-refine.ts`)
 
-`autoRefine: { enabled, everyTurns, commit }` — **autonomous self-mutation**.
+`autoRefine: { enabled, everyTurns, commit, gate }` — **autonomous
+self-mutation**.
 
 - Fires `/refine` itself every `everyTurns` (default **100**) turns.
 - Runs the **exact same `runRefine()`** as manual `/refine` — no parallel
   mutation logic — so it inherits every safety property: structured
   evidence-backed deltas, audited `harness-refinement` entry tagged
   `source: "auto"`, branch-local snapshots, `/tree` rollback.
-- **Visible**: notifies before firing; the steering message appears in the
+- **Visible**: notifies before firing; the steering prompt appears in the
   transcript.
+- **Boundary delivery (pi ≥ 0.87)**: the steering prompt is persisted as a
+  structural `harness.auto-refine-request` custom-message entry with
+  `{ entries, continue: true }` at `turn_end` — one guaranteed next provider
+  request, no synthetic user message, no steering-queue or follow-up-
+  scheduling side effects. Falls back to the legacy `sendUserMessage` steering
+  when the boundary cannot continue (e.g. after an error turn). Manual
+  `/refine` still steers via a user message (it may run while idle).
 - `commit: true` also flushes durable state on each run.
+- **Classifier gate** (`gate: true`, pi ≥ 0.99, needs `classifier.model`):
+  before spending a refine, ONE cheap yes/no classifier question over the
+  recent trajectory — "did it contain a durable, reusable correction?".
+  "No" skips the refine (notified); "yes" proceeds. The gate **soft-fails to
+  the plain cadence** on any classifier error or missing answer — it can skip
+  work, never block it.
 - First observed turn seeds the baseline (no auto-refine on the seed turn); each
   fired refine resets the counter (so the refine turn can't immediately
   re-trigger).

@@ -27,6 +27,12 @@ export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
 
+/** How the binding key treats virtual (router) models. "virtual" (default):
+ * key = the selected model's own provider/id. "physical": when the selection
+ * is virtual, key = the physical model behind the latest successful response
+ * on the branch (see src/vmodel.ts). */
+export type VirtualBinding = "virtual" | "physical";
+
 /** Resolved dedupe policy (merge-capable, 0.10.0). Populated by loadConfig. */
 export interface NormalizedDedupe {
   /** Token-overlap threshold in (0,1]; pairs at/above it merge. Default 0.6. */
@@ -51,7 +57,21 @@ export interface HarnessConfig {
     enabled?: boolean;
     everyTurns?: number;
     commit?: boolean;
+    /** Opt-in classifier gate (pi ≥ 0.99, needs `classifier.model`): when the
+     *  cadence elapses, ask a cheap yes/no classifier whether the recent
+     *  trajectory contains a durable correction; skip the refine when it says
+     *  no. Soft-fails to the plain cadence on classifier errors. Default false. */
+    gate?: boolean;
   };
+  /** Classifier model for the cheap gated paths (pi ≥ 0.99): "provider/id" or
+   *  a bare id of a classifier catalog entry (e.g. "typesafe/jev-latest" or a
+   *  local llama.cpp classifier). When unset or unresolvable, every classifier
+   *  feature degrades to its no-classifier behavior. */
+  classifier?: {
+    model?: string | undefined;
+  };
+  /** Virtual-model binding policy (pi ≥ 0.99). Default "virtual". */
+  virtualBinding?: VirtualBinding;
   /** Delta proposer name (see proposer.ts registry). Defaults to "steering". */
   proposer?: string;
   /** Opt-in turn_end outcome loop: promote importance of items the agent
@@ -72,7 +92,9 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   autoImport: false,
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false },
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false },
+  classifier: { model: undefined },
+  virtualBinding: "virtual",
   proposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
   // Dedupe (merge-capable): merge ON at the historical 0.6 threshold — a
@@ -102,7 +124,12 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       enabled: over.autoRefine?.enabled ?? false,
       everyTurns: over.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS,
       commit: over.autoRefine?.commit ?? false,
+      gate: over.autoRefine?.gate === true,
     },
+    classifier: {
+      model: typeof over.classifier?.model === "string" && over.classifier.model ? over.classifier.model : undefined,
+    },
+    virtualBinding: over.virtualBinding === "physical" ? "physical" : "virtual",
     proposer: over.proposer ?? "steering",
     outcomeImportance: {
       enabled: over.outcomeImportance?.enabled ?? false,

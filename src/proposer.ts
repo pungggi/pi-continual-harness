@@ -29,6 +29,7 @@
 
 import type { Delta, HarnessItem, HarnessState } from "./types.js";
 import type { HarnessConfig } from "./config.js";
+import type { ClassifyFn } from "./classify.js";
 
 /** Options for the one-shot model completion injected into ProposeInput. */
 export interface CompleteOptions {
@@ -81,6 +82,12 @@ export interface ProposeInput {
    *  and steering proposers ignore it. Undefined when no model is resolvable, so
    *  a model proposer can no-op (and record an audited failure) rather than throw. */
   complete?: (prompt: string, opts?: CompleteOptions) => Promise<CompleteResult>;
+  /** Batched yes/no classification (pi ≥ 0.99 classifier models), injected by
+   *  runRefine when `classifier.model` is configured and resolvable. The shipped
+   *  `dedupe` proposer uses it as a precision filter on candidate merge pairs;
+   *  other proposers may use it for cheap gating decisions. Undefined when no
+   *  classifier is available — consumers must degrade gracefully. */
+  classify?: ClassifyFn;
 }
 
 /** A single delta plus a human-readable reason for the audit trail. */
@@ -227,6 +234,79 @@ export function unionEvidence(sources: string[]): string {
 }
 
 /**
+ * Pure dedupe grouping: the keeper/absorbed structure behind planDedupe.
+ * Exported (0.12.0) so the classifier-confirmed path can filter PAIRS before
+ * deltas are built — an async confirm cannot go through the sync `similarity`
+ * seam. See planDedupe for the matching semantics.
+ */
+export interface DedupeGroup {
+  keeper: HarnessItem;
+  absorbed: Array<{ dup: HarnessItem; overlap: number }>;
+}
+
+export function planDedupePairs(state: HarnessState, opts: DedupeOptions = DEFAULT_DEDUPE): DedupeGroup[] {
+  const similarity = opts.similarity ?? tokenOverlap;
+  const ordered = state.items
+    .filter((i) => i.active)
+    .sort((a, b) => b.importance - a.importance);
+  const keepers: DedupeGroup[] = [];
+  for (const cand of ordered) {
+    let target: DedupeGroup | undefined;
+    let best = 0;
+    for (const k of keepers) {
+      if (k.keeper.kind !== cand.kind) continue;
+      // Per-model isolation: each model keeps its own copy, so two near-
+      // identical items bound to different models are NOT duplicates.
+      if (k.keeper.ownerModel !== cand.ownerModel) continue;
+      // Same durable layer only (see durableLayer).
+      if (durableLayer(k.keeper) !== durableLayer(cand)) continue;
+      const { score: sim, abstain } = asSimilarity(similarity(k.keeper.content, cand.content));
+      // Abstain = keep both: an uncertain engine must never cause a merge.
+      if (!abstain && sim >= opts.threshold && sim > best) {
+        best = sim;
+        target = k;
+      }
+    }
+    if (target) target.absorbed.push({ dup: cand, overlap: best });
+    else keepers.push({ keeper: cand, absorbed: [] });
+  }
+  return keepers;
+}
+
+/** Build the update/delete deltas from keeper groups (see planDedupe). */
+export function deltasFromGroups(groups: DedupeGroup[], opts: DedupeOptions = DEFAULT_DEDUPE): ProposedDelta[] {
+  const updates: ProposedDelta[] = [];
+  const deletes: ProposedDelta[] = [];
+  for (const k of groups) {
+    if (k.absorbed.length === 0) continue;
+    if (opts.merge) {
+      const merged = unionEvidence([k.keeper.evidence, ...k.absorbed.map((a) => a.dup.evidence)]);
+      // Skip the no-op: identical evidence → the merge degenerates to a plain
+      // delete for this pair (no update delta).
+      if (merged !== k.keeper.evidence) {
+        updates.push({
+          delta: { op: "update", id: k.keeper.id, evidence: merged },
+          rationale: `dedupe: merged ${k.absorbed.length} duplicate(s) (${k.absorbed.map((a) => a.dup.id).join(", ")}) into ${k.keeper.id}; evidence unioned (${k.absorbed.length + 1} sources).`,
+        });
+      }
+    }
+    for (const { dup, overlap } of k.absorbed) {
+      deletes.push({
+        delta: {
+          op: "delete",
+          id: dup.id,
+          reason: opts.merge
+            ? `merged into ${k.keeper.id} (overlap ${overlap.toFixed(2)})`
+            : `near-duplicate of ${k.keeper.id} (overlap ${overlap.toFixed(2)})`,
+        },
+        rationale: `dedupe: "${truncate(dup.content)}" ≈ keeper "${truncate(k.keeper.content)}" (Jaccard ${overlap.toFixed(2)}); ${opts.merge ? `merged into ${k.keeper.id}.` : `kept higher-importance ${k.keeper.id}.`}`,
+      });
+    }
+  }
+  return [...updates, ...deletes];
+}
+
+/**
  * Pure dedupe planner: merges (or, with merge:false, drops) near-duplicate
  * ACTIVE items. Two items are duplicates iff they share the key fields —
  * kind, ownerModel, durable layer (scope+project) — and their content
@@ -248,70 +328,105 @@ export function unionEvidence(sources: string[]): string {
  * best-overlap one.
  */
 export function planDedupe(state: HarnessState, opts: DedupeOptions = DEFAULT_DEDUPE): ProposedDelta[] {
-  const similarity = opts.similarity ?? tokenOverlap;
-  const ordered = state.items
-    .filter((i) => i.active)
-    .sort((a, b) => b.importance - a.importance);
-  const keepers: Array<{ item: HarnessItem; absorbed: Array<{ dup: HarnessItem; overlap: number }> }> = [];
-  for (const cand of ordered) {
-    let target: (typeof keepers)[number] | undefined;
-    let best = 0;
-    for (const k of keepers) {
-      if (k.item.kind !== cand.kind) continue;
-      // Per-model isolation: each model keeps its own copy, so two near-
-      // identical items bound to different models are NOT duplicates.
-      if (k.item.ownerModel !== cand.ownerModel) continue;
-      // Same durable layer only (see durableLayer).
-      if (durableLayer(k.item) !== durableLayer(cand)) continue;
-      const { score: sim, abstain } = asSimilarity(similarity(k.item.content, cand.content));
-      // Abstain = keep both: an uncertain engine must never cause a merge.
-      if (!abstain && sim >= opts.threshold && sim > best) {
-        best = sim;
-        target = k;
-      }
-    }
-    if (target) target.absorbed.push({ dup: cand, overlap: best });
-    else keepers.push({ item: cand, absorbed: [] });
-  }
+  return deltasFromGroups(planDedupePairs(state, opts), opts);
+}
 
-  const updates: ProposedDelta[] = [];
-  const deletes: ProposedDelta[] = [];
-  for (const k of keepers) {
-    if (k.absorbed.length === 0) continue;
-    if (opts.merge) {
-      const merged = unionEvidence([k.item.evidence, ...k.absorbed.map((a) => a.dup.evidence)]);
-      // Skip the no-op: identical evidence → the merge degenerates to a plain
-      // delete for this pair (no update delta).
-      if (merged !== k.item.evidence) {
-        updates.push({
-          delta: { op: "update", id: k.item.id, evidence: merged },
-          rationale: `dedupe: merged ${k.absorbed.length} duplicate(s) (${k.absorbed.map((a) => a.dup.id).join(", ")}) into ${k.item.id}; evidence unioned (${k.absorbed.length + 1} sources).`,
-        });
-      }
-    }
-    for (const { dup, overlap } of k.absorbed) {
-      deletes.push({
-        delta: {
-          op: "delete",
-          id: dup.id,
-          reason: opts.merge
-            ? `merged into ${k.item.id} (overlap ${overlap.toFixed(2)})`
-            : `near-duplicate of ${k.item.id} (overlap ${overlap.toFixed(2)})`,
-        },
-        rationale: `dedupe: "${truncate(dup.content)}" ≈ keeper "${truncate(k.item.content)}" (Jaccard ${overlap.toFixed(2)}); ${opts.merge ? `merged into ${k.item.id}.` : `kept higher-importance ${k.item.id}.`}`,
-      });
-    }
+// ---- classifier confirmation (pi ≥ 0.99, opt-in via classifier.model) ------
+
+/** Recall widening for the classifier pass: candidates are gathered at
+ *  threshold - CLASSIFIER_RECALL_DROP (floored) so the cheap yes/no filter,
+ *  not the token overlap, is the precision gate. */
+export const CLASSIFIER_RECALL_DROP = 0.15;
+export const CLASSIFIER_RECALL_FLOOR = 0.35;
+/** Bound on pairs per classify call (question count), keeping the call cheap. */
+export const CLASSIFIER_MAX_PAIRS = 20;
+
+/** Build the batched pair-confirmation request. Pure — unit-testable. */
+export function buildPairQuestions(
+  pairs: Array<{ keeper: HarnessItem; dup: HarnessItem }>,
+): { state: Record<string, unknown>; questions: Record<string, { instructions: string; trueCriteria: string; falseCriteria: string }> } {
+  const questions: Record<string, { instructions: string; trueCriteria: string; falseCriteria: string }> = {};
+  const state = {
+    pairs: pairs.map((p, i) => ({ index: i, keeper: p.keeper.content, duplicate: p.dup.content })),
+  };
+  for (let i = 0; i < pairs.length; i++) {
+    questions[`p${i}`] = {
+      instructions:
+        "You are confirming dedupe candidates for a coding agent's self-improvement store. Each pair holds two items (a keeper and a candidate duplicate). Do the two items state the SAME durable lesson, fact, or instruction — such that keeping both is redundant?",
+      trueCriteria: "The two items express the same reusable information; one merged copy loses nothing.",
+      falseCriteria:
+        "The items differ in scope, condition, or meaning — both must be kept, or the token overlap is only superficial.",
+    };
   }
-  return [...updates, ...deletes];
+  return { state, questions };
+}
+
+/** Filter keeper groups down to classifier-confirmed pairs. Pairs beyond the
+ *  question cap and pairs with missing answers stay OUT (conservative: an
+ *  unanswered pair is never merged). Answers are keyed p0..pN in the same
+ *  groups.flatMap(absorbed) order buildPairQuestions enumerated. */
+export function confirmGroups(
+  groups: DedupeGroup[],
+  answers: Record<string, { value: boolean; confidence?: number }>,
+  cap: number = CLASSIFIER_MAX_PAIRS,
+): DedupeGroup[] {
+  let i = 0;
+  return groups
+    .map((g) => ({
+      keeper: g.keeper,
+      absorbed: g.absorbed.filter(() => i < cap && answers[`p${i++}`]?.value === true),
+    }))
+    .filter((g) => g.absorbed.length > 0);
 }
 
 /** Rule-based proposer wrapping planDedupe with the configured (or default)
- *  options — merges near-duplicates; `merge: false` restores delete-only. */
+ *  options — merges near-duplicates; `merge: false` restores delete-only.
+ *  When a classifier is injected (harness.json `classifier.model` resolved),
+ *  candidate pairs are recall-widened and then confirmed by ONE batched
+ *  yes/no classify call: only confirmed pairs merge. A classifier error falls
+ *  back to the pure rule-based plan — the classifier can narrow, never block. */
 export const dedupeProposer: DeltaProposer = {
   name: "dedupe",
-  async propose({ state, config }): Promise<ProposeResult> {
-    const deltas = planDedupe(state, config?.dedupe ?? DEFAULT_DEDUPE);
-    return deltas.length ? { deltas } : {};
+  async propose({ state, config, classify }): Promise<ProposeResult> {
+    const opts = config?.dedupe ?? DEFAULT_DEDUPE;
+    if (!classify) {
+      const deltas = planDedupe(state, opts);
+      return deltas.length ? { deltas } : {};
+    }
+    const started = Date.now();
+    const recall: DedupeOptions = {
+      ...opts,
+      threshold: Math.max(CLASSIFIER_RECALL_FLOOR, opts.threshold - CLASSIFIER_RECALL_DROP),
+    };
+    const groups = planDedupePairs(state, recall);
+    const pairs = groups.flatMap((g) => g.absorbed.map((a) => ({ keeper: g.keeper, dup: a.dup })));
+    if (pairs.length === 0) return {};
+    const capped = pairs.slice(0, CLASSIFIER_MAX_PAIRS);
+    const res = await classify(buildPairQuestions(capped));
+    if (!res.ok) {
+      // Classifier failed → plain rule-based pass at the configured threshold.
+      const deltas = planDedupe(state, opts);
+      return {
+        ...(deltas.length ? { deltas } : {}),
+        modelCall: {
+          ok: false,
+          latencyMs: Date.now() - started,
+          ...(res.error ? { error: res.error } : {}),
+          ...(res.model ? { model: res.model } : {}),
+        },
+      };
+    }
+    const confirmed = confirmGroups(groups, res.answers);
+    const deltas = deltasFromGroups(confirmed, opts);
+    return {
+      ...(deltas.length ? { deltas } : {}),
+      modelCall: {
+        ok: true,
+        latencyMs: Date.now() - started,
+        ...(res.model ? { model: res.model } : {}),
+        ...(res.usage ? { inputTokens: res.usage.input, outputTokens: res.usage.output } : {}),
+      },
+    };
   },
 };
 

@@ -1,13 +1,19 @@
-// before_agent_start: inject the active harness state as a structured block
-// appended to the base system prompt. Never rewrites or replaces the base —
-// only appends, matching Continual Harness's "immutable base + supplemental".
+// Injection of the active harness state — two cooperating handlers (pi ≥ 0.99):
 //
-// This handler is also the model-binding bridge. The model-facing tools
-// (harness_list / harness_mutate) receive NO ctx, so they cannot read the
-// active model at execute time. before_agent_start always fires first in a turn
-// WITH ctx.model, so it: (1) caches the active model key for the tools,
-// (2) adopts any orphan items to the active model (the migration policy), and
-// (3) renders ONLY items bound to the active model — strict per-model isolation.
+//  before_agent_start: the model-binding bridge. The model-facing tools
+//  (harness_list / harness_mutate) receive no usable ctx, so this always-first
+//  handler (1) resolves the binding key under the configured virtual-model
+//  policy (see vmodel.ts) and caches it for the tools, and (2) adopts any
+//  orphan items to that key (the migration policy). It no longer bakes the
+//  harness block into the base system prompt.
+//
+//  context_with_system: the render. Fires before EVERY provider request on the
+//  full transcript (system message included), so the block always reflects the
+//  LIVE store — a harness_mutate that fixes a stale note mid-run shows up on
+//  the very next request instead of the next agent run. The handler owns the
+//  returned transcript (pi sends it verbatim), so it returns undefined — never
+//  an owned transcript — when there is nothing to inject, and otherwise keeps
+//  the system message at index 0 and appends the block to it.
 //
 // WHAT gets rendered is decided by the selection policy in select.ts (on by
 // default): importance-ordered, capped per kind and by a total token budget, so
@@ -15,9 +21,10 @@
 // harness.json `injection`; the legacy "all items, in order" mode is a toggle.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { adoptOrphans, getState, modelKey, setActiveModelKey } from "./store.js";
+import { adoptOrphans, getActiveModelKey, getState, setActiveModelKey } from "./store.js";
 import { KIND_ORDER, selectForInjection, type InjectionConfig } from "./select.js";
 import { loadConfig } from "./config.js";
+import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { ComponentKind } from "./types.js";
 
 const TITLES: Record<ComponentKind, string> = {
@@ -70,24 +77,49 @@ export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): st
   return lines.join("\n");
 }
 
+/** Append text to a system message's content (string or text blocks). */
+function appendToSystemContent(content: string | Array<{ type: string; text?: string }>, block: string): string | Array<{ type: string; text?: string }> {
+  if (typeof content === "string") return content + "\n" + block;
+  return [...content, { type: "text", text: block }];
+}
+
 export function registerInjection(pi: ExtensionAPI): void {
-  pi.on("before_agent_start", async (event, ctx) => {
-    const key = modelKey(ctx.model);
+  pi.on("before_agent_start", async (_event, ctx) => {
+    // Resolve the binding key under the configured policy. For a physical
+    // selection (or the default "virtual" policy) this is just provider/id;
+    // under "physical" with a virtual selection it is the routed model behind
+    // the latest successful response, undefined before the first response
+    // (creates then become orphans, adopted on the next contact).
+    const { virtualBinding } = await loadConfig();
+    const key = resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding);
     // Cache for the model-facing tools (they have no ctx of their own).
     setActiveModelKey(key);
-    // Adopt any orphans to the active model (legacy/import migration). No-op —
+    // Adopt any orphans to the resolved key (legacy/import migration). No-op —
     // and no persist — when there is nothing to adopt.
     if (key) {
       adoptOrphans(key, (snapshot, ver) => {
         pi.appendEntry("harness-state", { state: snapshot, version: ver });
       });
     }
-    // Read the injection policy from config (cached; tolerant). The default is
-    // ON — importance-ordered + bounded — so a growing harness never balloons
-    // the system prompt. Opt out via harness.json `injection.enabled: false`.
-    const { injection } = await loadConfig();
+  });
+
+  pi.on("context_with_system", async (event, ctx) => {
+    // NOTE: injection.enabled:false inside the config means LEGACY selection
+    // (all items, store order) — handled by selectForInjection, not an off
+    // switch here. There is no "no injection" render path once state exists.
+    const { injection, virtualBinding } = await loadConfig();
+    // Prefer the live resolution (mid-run responses can change the physical
+    // key under the "physical" policy); fall back to the cached agent-start
+    // key when the model is momentarily unknown.
+    const key =
+      resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ??
+      getActiveModelKey();
     const block = renderHarnessBlock(key, injection);
-    if (!block) return;
-    return { systemPrompt: event.systemPrompt + "\n" + block };
+    if (!block) return; // nothing to inject — do not own the transcript
+    const messages = [...event.messages];
+    const sys = messages[0] as { role?: string; content?: string | Array<{ type: string; text?: string }> } | undefined;
+    if (!sys || sys.role !== "system" || sys.content === undefined) return;
+    messages[0] = { ...sys, content: appendToSystemContent(sys.content, block) } as (typeof messages)[number];
+    return { messages };
   });
 }

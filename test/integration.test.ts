@@ -41,11 +41,12 @@ async function reset(): Promise<void> {
 describe("registration", () => {
   beforeEach(reset);
 
-  it("registers session_start, before_agent_start, turn_end, the two tools, and /refine", () => {
+  it("registers session_start, before_agent_start, context_with_system, turn_end, the two tools, and /refine", () => {
     const { pi, handlers, tools, commands } = makeFakePi([]);
     continualHarness(pi);
     expect(handlers.has("session_start")).toBe(true);
     expect(handlers.has("before_agent_start")).toBe(true);
+    expect(handlers.has("context_with_system")).toBe(true);
     expect(handlers.has("turn_end")).toBe(true);
     expect(tools.has("harness_list")).toBe(true);
     expect(tools.has("harness_mutate")).toBe(true);
@@ -93,10 +94,10 @@ describe("session_start reconstruction", () => {
   });
 });
 
-describe("before_agent_start injection", () => {
+describe("injection — before_agent_start bridge + context_with_system render", () => {
   beforeEach(reset);
 
-  it("appends a structured block to the base prompt and never replaces it", async () => {
+  it("appends a structured block to the system message and never replaces it", async () => {
     const branch = [
       {
         type: "custom",
@@ -114,28 +115,52 @@ describe("before_agent_start injection", () => {
     continualHarness(pi);
     await fire("session_start", { reason: "startup" }, ctx());
 
-    const [ret] = (await fire("before_agent_start", { systemPrompt: "BASE" }, ctx())) as Array<{
-      systemPrompt?: string;
-    }>;
-    expect(ret?.systemPrompt).toBeDefined();
-    expect(ret!.systemPrompt!.startsWith("BASE")).toBe(true);
-    expect(ret!.systemPrompt).toContain("Continual Harness state");
-    expect(ret!.systemPrompt).toContain("Always cite evidence");
+    // before_agent_start adopts the restored orphan to the active model first
+    // (the bridge), then the per-request render happens in context_with_system.
+    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    const [ret] = (await fire("context_with_system", {
+      messages: [{ role: "system", content: "BASE" }],
+    }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+
+    expect(ret?.messages).toBeDefined();
+    expect(ret!.messages![0]!.role).toBe("system");
+    expect(ret!.messages![0]!.content.startsWith("BASE")).toBe(true);
+    expect(ret!.messages![0]!.content).toContain("Continual Harness state");
+    expect(ret!.messages![0]!.content).toContain("Always cite evidence");
   });
 
-  it("returns undefined (no prompt change) when there is no active state", async () => {
+  it("re-renders on EVERY provider request: a mid-run harness_mutate shows up on the next request", async () => {
+    const { pi, fire, ctx, tools } = makeFakePi([]);
+    continualHarness(pi);
+    await fire("session_start", { reason: "startup" }, ctx());
+    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+
+    const first = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+    expect(first[0]).toBeUndefined(); // empty store → no owned transcript
+
+    // The model fixes the (empty) state mid-run:
+    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
+      deltas: [{ op: "create", kind: "memory", content: "prefer pnpm here", evidence: "e" }],
+    }, undefined, undefined, ctx());
+
+    const second = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+    expect(second[0]!.messages![0]!.content).toContain("prefer pnpm here");
+  });
+
+  it("returns undefined (no transcript ownership) when there is no active state", async () => {
     const { pi, fire, ctx } = makeFakePi([]);
     continualHarness(pi);
-    const [ret] = await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    const [ret] = await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx());
     expect(ret).toBeUndefined();
   });
 });
 
 // Phase 7: injection selection is ON BY DEFAULT. These drive the real
-// before_agent_start handler (which reads config + renders) to pin the default
+// context_with_system handler (which reads config + renders) to pin the default
 // behaviour end-to-end: importance-ordered, capped, with a transparency footer;
 // and that `injection.enabled: false` restores the legacy "all, in order" mode.
-describe("before_agent_start injection selection (default on, opt-out)", () => {
+describe("context_with_system injection selection (default on, opt-out)", () => {
   beforeEach(() => {
     reset();
     resetConfigCache();
@@ -151,10 +176,11 @@ describe("before_agent_start injection selection (default on, opt-out)", () => {
       const { pi, fire, ctx } = makeFakePi([]);
       continualHarness(pi);
       applyDeltas(items, () => {});
-      const [ret] = (await fire("before_agent_start", { systemPrompt: "BASE" }, ctx())) as Array<{
-        systemPrompt?: string;
+      await fire("before_agent_start", { systemPrompt: "BASE" }, ctx()); // cache the active model
+      const [ret] = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{
+        messages?: Array<{ role: string; content: string }>;
       }>;
-      return ret?.systemPrompt ?? "";
+      return ret?.messages?.[0]?.content ?? "";
     } finally {
       rmSync(dir, { recursive: true, force: true });
       resetConfigCache();
@@ -237,6 +263,24 @@ describe("/refine command", () => {
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).toContain("last 50 turns");
   });
+
+  it("boundary delivery: runRefine returns the steering message undelivered (auto-refine persists it as a turn_end draft)", async () => {
+    const branch = [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "learned: prefer pnpm" }] } },
+    ];
+    const { pi, ctx, sentMessages, entries } = makeFakePi(branch);
+    continualHarness(pi);
+
+    const result = await runRefine(pi, ctx() as unknown as Parameters<typeof runRefine>[1], { lookback: 5, delivery: "boundary" }, "auto");
+
+    // NOT sent as a user message — the caller owns delivery
+    expect(sentMessages).toHaveLength(0);
+    expect(result.steeringMessage).toContain("learned: prefer pnpm");
+    // the audit entry is still recorded (branchable via /tree)
+    const audits = entries.filter((e) => e.customType === "harness-refinement");
+    expect(audits).toHaveLength(1);
+    expect((audits[0]!.data as { source: string }).source).toBe("auto");
+  });
 });
 
 describe("harness tools round-trip", () => {
@@ -249,18 +293,24 @@ describe("harness tools round-trip", () => {
     const mutate = tools.get("harness_mutate")!;
     const res = (await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
       deltas: [{ op: "create", kind: "memory", content: "fact A", evidence: "saw it" }],
-    }, undefined, undefined, ctx())) as { content: Array<{ type: string; text: string }>; details: { applied: unknown[] } };
+    }, undefined, undefined, ctx())) as { content: Array<{ type: string; text: string }>; details: { applied: unknown[] }; structuredContent?: { applied: number; created: number; updated: number; deleted: number } };
 
     expect(res.content[0]!.text).toMatch(/Applied 1 delta/);
     expect(res.details.applied).toHaveLength(1);
+    // structuredContent (pi ≥ 0.99): codemode / executeTool callers get JSON
+    expect(res.structuredContent).toEqual({ applied: 1, created: 1, updated: 0, deleted: 0 });
     // The persist callback inside tools.ts calls pi.appendEntry("harness-state", ...).
     expect(entries.some((e) => e.customType === STATE_ENTRY)).toBe(true);
 
     const list = tools.get("harness_list")!;
     const listed = (await (list.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {}, undefined, undefined, ctx())) as {
       content: Array<{ type: string; text: string }>;
+      structuredContent?: { count: number; items: Array<{ id: string; content: string; ownerModel: string }> };
     };
     expect(listed.content[0]!.text).toContain("fact A");
+    // structuredContent mirrors the store for programmatic callers
+    expect(listed.structuredContent?.count).toBe(1);
+    expect(listed.structuredContent?.items[0]?.content).toBe("fact A");
   });
 });
 
@@ -598,12 +648,21 @@ describe("runRefine + auto-refine", () => {
       continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
 
       // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1)
-      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx());
       expect(sentMessages).toHaveLength(0);
-      await fire("turn_end", { type: "turn_end", turnIndex: 1 }, ctx());
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx())) as Array<{
+        entries?: Array<{ type: string; customType?: string; content?: string }>;
+        continue?: boolean;
+      } | undefined>;
 
-      expect(sentMessages.length).toBeGreaterThanOrEqual(1);
-      expect(sentMessages.at(-1)).toContain("/refine");
+      // Boundary delivery (pi ≥ 0.87): the steering prompt is a structural
+      // custom-message draft + continue:true — NOT a synthetic user message.
+      const boundary = rets.find((r) => r && r.continue === true);
+      expect(boundary).toBeDefined();
+      expect(sentMessages).toHaveLength(0);
+      const draft = boundary!.entries!.find((e) => e.type === "custom_message" && e.customType === "harness.auto-refine-request");
+      expect(draft).toBeDefined();
+      expect(draft!.content).toContain("/refine");
       const audits = entries.filter((e) => e.customType === "harness-refinement");
       expect(audits).toHaveLength(1);
       expect((audits[0]!.data as { source: string }).source).toBe("auto");
@@ -649,19 +708,27 @@ describe("runRefine + auto-refine", () => {
       ]);
       continualHarness(pi);
 
-      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx()); // seed
-      await fire("turn_end", { type: "turn_end", turnIndex: 1 }, ctx()); // fire #1
-      const afterFirst = sentMessages.length;
-      expect(afterFirst).toBeGreaterThanOrEqual(1);
+      // Fire turn_end at turnIndex N; count boundary continuations across the
+      // turn_end handler returns (boundary delivery, not steering sends).
+      const fireAndCount = async (turnIndex: number): Promise<number> => {
+        const rets = (await fire("turn_end", { type: "turn_end", turnIndex, entries: [], context: { canContinue: true } }, ctx())) as Array<{
+          continue?: boolean;
+        } | undefined>;
+        return rets.filter((r) => r?.continue === true).length;
+      };
+
+      let boundaries = (await fireAndCount(0)) + (await fireAndCount(1)); // seed + fire #1
+      expect(boundaries).toBe(1);
+      expect(sentMessages).toHaveLength(0); // boundary, not steering
 
       // Simulate a fork/resume: session_start should reset the cadence so the
       // very next turn re-seeds instead of firing immediately.
       await fire("session_start", { reason: "fork" }, ctx());
-      await fire("turn_end", { type: "turn_end", turnIndex: 2 }, ctx());
-      expect(sentMessages.length).toBe(afterFirst); // re-seeded, no immediate fire
+      boundaries += await fireAndCount(2);
+      expect(boundaries).toBe(1); // re-seeded, no immediate fire
 
-      await fire("turn_end", { type: "turn_end", turnIndex: 3 }, ctx()); // fire #2
-      expect(sentMessages.length).toBe(afterFirst + 1);
+      boundaries += await fireAndCount(3); // fire #2
+      expect(boundaries).toBe(2);
     } finally {
       resetAutoRefine();
       resetConfigCache();

@@ -117,3 +117,25 @@ export {
   type NormalizedInjection,
   type SelectionResult,
 } from "./select.js";
+
+// Virtual-model binding policy (pi ≥ 0.99, 0.12.0): strict per-model isolation
+// across router selections. Re-exported so companion packages and tests reuse
+// the pure resolution without reaching into internal paths.
+export {
+  branchEntries,
+  isVirtualModel,
+  physicalKeyFromBranch,
+  resolveBindingKey,
+  VIRTUAL_MODEL_API,
+} from "./vmodel.js";
+
+// Classifier seam (pi ≥ 0.99, 0.12.0): the minimal structural ClassifyFn
+// contract proposers see, plus the gate builders (pure, testable).
+export {
+  buildGateRequest,
+  gateDecision,
+  type ClassifyBoolAnswer,
+  type ClassifyBoolQuestion,
+  type ClassifyBoolResult,
+  type ClassifyFn,
+} from "./classify.js";

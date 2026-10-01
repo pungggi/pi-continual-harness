@@ -9,11 +9,14 @@
 // it, and renderHarnessBlock injects only items bound to it.
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerInjection, renderHarnessBlock } from "../src/inject.js";
 import { registerTools } from "../src/tools.js";
 import { applyDeltas, getState, reconstruct, setActiveModelKey } from "../src/store.js";
-import { resetConfigCache } from "../src/config.js";
+import { loadConfig, resetConfigCache } from "../src/config.js";
 
 type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 
@@ -39,8 +42,11 @@ function fakePi(): {
   return { pi: pi as unknown as ExtensionAPI, handlers, tools, entries };
 }
 
-function ctxWithModel(provider: string, id: string): { model: { provider: string; id: string } } {
-  return { model: { provider, id } };
+function ctxWithModel(provider: string, id: string, api?: string): {
+  model: { provider: string; id: string; api?: string };
+  sessionManager?: { getBranch: () => unknown[] };
+} {
+  return { model: { provider, id, ...(api ? { api } : {}) } };
 }
 
 function reset(): void {
@@ -75,8 +81,21 @@ describe("renderHarnessBlock — strict per-model isolation", () => {
   });
 });
 
-describe("before_agent_start — adopt + cache + isolate", () => {
+describe("before_agent_start bridge + context_with_system render — adopt + cache + isolate", () => {
   beforeEach(reset);
+
+  /** Fire the two-handler flow and return the rendered system content. */
+  async function renderFor(
+    handlers: Map<string, Handler>,
+    ctx: { model: { provider: string; id: string; api?: string } },
+  ): Promise<string | undefined> {
+    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+    const ret = (await handlers.get("context_with_system")!(
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx,
+    )) as { messages?: Array<{ role: string; content: string }> } | undefined;
+    return ret?.messages?.[0]?.content;
+  }
 
   it("adopts orphan items to the active model, and injects only that model", async () => {
     // legacy orphan (no owner) + an item owned by a different model
@@ -90,16 +109,14 @@ describe("before_agent_start — adopt + cache + isolate", () => {
     const { pi, handlers, entries } = fakePi();
     registerInjection(pi);
 
-    const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctxWithModel("anthropic", "sonnet"))) as {
-      systemPrompt?: string;
-    };
+    const content = await renderFor(handlers, ctxWithModel("anthropic", "sonnet"));
     const byContent = new Map(getState().items.map((i) => [i.content, i.ownerModel]));
     // orphan adopted to the active model
     expect(byContent.get("legacy orphan")).toBe("anthropic/sonnet");
     // other-model item is NOT adopted and NOT injected
     expect(byContent.get("other model")).toBe("google/gemini");
-    expect(ret?.systemPrompt).toContain("legacy orphan");
-    expect(ret?.systemPrompt).not.toContain("other model");
+    expect(content).toContain("legacy orphan");
+    expect(content).not.toContain("other model");
     // adoption persisted a harness-state entry (branchable via /tree)
     expect(entries.some((e) => e.customType === "harness-state")).toBe(true);
   });
@@ -111,7 +128,7 @@ describe("before_agent_start — adopt + cache + isolate", () => {
     );
     const { pi, handlers, entries } = fakePi();
     registerInjection(pi);
-    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctxWithModel("anthropic", "sonnet"));
+    await renderFor(handlers, ctxWithModel("anthropic", "sonnet"));
     expect(entries).toHaveLength(0);
   });
 
@@ -124,14 +141,85 @@ describe("before_agent_start — adopt + cache + isolate", () => {
     registerInjection(pi);
 
     // model A's turn → its item is injected
-    const a = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctxWithModel("anthropic", "sonnet"))) as {
-      systemPrompt?: string;
-    };
-    expect(a.systemPrompt).toContain("A only");
+    const a = await renderFor(handlers, ctxWithModel("anthropic", "sonnet"));
+    expect(a).toContain("A only");
 
     // switch to model B → blank slate (the headline isolation guarantee)
-    const b = await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctxWithModel("google", "gemini"));
+    const b = await renderFor(handlers, ctxWithModel("google", "gemini"));
     expect(b).toBeUndefined();
+  });
+});
+
+describe("virtual-model binding policy (pi ≥ 0.99)", () => {
+  beforeEach(reset);
+
+  const virtualCtx = ctxWithModel("openai-codex", "auto", "pi-virtual");
+  const branchWithResponse = [
+    { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+    { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [{ type: "text", text: "ok" }] } },
+  ];
+
+  it("default policy (virtual) keys the virtual selection itself", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "prompt", content: "virtual note", evidence: "e", ownerModel: "openai-codex/auto" }],
+      () => {},
+    );
+    const { pi, handlers } = fakePi();
+    registerInjection(pi);
+    const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
+    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+    const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
+      messages?: Array<{ role: string; content: string }>;
+    } | undefined;
+    expect(ret?.messages?.[0]?.content).toContain("virtual note");
+  });
+
+  it("physical policy keys the routed physical model, so physical-model items survive a router", async () => {
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-vm-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ virtualBinding: "physical" }));
+    await loadConfig(cfgFile);
+    try {
+      applyDeltas(
+        [{ op: "create", kind: "prompt", content: "physical note", evidence: "e", ownerModel: "anthropic/claude-x" }],
+        () => {},
+      );
+      const { pi, handlers } = fakePi();
+      registerInjection(pi);
+      const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
+      await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+      const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
+        messages?: Array<{ role: string; content: string }>;
+      } | undefined;
+      expect(ret?.messages?.[0]?.content).toContain("physical note");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
+  });
+
+  it("physical policy with no response yet binds nothing (creates orphan; adopted next contact)", async () => {
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-vm2-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ virtualBinding: "physical" }));
+    await loadConfig(cfgFile);
+    try {
+      const { pi, handlers, entries } = fakePi();
+      registerInjection(pi);
+      const ctx = { ...virtualCtx, sessionManager: { getBranch: () => [] } };
+      const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx)) as { systemPrompt?: string };
+      expect(ret?.systemPrompt).toBeUndefined();
+      const rendered = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
+        messages?: Array<{ role: string; content: string }>;
+      } | undefined;
+      expect(rendered).toBeUndefined(); // unknown key → inject nothing
+      expect(entries).toHaveLength(0); // nothing to adopt either
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 });
 

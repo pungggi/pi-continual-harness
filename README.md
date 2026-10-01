@@ -145,8 +145,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": false, "everyTurns": 50 },
-  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false },
-  "outcomeImportance": { "enabled": false, "bump": 0.03 }
+  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false },
+  "outcomeImportance": { "enabled": false, "bump": 0.03 },
+  "classifier": { "model": "typesafe/jev-latest" },
+  "virtualBinding": "virtual"
 }
 ```
 
@@ -187,7 +189,29 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   (default 100). It is one of the package's opt-in autonomous paths: it reuses
   the exact `/refine` routine (audited `REFINE_ENTRY` tagged `source: "auto"`,
   branch-local, `/tree` rollback) and notifies before firing. `commit: true`
-  also flushes durable state on each run.
+  also flushes durable state on each run. `gate: true` (needs `classifier.model`)
+  asks the classifier first whether the recent trajectory contains a durable,
+  reusable correction and skips the refine when it does not — cadence becomes
+  signal, not just time (errors fall back to the plain cadence). The steering
+  prompt is delivered via the pi ≥ 0.87 actionable `turn_end` boundary (a
+  structural `harness.auto-refine-request` entry + `continue: true`), not a
+  synthetic user message.
+- **`classifier`** — opt-in classifier model (pi ≥ 0.99) for the cheap gated
+  paths: `"provider/id"` or a bare id of a **classifier** catalog entry, e.g.
+  `"typesafe/jev-latest"` or a local `llama-cpp` classifier (every chat model
+  listed for llama.cpp also appears as a classifier). When set and resolvable
+  it enables the classifier-confirmed dedupe (see `dedupe` above) and the
+  auto-refine `gate`. When unset or unresolvable, every classifier feature
+  degrades to its no-classifier behavior.
+- **`virtualBinding`** — how the per-model isolation key treats pi **virtual
+  models** (router extensions, pi ≥ 0.99). Default `"virtual"`: the key is
+  the selected model's own `provider/id` — a router starts a blank harness.
+  `"physical"`: when the selection is virtual, the key is the *physical*
+  model behind the latest successful response on the branch — notes
+  accumulated under that physical model keep injecting through the router, and
+  switching routed models re-scopes exactly like a manual model switch. Before
+  the first response the key is unknown: creates stay orphans and are adopted
+  on first contact.
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (**off by
   default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
@@ -370,7 +394,7 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 
 ## Status
 
-0.9.x. Implemented:
+0.12.x. Requires **pi ≥ 0.99.0**. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
@@ -395,11 +419,28 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 - **Per-model isolation**: every item is bound to a `provider/id` and injected
   only for that model; new items are stamped automatically and orphans adopted
   on first contact. A new model id starts from a blank harness, and the durable
-  round-trip preserves the owner tag.
+  round-trip preserves the owner tag. With pi virtual models (routers), the
+  `"virtualBinding": "physical"` policy keys items by the routed physical
+  model instead of the router id, so a router selection does not silently
+  reset the harness.
 - **Bounded injection (on by default)**: the supplemental block is
   importance-ordered and capped per kind + by a total token budget, so a growing
   harness never balloons the system prompt. Tunable / opt-out via the `injection`
-  config key; the store is never changed by selection.
+  config key; the store is never changed by selection. Rendered on **every
+  provider request** (`context_with_system`), so a mid-run `harness_mutate`
+  shows up on the very next request.
+- **Classifier features (pi ≥ 0.99, opt-in)**: `"classifier": { "model": … }`
+  enables (1) classifier-confirmed dedupe — candidate merge pairs confirmed by
+  one batched yes/no call (errors fall back to the rule-based plan) — and (2)
+  the auto-refine gate `"autoRefine": { "gate": true }`, which skips a cadenced
+  refine when the trajectory holds no durable correction.
+- **Structured tool results**: `harness_list` / `harness_mutate` return
+  `structuredContent` (with `outputSchema`), so codemode scripts and
+  `ctx.executeTool()` callers can consume harness state programmatically.
+- **Boundary delivery for auto-refine**: the steering prompt is persisted as a
+  structural entry with `{ entries, continue: true }` at `turn_end` (no
+  synthetic user message, no follow-up-scheduling side effects); manual
+  `/refine` still steers via a user message.
 
 Open extension points (see `docs/ROADMAP.md`):
 
