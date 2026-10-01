@@ -12,6 +12,18 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **Stale-draft hygiene for auto-refine (pi 0.87 context edits)** — every
+  boundary delivery now also appends `context_edit` drafts omitting each LIVE
+  prior `harness.auto-refine-request` from future provider context, so at most
+  ONE auto-refine request (the newest) is ever model-visible in long sessions.
+  Already-omitted drafts are skipped (idempotent — never stacks edits); raw
+  history, usage, and UI history are untouched, so `/tree` rollback and the
+  HTML export still show every draft. Kill-switch:
+  `"autoRefine": { "omitStaleDrafts": false }` (default `true`).
+  `buildOmissionDrafts` exported for reuse.
+
+### Added (0.12.0 — pi 0.87/0.99 adoption)
+
 - **Live re-injection via `context_with_system` (pi 0.87)** — the harness block
   is now rendered on EVERY provider request (full-transcript system-message
   transformation), not baked into the base prompt once per agent run. A

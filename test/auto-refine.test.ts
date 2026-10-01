@@ -1,11 +1,47 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { evaluateAutoRefine, resetAutoRefine } from "../src/auto-refine.js";
+import { buildOmissionDrafts, evaluateAutoRefine, resetAutoRefine, type ProjectedLike } from "../src/auto-refine.js";
 import type { HarnessConfig } from "../src/config.js";
 
 const cfg = (over: Partial<HarnessConfig> = {}): HarnessConfig => ({
   durableScope: "global",
   autoRefine: { enabled: true, everyTurns: 10 },
   ...over,
+});
+
+describe("buildOmissionDrafts (pi ≥ 0.87 context edits)", () => {
+  const live = (id: string): ProjectedLike => ({
+    sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id },
+    messages: [{ role: "custom", customType: "harness.auto-refine-request" }],
+  });
+  const omitted = (id: string): ProjectedLike => ({
+    sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id },
+    messages: [],
+  });
+
+  it("omits every LIVE prior auto-refine draft", () => {
+    const drafts = buildOmissionDrafts([live("e1"), live("e2")]);
+    expect(drafts).toEqual([
+      { type: "context_edit", targetId: "e1", replacement: null },
+      { type: "context_edit", targetId: "e2", replacement: null },
+    ]);
+  });
+
+  it("skips already-omitted drafts (idempotent, never stacks edits)", () => {
+    expect(buildOmissionDrafts([omitted("e1")])).toEqual([]);
+    expect(buildOmissionDrafts([live("e1"), omitted("e2")])).toEqual([
+      { type: "context_edit", targetId: "e1", replacement: null },
+    ]);
+  });
+
+  it("ignores other custom messages, plain entries, and id-less drafts", () => {
+    const other: ProjectedLike[] = [
+      { sourceEntry: { type: "custom_message", customType: "something-else", id: "e3" }, messages: [{}] },
+      { sourceEntry: { type: "custom", customType: "harness-state", id: "e4" }, messages: [] },
+      { sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request" }, messages: [{}] },
+      {},
+    ];
+    expect(buildOmissionDrafts(other)).toEqual([]);
+  });
 });
 
 describe("evaluateAutoRefine", () => {

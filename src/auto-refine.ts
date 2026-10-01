@@ -75,6 +75,39 @@ export function buildRefineDraft(steeringMessage: string): {
   return { type: "custom_message", customType: AUTO_REFINE_ENTRY, content: steeringMessage, display: true };
 }
 
+/** Structural slice of pi's ProjectedSessionEntry (sourceEntry + messages). */
+export interface ProjectedLike {
+  sourceEntry?: { type?: string; customType?: string; id?: string };
+  messages?: unknown[];
+}
+
+/** A context_edit boundary draft (pi ≥ 0.87): omit one entry from future
+ *  provider context — raw history, usage, and UI history stay untouched. */
+export interface OmissionDraft {
+  type: "context_edit";
+  targetId: string;
+  replacement: null;
+}
+
+/**
+ * Context-edit drafts omitting every LIVE prior auto-refine request from
+ * future provider context (pi ≥ 0.87 ContextEditEntry). Invariant: at most
+ * ONE auto-refine request is ever model-visible — the newest. Already-omitted
+ * drafts surface in the projection with empty `messages` and are skipped, so
+ * the operation is idempotent and never stacks redundant edits. Raw history
+ * (and the HTML export) keeps every draft: /tree rollback still applies.
+ */
+export function buildOmissionDrafts(projected: Iterable<ProjectedLike>): OmissionDraft[] {
+  const drafts: OmissionDraft[] = [];
+  for (const p of projected) {
+    const src = p.sourceEntry;
+    if (src?.type !== "custom_message" || src.customType !== AUTO_REFINE_ENTRY) continue;
+    if ((p.messages?.length ?? 0) === 0) continue; // already omitted → skip
+    if (typeof src.id === "string") drafts.push({ type: "context_edit", targetId: src.id, replacement: null });
+  }
+  return drafts;
+}
+
 /** Subscribe to turn_end and run /refine on the configured cadence. */
 export function registerAutoRefine(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
@@ -118,7 +151,19 @@ export function registerAutoRefine(pi: ExtensionAPI): void {
           pi.sendUserMessage(result.steeringMessage);
           return;
         }
-        return { entries: [...event.entries, buildRefineDraft(result.steeringMessage)], continue: true };
+        // Hygiene (pi ≥ 0.87 context edits): omit every LIVE prior auto-refine
+        // request from future provider context, so at most one draft (the new
+        // one) is ever model-visible. Already-omitted drafts are skipped by
+        // buildOmissionDrafts; raw history and /tree rollback are untouched.
+        // Kill-switch: autoRefine.omitStaleDrafts: false.
+        const omissions =
+          config.autoRefine?.omitStaleDrafts === false
+            ? []
+            : buildOmissionDrafts(event.context?.contextEntries ?? []);
+        return {
+          entries: [...event.entries, ...omissions, buildRefineDraft(result.steeringMessage)],
+          continue: true,
+        };
       }
     } catch (err) {
       ctx.ui.notify(`Auto-refine failed: ${(err as Error).message}`, "error");

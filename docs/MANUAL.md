@@ -636,7 +636,7 @@ defaults (the loader never throws).
   "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": false, "everyTurns": 50 },
-  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false },
+  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "omitStaleDrafts": true },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "classifier":    { "model": "typesafe/jev-latest" },   // opt-in classifier (pi ≥ 0.99)
   "virtualBinding": "virtual"             // "physical" keys by routed model (pi ≥ 0.99)
@@ -661,6 +661,7 @@ defaults (the loader never throws).
 | `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
+| `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
 | `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
@@ -848,6 +849,12 @@ self-mutation**.
   scheduling side effects. Falls back to the legacy `sendUserMessage` steering
   when the boundary cannot continue (e.g. after an error turn). Manual
   `/refine` still steers via a user message (it may run while idle).
+- **Stale-draft hygiene** (default on, `omitStaleDrafts: false` to disable):
+  each boundary also appends `context_edit` drafts (pi ≥ 0.87) omitting every
+  LIVE prior `harness.auto-refine-request` from future provider context — at
+  most one request (the newest) is ever model-visible. Idempotent
+  (already-omitted drafts are skipped); raw history, usage, and UI history
+  are untouched, so `/tree` rollback and the HTML export keep every draft.
 - `commit: true` also flushes durable state on each run.
 - **Classifier gate** (`gate: true`, pi ≥ 0.99, needs `classifier.model`):
   before spending a refine, ONE cheap yes/no classifier question over the

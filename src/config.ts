@@ -62,6 +62,11 @@ export interface HarnessConfig {
      *  trajectory contains a durable correction; skip the refine when it says
      *  no. Soft-fails to the plain cadence on classifier errors. Default false. */
     gate?: boolean;
+    /** Boundary-delivery hygiene (pi ≥ 0.87 context edits, default true): omit
+     *  prior auto-refine request drafts from future provider context so at most
+     *  one (the newest) is ever model-visible. Raw history and /tree rollback
+     *  are untouched; set false to keep every draft in context. */
+    omitStaleDrafts?: boolean;
   };
   /** Classifier model for the cheap gated paths (pi ≥ 0.99): "provider/id" or
    *  a bare id of a classifier catalog entry (e.g. "typesafe/jev-latest" or a
@@ -92,7 +97,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   durableScope: "global",
   autoImport: false,
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false },
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
   classifier: { model: undefined },
   virtualBinding: "virtual",
   proposer: "steering",
@@ -125,6 +130,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       everyTurns: over.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS,
       commit: over.autoRefine?.commit ?? false,
       gate: over.autoRefine?.gate === true,
+      omitStaleDrafts: over.autoRefine?.omitStaleDrafts !== false,
     },
     classifier: {
       model: typeof over.classifier?.model === "string" && over.classifier.model ? over.classifier.model : undefined,
