@@ -104,7 +104,10 @@ The model-facing tools:
 
 - `harness_list({ kind?, model? })` — read current state. `model` defaults to
   the active model's items (what gets injected this turn); `"*"` returns every
-  model.
+  model. Empty results are **diagnostic**: the message distinguishes a
+  genuinely empty store (with zero-state guidance) from items hidden by the
+  model or kind filter (with a tally and a `model: "*"` pointer), so an
+  empty list never reads as "broken".
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
   `delete` deltas. Every `create` requires `evidence`. New items are stamped
   automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).
@@ -233,12 +236,13 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
   `prune --decay`, or the `dedupe` proposer for that.
 
-> **Deprecated:** `durableScope` (0.9.0). Items now carry their own scope
-> (`/harness move`), and durable I/O is always layered — the key no longer
-> switches anything but is still parsed so existing configs keep loading.
-> Migration from a `durableScope: "project"` setup: run `/harness import` once
-> in the project (its file's items adopt project scope), then move any strays
-> with `/harness move` (or classify the whole store with `/harness split`).
+> **Removed:** the store-wide `durableScope` config key (deprecated 0.9.0,
+> removed now). Items carry their own scope (`/harness move`), and durable I/O
+> is always layered. Config files that still set the key load fine — unknown
+> keys are ignored. Migration from a `durableScope: "project"` setup: run
+> `/harness import` once in the project (its file's items adopt project
+> scope), then move any strays with `/harness move` (or classify the whole
+> store with `/harness split`).
 
 ## How it works
 

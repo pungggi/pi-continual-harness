@@ -3,7 +3,6 @@ import { evaluateReminder, resetReminder } from "../src/remind.js";
 import type { HarnessConfig } from "../src/config.js";
 
 const cfg = (over: Partial<HarnessConfig> = {}): HarnessConfig => ({
-  durableScope: "global",
   remindRefine: { enabled: true, everyTurns: 5 },
   ...over,
 });

@@ -10,6 +10,32 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Removed
+
+- **`durableScope` config key removed** (deprecated since 0.9.0 as a no-op):
+  items carry their own scope and durable I/O is always layered, so the key
+  switched nothing. The dead `resolveDurablePath()` helper is gone too (no
+  callers). Config files that still set `durableScope` load unchanged —
+  unknown keys are ignored; migration is the documented one-time
+  `/harness import` + `/harness move`/`split`.
+
+### Fixed
+
+- **`harness_list` empty results are now diagnostic** — the bare
+  `"Harness state is empty."` collapsed three very different situations into
+  one opaque line, which users read as "the feature is broken": (1) a
+  genuinely empty store (a new session starts empty — durable sync is
+  opt-in), (2) everything owned by another model (per-model isolation hides
+  it from the default view), (3) a `kind` filter that matched nothing. Each
+  case now gets its own actionable text: zero-state guidance (`/refine`,
+  `harness_mutate`, `"autoImport": true`), an owner tally with a
+  `model:"*"` pointer, and a kind tally respectively. The diagnosis is
+  attributed from the store's actual contents (review #23): a kind miss for a
+  model that owns items is never reported as model isolation, and the
+  `model:"*"` pointer only appears when the requested kind actually exists
+  for another model. `structuredContent` is unchanged (stable schema); only
+  the model-facing text changed.
+
 ### Added
 
 - **Aborted/error turns are inert (pi `turn_end` `BoundaryState.outcome`)** —
