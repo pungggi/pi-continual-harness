@@ -104,7 +104,10 @@ The model-facing tools:
 
 - `harness_list({ kind?, model? })` — read current state. `model` defaults to
   the active model's items (what gets injected this turn); `"*"` returns every
-  model.
+  model. Empty results are **diagnostic**: the message distinguishes a
+  genuinely empty store (with zero-state guidance) from items hidden by the
+  model or kind filter (with a tally and a `model: "*"` pointer), so an
+  empty list never reads as "broken".
 - `harness_mutate { deltas: [...] }` — apply a batch of `create` / `update` /
   `delete` deltas. Every `create` requires `evidence`. New items are stamped
   automatically with the active model (see [Model binding](#model-binding-per-model-isolation)).

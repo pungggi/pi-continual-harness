@@ -122,7 +122,7 @@ export function registerTools(pi: ExtensionAPI): void {
             type: "text",
             text:
               items.length === 0
-                ? "Harness state is empty."
+                ? emptyListMessage(kind, ownerKey)
                 : items
                     .map(
                       (i) =>
@@ -196,4 +196,48 @@ function summarize(applied: AppliedDelta[]): string {
   const updated = applied.filter((a) => a.op === "update").length;
   const deleted = applied.filter((a) => a.op === "delete").length;
   return `Applied ${applied.length} delta(s): ${created} created, ${updated} updated, ${deleted} deleted.`;
+}
+
+/** Tally `items` by a string key, rendered as "key (n), key (n)". */
+function tally<T>(items: T[], key: (i: T) => string): string {
+  const counts = new Map<string, number>();
+  for (const i of items) counts.set(key(i), (counts.get(key(i)) ?? 0) + 1);
+  return [...counts.entries()].map(([k, n]) => `${k} (${n})`).join(", ");
+}
+
+/** Diagnostic message for an empty (filtered) harness_list result.
+ *
+ *  "Harness state is empty." collapsed three very different situations into
+ *  one opaque line, and users read it as "the feature is broken": the store
+ *  is genuinely empty (a new session starts empty — durable sync is opt-in),
+ *  everything is owned by another model (per-model isolation), or the kind
+ *  filter matched nothing. Each case gets its own actionable explanation so
+ *  the model — and the user behind it — can tell a filter effect from an
+ *  actually-empty store. */
+function emptyListMessage(kind: ComponentKind | undefined, ownerKey: string | undefined): string {
+  const all = listItems();
+  if (all.length === 0) {
+    return (
+      "Harness state is empty (0 items). Items are created by /refine (after a working session) " +
+      "or by harness_mutate creates, and persist on the session branch: a NEW session starts empty " +
+      'unless durable sync is enabled — set "autoImport": true in ~/.pi/agent/harness.json to ' +
+      "import/export the durable layers automatically."
+    );
+  }
+  const parts: string[] = [];
+  if (ownerKey !== undefined) {
+    parts.push(
+      `No items for model ${ownerKey}. The store holds ${all.length} item(s), owned by: ` +
+        `${tally(all, (i) => i.ownerModel || "(orphan)")}. ` +
+        'Re-run with model:"*" to list every model\'s items.',
+    );
+  }
+  if (kind !== undefined) {
+    parts.push(
+      ownerKey === undefined
+        ? `No ${kind} items. The store holds ${all.length} item(s) in other kinds: ${tally(all, (i) => i.kind)}.`
+        : `No ${kind} items for this model; across all models the store holds: ${tally(all, (i) => i.kind)}.`,
+    );
+  }
+  return parts.join(" ");
 }

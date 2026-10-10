@@ -10,6 +10,19 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Fixed
+
+- **`harness_list` empty results are now diagnostic** — the bare
+  `"Harness state is empty."` collapsed three very different situations into
+  one opaque line, which users read as "the feature is broken": (1) a
+  genuinely empty store (a new session starts empty — durable sync is
+  opt-in), (2) everything owned by another model (per-model isolation hides
+  it from the default view), (3) a `kind` filter that matched nothing. Each
+  case now gets its own actionable text: zero-state guidance (`/refine`,
+  `harness_mutate`, `"autoImport": true`), an owner tally with a
+  `model:"*"` pointer, and a kind tally respectively. `structuredContent`
+  is unchanged (stable schema); only the model-facing text changed.
+
 ### Added
 
 - **Stale-draft hygiene for auto-refine (pi 0.87 context edits)** — every

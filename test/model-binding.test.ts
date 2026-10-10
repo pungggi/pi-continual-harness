@@ -340,4 +340,44 @@ describe("harness_list — model filtering", () => {
     expect(text).not.toContain("mine");
     expect(text).toContain("theirs");
   });
+
+  it("empty result explains WHY — genuinely empty store vs model filter vs kind filter", async () => {
+    const { pi, tools } = fakePi();
+    registerTools(pi);
+    const listTool = tools.get("harness_list")!;
+
+    // 1. Genuinely empty store: zero-state guidance, not a bare "empty".
+    setActiveModelKey(undefined);
+    let text = await list(listTool, {});
+    expect(text).toContain("0 items");
+    expect(text).toContain("harness_mutate"); // how items get created
+    expect(text).toContain("autoImport"); // why a new session starts empty
+
+    // 2. Store has items, none owned by the active model: name the owners and
+    //    point at model:"*" instead of reading as "broken".
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" },
+        { op: "create", kind: "skill", content: "also theirs", evidence: "e", ownerModel: "google/gemini" },
+      ],
+      () => {},
+    );
+    setActiveModelKey("anthropic/sonnet");
+    text = await list(listTool, {});
+    expect(text).toContain("No items for model anthropic/sonnet");
+    expect(text).toContain("google/gemini (2)");
+    expect(text).toContain('model:"*"');
+
+    // model:"*" with a kind filter that matches nothing: kind-aware message.
+    text = await list(listTool, { model: "*", kind: "prompt" });
+    expect(text).toContain("No prompt items");
+    expect(text).toContain("memory (1)");
+    expect(text).toContain("skill (1)");
+
+    // 3. Kind filter alone (no owner filter) with matching items elsewhere.
+    setActiveModelKey(undefined);
+    text = await list(listTool, { kind: "subagent" });
+    expect(text).toContain("No subagent items");
+    expect(text).toContain("other kinds");
+  });
 });

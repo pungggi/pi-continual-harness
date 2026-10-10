@@ -499,6 +499,18 @@ explicit `"provider/id"`. Returns one text line per item plus a matching
 
 Always call this before proposing changes so you operate on current state.
 
+**Empty results are diagnostic.** A bare "empty" hid three different
+situations behind one opaque line, so the message now says which one it is:
+
+- **Genuinely empty store** — zero-state guidance: how items are created
+  (`/refine`, `harness_mutate`) and why a new session starts empty (durable
+  sync is opt-in: `"autoImport": true` in `harness.json`).
+- **Model filter** — `No items for model X` plus an owner tally and a
+  `model: "*"` pointer (per-model isolation, not a bug).
+- **Kind filter** — `No <kind> items` plus a tally of what the store holds.
+
+`structuredContent` is unchanged (`{ count, items }`); only the text differs.
+
 ### `harness_mutate`
 
 ```
