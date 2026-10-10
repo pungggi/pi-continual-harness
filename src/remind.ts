@@ -1,7 +1,7 @@
 // turn_end /refine reminder — the activation nudge. Notify-only by design:
-// it never mutates state, which is why it is ON by default since 0.14.0
-// (issue #19). Explicit config always wins; `"remindRefine": { "enabled":
-// false }` restores the pre-0.14 silence.
+// it never mutates state, which is why it is ON by default (issue #19).
+// Explicit config always wins; `"remindRefine": { "enabled":
+// false }` restores the old silence.
 //
 // Two tiers, rotated so the nudge teaches instead of nagging:
 //   short  — every `everyTurns` (default 25) completed turns: a one-line
@@ -16,9 +16,10 @@
 // The decision logic is factored into evaluateReminder() and the copy into
 // pure builders (buildNudge / buildDetailGuide) so they are unit-testable
 // without a live pi runtime — and reusable by the richer /harness status
-// (companion issue). Cadence counting follows the 0.14.0 semantics: the
-// first observed turn_end seeds the baseline (no reminder then) and each
-// fired reminder resets it.
+// (companion issue). Cadence counting follows the 0.14.0 semantics (#18):
+// everyTurns literally counts COMPLETED turns — aborted/error turns are
+// inert (they neither seed nor advance the window), a missing outcome
+// (synthetic events, earliest 0.99.x) counts as completed.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -27,16 +28,18 @@ import {
   type HarnessConfig,
   loadConfig,
 } from "./config.js";
+import { turnEndedBadly } from "./auto-refine.js";
 import { getState } from "./store.js";
 
-// turnIndex of the last reminder (or the seeded baseline). -1 = unseen.
-let lastTurn = -1;
+// Completed turns observed since the last reminder (or the seeded baseline).
+// -1 = unseen. Aborted/error turns never touch this count.
+let completedTurns = -1;
 // Fired reminders this session — the rotation seed for the detailed tier.
 let fires = 0;
 
 /** Test hook: reset cadence baseline and rotation state. */
 export function resetReminder(): void {
-  lastTurn = -1;
+  completedTurns = -1;
   fires = 0;
 }
 
@@ -78,21 +81,24 @@ export interface ReminderDecision {
 }
 
 /**
- * Decide whether to remind this turn. Side-effectful: the first observed turn
- * seeds the baseline (no reminder then), each fired reminder resets it, and
- * the fire count advances the detail-tier rotation.
+ * Decide whether to remind this turn. Side-effectful: the first observed
+ * COMPLETED turn seeds the baseline (no reminder then); every completed turn
+ * after it advances the count, each fired reminder resets it, and the fire
+ * count advances the detail-tier rotation. Aborted/error turns are inert.
  */
-export function evaluateReminder(config: HarnessConfig, turnIndex: number): ReminderDecision {
+export function evaluateReminder(config: HarnessConfig, outcome?: string): ReminderDecision {
   const idle: ReminderDecision = { fire: false, detail: false, fires, detailOrdinal: 0 };
   if (!config.remindRefine?.enabled) return idle;
+  if (turnEndedBadly(outcome)) return idle;
   const every = config.remindRefine.everyTurns ?? DEFAULT_EVERY_TURNS;
   if (every <= 0) return idle;
-  if (lastTurn < 0) {
-    lastTurn = turnIndex;
+  if (completedTurns < 0) {
+    completedTurns = 0; // seed: the seed turn itself doesn't count
     return idle;
   }
-  if (turnIndex - lastTurn < every) return idle;
-  lastTurn = turnIndex;
+  completedTurns += 1;
+  if (completedTurns < every) return idle;
+  completedTurns = 0;
   fires += 1;
   const detailEvery = config.remindRefine.detailEvery ?? DEFAULT_DETAIL_EVERY;
   const detail = detailEvery > 0 && fires % detailEvery === 0;
@@ -206,7 +212,7 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
       '  "outcomeImportance": { "enabled": true, "bump": 0.03 },',
       '  "classifier": { "model": "typesafe/jev-latest" }',
       "}",
-      `Guidance: gate (needs classifier.model) spends one cheap yes/no question before each auto-refine, so cadence becomes signal. Keep commit false until you trust the flow; true writes durable layers on every auto-run. This nudge fires every ${state.everyTurns} turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} turns).`,
+      `Guidance: gate (needs classifier.model) spends one cheap yes/no question before each auto-refine, so cadence becomes signal. Keep commit false until you trust the flow; true writes durable layers on every auto-run. This nudge fires every ${state.everyTurns} completed turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} completed turns).`,
     ].join("\n"),
 ];
 
@@ -259,7 +265,7 @@ export function buildDetailGuide(ordinal: number, state: ReminderState): string 
 export function registerReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    const decision = evaluateReminder(config, event.turnIndex);
+    const decision = evaluateReminder(config, event.outcome);
     if (!decision.fire) return;
     const state = reminderState(config);
     ctx.ui.notify(

@@ -134,6 +134,25 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 11 — DONE (0.14.0) — aborted/error turns are inert
+
+pi's `turn_end` `BoundaryState.outcome` (`"completed" | "aborted" | "error"`,
+present since 0.99 — surfaced by pi 1.1.0's aborted-vs-finished theme) is now
+consumed everywhere it matters: an aborted or errored turn neither seeds nor
+advances the auto-refine / reminder cadence windows, and the outcome loop
+defers scanning its partial assistant text to the next completed turn — a
+refine can no longer fire (nor the classifier gate judge) a trajectory that
+was cut off. Missing outcome = completed (synthetic events, earliest 0.99.x).
+Durable auto-export deliberately still exports on such turns. Pure
+`turnEndedBadly()` exported. The pi 1.1.0 classifier catalog (GPT-6 Luna,
+llama.cpp native decision models) is documented for `classifier.model` —
+config only, no code. Run-granularity `agent_settled.aborted` is deliberately
+NOT adopted: it would force a peer bump to ≥ 1.1.0; revisit when a
+settlement-level hook is actually needed.
+
+**Effort:** ~60 lines (src) + 6 tests. **Risk:** low — a behavior guard on
+opt-in paths only (auto-refine, reminder, outcome), plus docs.
+
 ## Phase 10 — DONE (0.13.0) — stale-draft hygiene
 
 Closed the follow-up from Phase 9: boundary-delivered auto-refine drafts

@@ -45,7 +45,7 @@ describe("config", () => {
         const cfg = await loadConfig(file);
         expect(cfg.autoImport).toBe(true);
         expect(cfg.remindRefine?.enabled).toBe(true);
-        expect(cfg.remindRefine?.everyTurns).toBe(25); // default retained (0.14.0)
+        expect(cfg.remindRefine?.everyTurns).toBe(25); // default retained (issue #19)
       });
     });
 
@@ -68,7 +68,7 @@ describe("config", () => {
         // The key is gone from the config type entirely (removed, not defaulted).
         expect((cfg as Record<string, unknown>).durableScope).toBeUndefined();
         expect(cfg.remindRefine?.everyTurns).toBe(10);
-        expect(cfg.remindRefine?.enabled).toBe(true); // on by default since 0.14.0
+        expect(cfg.remindRefine?.enabled).toBe(true); // on by default (issue #19)
       });
     });
 

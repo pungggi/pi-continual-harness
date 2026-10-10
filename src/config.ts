@@ -7,7 +7,7 @@
 //    live store changed since the last export. Off by default — importing is
 //    normally an explicit, reviewable /harness import.
 //  - remindRefine: the /refine activation nudge (issue #19), ON by default
-//    since 0.14.0 (notify-only, never mutates; `enabled: false` opts back
+//    (notify-only, never mutates; `enabled: false` opts back
 //    out). autoRefine / outcomeImportance / injection / proposer: unchanged
 //    (see below).
 //
@@ -58,7 +58,7 @@ export interface HarnessConfig {
     enabled?: boolean;
     everyTurns?: number;
   };
-  /** /refine cadence nudge (ON since 0.14.0 — activation nudge, notify-only):
+  /** /refine cadence nudge (ON by default, issue #19 — activation nudge, notify-only):
  *  every `everyTurns` completed turns a one-line reminder fires; every
  *  `detailEvery`-th reminder escalates to a rotating educational guide
  *  (see src/remind.ts). Never mutates state; `enabled: false` restores the
@@ -141,7 +141,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       everyTurns: coerceMinTurns(over.importRemind?.everyTurns, DEFAULT_IMPORT_REMIND_TURNS),
     },
     remindRefine: {
-      // Default-on (0.14.0): a notify-only nudge mutates nothing, so the
+      // Default-on (issue #19): a notify-only nudge mutates nothing, so the
       // activation lever is pulled unless explicitly declined.
       enabled: over.remindRefine?.enabled !== false,
       everyTurns: coerceMinTurns(over.remindRefine?.everyTurns, DEFAULT_EVERY_TURNS),

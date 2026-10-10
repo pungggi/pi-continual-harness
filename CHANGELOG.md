@@ -20,8 +20,9 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `harness.json` has no `remindRefine` key you will start seeing nudges
   (first one at 25 completed turns). Restore the old silence with
   `{ "remindRefine": { "enabled": false } }`. Explicit config keeps winning
-  in both directions, and the cadence still counts completed turns (seed on
-  the first observed `turn_end`, reset per fire and per session).
+  in both directions, and the cadence still counts completed turns per the
+  aborted/error-inert semantics (seed on the first observed completed
+  `turn_end`, reset per fire and per session).
 
 ### Added
 
@@ -83,6 +84,27 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   the model-facing text changed.
 
 ### Added
+
+- **Aborted/error turns are inert (pi `turn_end` `BoundaryState.outcome`)** —
+  a `turn_end` whose outcome is `"aborted"` or `"error"` no longer counts
+  toward the auto-refine or reminder cadence: both windows now count
+  *completed* turns (never raw turn indices, so an aborted turn in between
+  cannot shorten a window). The outcome loop seeds its scan cursor on the
+  first observed `turn_end` regardless of outcome, then defers an aborted
+  turn's partial assistant text to the next completed turn — a refine can no
+  longer fire, and the classifier gate no longer judges, a trajectory that
+  was cut off. A missing outcome (synthetic events, earliest 0.99.x) is
+  treated as completed. Durable auto-export deliberately still exports on
+  aborted turns (committed entries must not be lost). Pure `turnEndedBadly()`
+  re-exported from the package entry; `evaluateAutoRefine`/`evaluateReminder`
+  accept an optional `outcome` argument (the dead `turnIndex` parameter was
+  dropped — the count replaced the index arithmetic).
+- **pi 1.1.0 classifier catalog documented** — `classifier.model` accepts the
+  new entries with no code change: OpenAI's GPT-6 Luna (Decisions API, e.g.
+  `openai/gpt-6-luna`, needs `OPENAI_API_KEY`) and the native llama.cpp
+  decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`,
+  llama.cpp ≥ 0.6.0 — classifier-only listings, a free local gate). README +
+  MANUAL updated; no minimum-pi change (the APIs used still ship by 0.99.0).
 
 - **Stale-draft hygiene for auto-refine (pi 0.87 context edits)** — every
   boundary delivery now also appends `context_edit` drafts omitting each LIVE

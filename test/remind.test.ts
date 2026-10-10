@@ -30,48 +30,62 @@ const facts = (over: Partial<ReminderState> = {}): ReminderState => ({
   ...over,
 });
 
+/** Fire n COMPLETED turn_end evaluations (missing outcome = completed). */
+function completed(c: HarnessConfig, n: number) {
+  return Array.from({ length: n }, () => evaluateReminder(c));
+}
+
 describe("evaluateReminder", () => {
   beforeEach(resetReminder);
 
   it("never reminds when disabled", () => {
     const disabled = cfg({ remindRefine: { enabled: false, everyTurns: 5 } });
-    for (let i = 0; i < 30; i++) {
-      expect(evaluateReminder(disabled, i).fire).toBe(false);
-    }
+    for (const d of completed(disabled, 30)) expect(d.fire).toBe(false);
   });
 
-  it("seeds a baseline on the first turn, then reminds exactly every N turns", () => {
+  it("seeds a baseline on the first turn, then reminds exactly every N completed turns", () => {
     const enabled = cfg({ remindRefine: { enabled: true, everyTurns: 5 } });
-    expect(evaluateReminder(enabled, 0).fire).toBe(false); // seed baseline at 0
-    expect(evaluateReminder(enabled, 1).fire).toBe(false);
-    expect(evaluateReminder(enabled, 4).fire).toBe(false);
-    expect(evaluateReminder(enabled, 5).fire).toBe(true); // first nudge
-    expect(evaluateReminder(enabled, 6).fire).toBe(false);
-    expect(evaluateReminder(enabled, 9).fire).toBe(false);
-    expect(evaluateReminder(enabled, 10).fire).toBe(true); // second nudge, cadence resets
-    expect(evaluateReminder(enabled, 14).fire).toBe(false);
-    expect(evaluateReminder(enabled, 15).fire).toBe(true); // third nudge
+    expect(evaluateReminder(enabled).fire).toBe(false); // seed (doesn't count)
+    for (const d of completed(enabled, 4)) expect(d.fire).toBe(false);
+    expect(evaluateReminder(enabled).fire).toBe(true); // 5th completed turn
+    for (const d of completed(enabled, 4)) expect(d.fire).toBe(false);
+    expect(evaluateReminder(enabled).fire).toBe(true); // cadence resets
   });
 
   it("never reminds when everyTurns <= 0", () => {
     const zero = cfg({ remindRefine: { enabled: true, everyTurns: 0 } });
-    expect(evaluateReminder(zero, 0).fire).toBe(false);
-    expect(evaluateReminder(zero, 1000).fire).toBe(false);
+    for (const d of completed(zero, 5)) expect(d.fire).toBe(false);
   });
 
   it("falls back to the default cadence (25) when everyTurns is absent", () => {
     const noEvery = cfg({ remindRefine: { enabled: true } });
-    expect(evaluateReminder(noEvery, 0).fire).toBe(false); // seed
-    expect(evaluateReminder(noEvery, 24).fire).toBe(false);
-    expect(evaluateReminder(noEvery, 25).fire).toBe(true); // new default 25
+    expect(evaluateReminder(noEvery).fire).toBe(false); // seed
+    for (const d of completed(noEvery, 24)) expect(d.fire).toBe(false);
+    expect(evaluateReminder(noEvery).fire).toBe(true); // new default 25
+  });
+
+  it("aborted/error turns neither seed nor advance the completed-turn count", () => {
+    const enabled = cfg({ remindRefine: { enabled: true, everyTurns: 2 } });
+    expect(evaluateReminder(enabled, "aborted").fire).toBe(false); // bad turn: no seed
+    expect(evaluateReminder(enabled).fire).toBe(false); // seed
+    expect(evaluateReminder(enabled, "error").fire).toBe(false); // skipped
+    expect(evaluateReminder(enabled).fire).toBe(false); // 1st completed: no nudge
+    expect(evaluateReminder(enabled).fire).toBe(true); // 2nd completed: nudge
+    expect(evaluateReminder(enabled, undefined).fire).toBe(false); // undefined = completed
+    expect(evaluateReminder(enabled, undefined).fire).toBe(true);
+  });
+
+  it("aborted turns do not advance the detail rotation either", () => {
+    const c = cfg({ remindRefine: { enabled: true, everyTurns: 1, detailEvery: 1 } });
+    evaluateReminder(c); // seed
+    expect(evaluateReminder(c, "aborted").fires).toBe(0); // inert, no rotation
+    expect(evaluateReminder(c).detailOrdinal).toBe(1);
   });
 
   it("escalates to the detailed tier every detailEvery-th fired reminder", () => {
     const c = cfg({ remindRefine: { enabled: true, everyTurns: 1, detailEvery: 4 } });
-    // turns 0 seeds; each later turn fires (everyTurns 1). Track fires.
-    const decisions = [evaluateReminder(c, 0)];
-    for (let t = 1; t <= 10; t++) decisions.push(evaluateReminder(c, t));
-    const fired = decisions.filter((d) => d.fire);
+    evaluateReminder(c); // seed (doesn't count)
+    const fired = completed(c, 10).filter((d) => d.fire);
     expect(fired.map((d) => d.fires)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(fired.map((d) => d.detail)).toEqual([
       false, false, false, true, // fire 4 → detail ordinal 1
@@ -83,21 +97,21 @@ describe("evaluateReminder", () => {
 
   it("detailEvery: 1 makes every reminder detailed", () => {
     const c = cfg({ remindRefine: { enabled: true, everyTurns: 1, detailEvery: 1 } });
-    evaluateReminder(c, 0); // seed
-    for (let t = 1; t <= 3; t++) {
-      const d = evaluateReminder(c, t);
+    evaluateReminder(c); // seed
+    for (let n = 1; n <= 3; n++) {
+      const d = evaluateReminder(c);
       expect(d.detail).toBe(true);
-      expect(d.detailOrdinal).toBe(t);
+      expect(d.detailOrdinal).toBe(n);
     }
   });
 
   it("rotation state resets with the reminder (fresh session, fresh cycle)", () => {
     const c = cfg({ remindRefine: { enabled: true, everyTurns: 1, detailEvery: 1 } });
-    evaluateReminder(c, 0);
-    expect(evaluateReminder(c, 1).detailOrdinal).toBe(1);
+    evaluateReminder(c); // seed
+    expect(evaluateReminder(c).detailOrdinal).toBe(1);
     resetReminder();
-    evaluateReminder(c, 0); // re-seed
-    expect(evaluateReminder(c, 1).fires).toBe(1); // counter restarted
+    evaluateReminder(c); // re-seed
+    expect(evaluateReminder(c).fires).toBe(1); // counter restarted
   });
 });
 
@@ -229,6 +243,7 @@ describe("registerReminder end-to-end", () => {
     const { registerReminder } = await import("../src/remind.js");
     registerReminder(pi);
     for (let t = 0; t <= 100; t++) {
+      // Synthetic events carry no outcome → treated as completed (0.14.0).
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
     const nudges = notifications.filter((n) => /turns since the last check|still empty/.test(n.msg));
@@ -236,6 +251,18 @@ describe("registerReminder end-to-end", () => {
     expect(nudges).toHaveLength(3); // turns 25, 50, 75
     expect(guides).toHaveLength(1); // turn 100 = 4th fire
     expect(guides[0]!.msg).toContain("Continual Harness");
+  });
+
+  it("aborted turns are inert end-to-end: they never advance the cadence", async () => {
+    await primeConfig({ remindRefine: { everyTurns: 3 } });
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    const { registerReminder } = await import("../src/remind.js");
+    registerReminder(pi);
+    await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx()); // seed
+    for (let t = 1; t <= 20; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t, outcome: "aborted" }, ctx());
+    }
+    expect(notifications).toHaveLength(0); // 20 aborted turns → still just the seed
   });
 
   it("explicit enabled: false restores silence (overridable in both directions)", async () => {
