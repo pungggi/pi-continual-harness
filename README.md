@@ -71,6 +71,7 @@ Durable I/O (round-trip with pi-reflect):
 /harness move <id> global|project  # move an item between durable layers
 /harness split                   # steer the agent to classify every item's scope
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
+/harness setup [--preset <quiet|recommended|power>] [--yes]  # guided config wizard
 ```
 
 Subcommands, flags, `--kind`/`--model` values, `move` scopes, and `keep`/
@@ -139,11 +140,35 @@ unchanged by a push — pi-mem gets a separate copy.
 
 ## Configuration
 
+**First-run setup:** instead of hand-editing the JSON below, run
+`/harness setup`. It is a guided wizard:
+
+1. Shows the **current effective config** (your file merged over the shipped
+   defaults) plus the durable-layer paths.
+2. Offers three **presets**: `quiet` (pin every opt-in to the shipped
+   defaults), `recommended` (`autoImport` + import reminders on), `power`
+   (`recommended` + `autoRefine`). Each preset is shown as a declarative diff
+   before anything is applied.
+3. Confirms **each delta** with a one-line rationale. Autonomous switches
+   get their own explicit "this lets the agent mutate state on a cadence"
+   confirmation regardless of preset.
+4. Writes via one reviewed path: backs up the existing file
+   (`harness.json.bak-<timestamp>`), atomically writes the merged result,
+   then reloads and prints the effective config exactly as pi will read it.
+
+For scripted setups: `/harness setup --preset recommended --yes` (the `--yes`
+flag is the scripted form of the confirmations, so it enables autonomous
+features without prompts). Nothing is written on unknown input, a cancelled
+preset menu, or a declined final write; declining an individual feature only
+skips that feature (the accepted deltas still apply). The wizard never
+touches harness state, only the config file.
+
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
 
 ```json
 {
   "autoImport": false,
+  "importRemind": { "enabled": true, "everyTurns": 25 },
   "proposer": "steering",
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
@@ -163,7 +188,19 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   changed since the last export. This is what makes `/refine` output survive
   into **new** sessions without manual export/import ceremony. Both halves are
   visible (one notify line) and use the same persisted `harness-state` entries
-  as every other mutation (`/tree` rollback covers them).
+  as every other mutation (`/tree` rollback covers them). Enabling it
+  mid-session (e.g. via `/harness setup`) is safe: the first `turn_end`
+  imports the layers *before* any export, so a late enable can never
+  overwrite the durable files with a never-imported store.
+- **`importRemind`** — **awareness reminders** for that sync (effective only
+  when `autoImport` is on; default `{ "enabled": true, "everyTurns": 25 }`).
+  The session-start import doesn't just count — it **lists what arrived**
+  (item id, kind, first words of content), and every `everyTurns` turns a
+  one-line reminder re-surfaces the imported items so silently-injected
+  instructions never go unnoticed. Bounded: at most 3 reminders per imported
+  batch, then quiet until the next session. Kill-switch:
+  `{ "importRemind": { "enabled": false } }` (the start-of-session listing
+  still fires).
 - **`injection`** — the selection policy for WHAT gets surfaced in the system
   prompt each turn (see [Injection selection](#injection-selection-on-by-default)).
   ON by default: items are importance-ordered, capped at `maxPerKind` (default

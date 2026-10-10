@@ -231,13 +231,25 @@ function emptyListMessage(kind: ComponentKind | undefined, ownerKey: string | un
       // Model isolation is the whole story: the active model owns nothing.
       const parts = [
         `No items for model ${ownerKey}. The store holds ${all.length} item(s), owned by: ` +
-          `${tally(all, (i) => i.ownerModel || "(orphan)")}. ` +
-          'Re-run with model:"*" to list every model\'s items.',
+          `${tally(all, (i) => i.ownerModel || "(orphan)")}.`,
       ];
       if (kind !== undefined) {
-        parts.push(
-          `No ${kind} items for this model either; across all models the store holds: ${tally(all, (i) => i.kind)}.`,
-        );
+        // The model:"*" pointer is only honest when the requested kind
+        // exists for another model — with the same kind filter it would
+        // still return nothing (the header's "only when it would surface
+        // something" guarantee, review #26).
+        const kindElsewhere = all.filter((i) => i.kind === kind);
+        if (kindElsewhere.length > 0) {
+          parts.push(
+            `No ${kind} items for this model either; ${kindElsewhere.length} ${kind} item(s) exist for other models — re-run with model:"*" to see them.`,
+          );
+        } else {
+          parts.push(
+            `No ${kind} items for this model or any other model; across all models the store holds: ${tally(all, (i) => i.kind)}.`,
+          );
+        }
+      } else {
+        parts.push(`Re-run with model:"*" to list every model's items.`);
       }
       return parts.join(" ");
     }

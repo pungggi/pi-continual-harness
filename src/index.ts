@@ -14,7 +14,7 @@ import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
 import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
-import { registerAutoExport, resetDurableSync, syncDurableOnStart } from "./durable.js";
+import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart } from "./durable.js";
 import { getState, reconstruct, setActiveModelKey, setSessionProject, STATE_ENTRY } from "./store.js";
 import { projectSlug } from "./config.js";
 
@@ -54,6 +54,8 @@ export default function continualHarness(pi: ExtensionAPI): void {
   // Durable sync's turn_end export (opt-in via autoImport) registers before
   // outcome/auto-refine; in production pi every turn_end handler runs.
   registerAutoExport(pi);
+  // Import-awareness reminders (autoImport bundles them; bounded cadence).
+  registerImportReminder(pi);
   registerOutcome(pi);
   registerAutoRefine(pi);
 }
@@ -152,3 +154,24 @@ export {
   type OmissionDraft,
   type ProjectedLike,
 } from "./auto-refine.js";
+
+// Setup wizard (issue #22): presets as pure data + expandPreset, and the one
+// reviewed write path for harness.json (backup + atomic write + reload).
+// Re-exported so tests and companion packages never reach into internal
+// paths.
+export {
+  deepMergeConfig,
+  readConfigRaw,
+  saveConfig,
+  type SaveConfigResult,
+} from "./config.js";
+export {
+  expandPreset,
+  getPath,
+  planWrite,
+  PRESETS,
+  setPath,
+  type Preset,
+  type PresetDelta,
+  type PresetName,
+} from "./setup.js";

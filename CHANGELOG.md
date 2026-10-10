@@ -38,6 +38,44 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **`/harness setup` — guided configuration wizard (presets, reviewed
+  harness.json write)** — every opt-in feature used to require hand-editing
+  `~/.pi/agent/harness.json` with exact key spellings; the wizard replaces
+  that with presets, per-feature confirms, and one safe write. Flow: show
+  the current effective config (file merged over defaults) + durable-layer
+  paths; choose `quiet` (pin the shipped defaults), `recommended`
+  (`autoImport` + `importRemind` on, with a gate-readiness note), or `power`
+  (`recommended` + `autoRefine`); confirm each implied delta (autonomous
+  switches get their own explicit "mutates state on a cadence" confirm
+  regardless of preset); then write via the new `saveConfig` — timestamped
+  backup (`harness.json.bak-<timestamp>`), atomic same-dir write, unknown
+  keys preserved, and a reload that round-trips through the loader's
+  coercion path so the printed effective config is exactly what pi reads.
+  Scripted form: `/harness setup --preset recommended [--yes]` (`--yes` is
+  the scripted consent and skips every prompt). Nothing is written on
+  unknown input, a cancelled preset menu, or a declined final write;
+  declining an individual feature only skips that feature. The wizard
+  touches config files only — never harness state. Preset values derive
+  from `DEFAULT_CONFIG` (not hardcoded), so wizard and loader cannot drift.
+  Presets are pure data: `PRESETS` / `expandPreset` / `planWrite` / `setPath`
+  / `saveConfig` exported for tests and companions; subcommand +
+  `--preset`/`--yes` flags autocomplete in the TUI.
+
+- **Awareness reminders for durable sync (`importRemind`)** — with
+  `"autoImport": true`, silently-imported instructions now announce
+  themselves. The session-start import lists **what arrived** (item id, kind,
+  first words of content — bounded to 5 lines), and a one-line `turn_end`
+  reminder re-surfaces the imported batch every `importRemind.everyTurns`
+  turns (default 25). Bounded by design: at most 3 reminders per imported
+  batch, then quiet until the next session — awareness without nagging.
+  Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
+  (effective only with `autoImport`; kill-switch `enabled: false` keeps the
+  start-of-session listing). `DurableImportResult` now carries
+  `createdIds`/`updatedIds` (additive) so the sync knows exactly which items
+  to re-surface; `evaluateImportReminder`/`registerImportReminder`/
+  `getImportedThisSession`/`summarizeImported` exported for tests and
+  companions.
+
 - **Aborted/error turns are inert (pi `turn_end` `BoundaryState.outcome`)** —
   a `turn_end` whose outcome is `"aborted"` or `"error"` no longer counts
   toward the auto-refine or reminder cadence: both windows now count
@@ -58,6 +96,76 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`,
   llama.cpp ≥ 0.6.0 — classifier-only listings, a free local gate). README +
   MANUAL updated; no minimum-pi change (the APIs used still ship by 0.99.0).
+
+### Removed
+
+- **`durableScope` config key removed** (deprecated since 0.9.0 as a no-op):
+  items carry their own scope and durable I/O is always layered, so the key
+  switched nothing. The dead `resolveDurablePath()` helper is gone too (no
+  callers). Config files that still set `durableScope` load unchanged —
+  unknown keys are ignored; migration is the documented one-time
+  `/harness import` + `/harness move`/`split`.
+
+### Fixed
+
+- **`harness_list` empty results are now diagnostic** — the bare
+  `"Harness state is empty."` collapsed three very different situations into
+  one opaque line, which users read as "the feature is broken": (1) a
+  genuinely empty store (a new session starts empty — durable sync is
+  opt-in), (2) everything owned by another model (per-model isolation hides
+  it from the default view), (3) a `kind` filter that matched nothing. Each
+  case now gets its own actionable text: zero-state guidance (`/refine`,
+  `harness_mutate`, `"autoImport": true`), an owner tally with a
+  `model:"*"` pointer, and a kind tally respectively. The diagnosis is
+  attributed from the store's actual contents (review #23): a kind miss for a
+  model that owns items is never reported as model isolation, and the
+  `model:"*"` pointer only appears when the requested kind actually exists
+  for another model. `structuredContent` is unchanged (stable schema); only
+  the model-facing text changed.
+- **`harness_list`'s `model:"*"` pointer also holds when the model owns
+  nothing (review #26)** — requesting a kind that exists for NO model used
+  to still show the pointer (which returns nothing with the same kind
+  filter); that case now says "no `<kind>` items for this model or any other
+  model" with an honest kind tally, and the pointer only appears when the
+  kind exists elsewhere.
+- **Late `autoImport` enable can no longer clobber the durable layers
+  (review #26)** — enabling `autoImport` mid-session (wizard or hand-edit)
+  used to make the very next `turn_end` auto-export overwrite the
+  global/project durable files with the never-imported live store (the
+  session-start import had been skipped, so saved refinements were lost).
+  The export hook now runs the layered import FIRST when the session's
+  start-sync never happened; a failing catch-up import defers the export
+  to the next turn.
+- **Cadences count `turn_end` events, not pi's `turnIndex` (review #26)** —
+  pi resets `turnIndex` to 0 on every `agent_start` (each user prompt), so
+  the import-reminder (and the older `/refine` reminder) cadences could
+  never accumulate across prompts: 25 separate prompts never fired a
+  reminder. Both reminders now count completed turn_end events
+  (session-stable ordinal; resets on session_start as before).
+- **`saveConfig` is safe under concurrency (review #26)** — the temp file is
+  unique per call (UUID + exclusive `wx` create), so two concurrent writes
+  (two pi sessions) can never truncate or rename each other's temp file;
+  the final rename retries briefly on Windows' transient `EPERM` (target
+  just replaced).
+- **`planWrite` merges like `saveConfig` (review #26)** — the wizard's
+  reviewed JSON preview previously dropped nested unknown keys (e.g. a
+  future `importRemind.<key>`), which the write then re-added from disk, so
+  the written file could differ from the confirmed preview. Deltas now
+  apply with the same two-level deep-merge: the preview equals the file.
+- **`expandPreset` no longer leaks `Object.prototype` (review #26)** —
+  `--preset constructor` (or `toString`/`__proto__`) passed validation and
+  crashed; inherited names now report `Unknown preset` and nothing is
+  written.
+- **The import-reminder's disable hint is now valid JSON (review #26)** —
+  the suggested snippet used single quotes; pasting it broke the whole
+  config file (all settings fell back to defaults). It now reads
+  `"importRemind": { "enabled": false }`.
+- **Global/project id collisions list once (review #26)** — an id created
+  by the global layer then updated by the project layer appeared twice in
+  the "what arrived" listing and inflated the reminder counts; the batch
+  is now de-duplicated.
+
+### Added
 
 - **Stale-draft hygiene for auto-refine (pi 0.87 context edits)** — every
   boundary delivery now also appends `context_edit` drafts omitting each LIVE

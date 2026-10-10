@@ -5,6 +5,7 @@
 //   /harness import [--prune] [path]     layered import (or single file from path)
 //   /harness move <id> <global|project>  move an item between durable layers
 //   /harness split                       steer the agent to classify scopes
+//   /harness setup [--preset <name>] [--yes]  guided config wizard (issue #22)
 //
 // The command registers getArgumentCompletions so the TUI offers a filtered
 // menu of subcommands (and, one level deeper, flags / item ids / values) as
@@ -50,6 +51,7 @@ import {
 import { KIND_LABEL } from "./types.js";
 import type { ComponentKind, Delta, HarnessItem } from "./types.js";
 import { buildCorpus } from "./corpus.js";
+import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
 interface CompletionEntry {
@@ -68,6 +70,7 @@ const SUBCOMMANDS: CompletionEntry[] = [
   { name: "move", description: "Move an item between durable scopes (global | project)" },
   { name: "split", description: "Steer the agent to classify every item global vs project" },
   { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
+  { name: "setup", description: "Guided config wizard — presets: quiet | recommended | power (--yes for scripted)" },
 ];
 
 const KINDS: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
@@ -80,6 +83,10 @@ const FLAGS: Record<string, CompletionEntry[]> = {
     { name: "--all", description: "Push every active item, not just memories" },
     { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
     { name: "--model", description: "Limit to one owner model (provider/id or \"active\")" },
+  ],
+  setup: [
+    { name: "--preset", description: "Apply one preset: quiet | recommended | power" },
+    { name: "--yes", description: "Scripted consent — skip every confirm prompt" },
   ],
 };
 
@@ -138,6 +145,9 @@ function completions(argumentPrefix: string) {
       last,
       before,
     );
+  }
+  if (prev === "--preset" && sub === "setup") {
+    return filterValues(PRESET_COMPLETIONS, last, before);
   }
 
   // Flag completion ("--…" prefix, or a fresh token for flag-taking subs).
@@ -243,6 +253,9 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "push-mem":
           await handlePushMem(pi, ctx, rest);
+          return;
+        case "setup":
+          await handleSetup(ctx, rest);
           return;
         case "status":
         default:

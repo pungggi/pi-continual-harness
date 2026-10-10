@@ -12,7 +12,8 @@
 // Robust by design: missing or malformed file → DEFAULT_CONFIG, never throws.
 // Unknown keys are ignored (e.g. the removed pre-0.9.0 `durableScope`).
 
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
@@ -23,6 +24,8 @@ export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
+/** Default cadence (turns) for the auto-import awareness reminder. */
+export const DEFAULT_IMPORT_REMIND_TURNS = 25;
 
 /** How the binding key treats virtual (router) models. "virtual" (default):
  * key = the selected model's own provider/id. "physical": when the selection
@@ -43,6 +46,14 @@ export interface HarnessConfig {
   /** Opt-in durable sync (issue #7): session_start layered auto-import +
    *  turn_end layered auto-export when the store changed. Default false. */
   autoImport?: boolean;
+  /** Awareness reminders for durable imports (only effective when `autoImport`
+   *  is on): the session-start import notifies WHAT arrived, and a bounded
+   *  cadence reminder re-surfaces those items so silently-imported instructions
+   *  never go unnoticed. `enabled` defaults true; `everyTurns` defaults 25. */
+  importRemind?: {
+    enabled?: boolean;
+    everyTurns?: number;
+  };
   remindRefine?: {
     enabled?: boolean;
     everyTurns?: number;
@@ -89,6 +100,7 @@ export interface HarnessConfig {
 
 export const DEFAULT_CONFIG: HarnessConfig = {
   autoImport: false,
+  importRemind: { enabled: true, everyTurns: DEFAULT_IMPORT_REMIND_TURNS },
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
   classifier: { model: undefined },
@@ -113,6 +125,10 @@ let cached: HarnessConfig | undefined;
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   return {
     autoImport: over.autoImport === true,
+    importRemind: {
+      enabled: over.importRemind?.enabled !== false,
+      everyTurns: coerceMinTurns(over.importRemind?.everyTurns, DEFAULT_IMPORT_REMIND_TURNS),
+    },
     remindRefine: {
       enabled: over.remindRefine?.enabled ?? false,
       everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
@@ -144,6 +160,14 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   };
 }
 
+/** Coerce a user-provided turn count to a finite integer ≥ 1, else the
+ *  default. Cadence arithmetic divides/compares against it; 0 or a fraction
+ *  would fire every turn (spam) and NaN never fires. */
+function coerceMinTurns(raw: unknown, def: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw) && Number.isInteger(raw) && raw >= 1) return raw;
+  return def;
+}
+
 /** Coerce a user-provided bump to a finite number, else the default. The bump
  *  is an ARITHMETIC operand (importance + bump), so a non-numeric value must not
  *  leak through: importance + "0.03" === "0.50.03" → NaN, which would then be
@@ -158,6 +182,120 @@ function coerceBump(raw: unknown): number {
  *  silently matching everything (0/-1) or nothing (>1). */
 function coerceThreshold(raw: unknown): number {
   return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEDUPE_THRESHOLD;
+}
+
+/** Result of a reviewed config write (see saveConfig). */
+export interface SaveConfigResult {
+  /** The file that was written (== `path`). */
+  written: string;
+  /** Backup of the previous file (`harness.json.bak-<timestamp>`), when one existed. */
+  backup: string | undefined;
+  /** The exact object serialized to disk (existing raw file ∪ `next`). */
+  merged: Record<string, unknown>;
+  /** Effective config re-read through loadConfig — what pi will actually load. */
+  effective: HarnessConfig;
+}
+
+/** True for a non-array plain object (a deep-merge candidate). */
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Two-level deep merge (the config shape is two levels deep at most):
+ *  plain-object keys merge key-by-key so sibling settings survive; everything
+ *  else is replaced by `next`. Unknown existing keys ride along untouched. */
+export function deepMergeConfig(
+  existing: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(next)) {
+    const cur = out[k];
+    out[k] = isPlainObject(cur) && isPlainObject(v) ? { ...cur, ...v } : v;
+  }
+  return out;
+}
+
+/** Parse the raw file when it is a JSON object; undefined for missing,
+ *  malformed, or non-object content. Unknown keys are preserved verbatim
+ *  (the loader ignores them, a rewrite must not drop them). */
+export async function readConfigRaw(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Filesystem-safe, sortable backup timestamp (colons/dots → dashes). */
+function backupStamp(d = new Date()): string {
+  return d.toISOString().replace(/[:.]/g, "-");
+}
+
+/** rename with a bounded retry. On Windows, replacing a file that was itself
+ *  JUST replaced (a concurrent save racing to the same target) can transiently
+ *  fail with EPERM/EACCES/ENOTEMPTY while the previous replacement settles
+ *  into the delete-pending state. A short backoff clears it; every other
+ *  error (and errors that persist) propagates. */
+async function renameRetry(tmp: string, path: string, tries = 3): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(tmp, path);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt < tries && (code === "EPERM" || code === "EACCES" || code === "ENOTEMPTY")) {
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+/** The ONE reviewed write path for harness.json (used by /harness setup):
+ *  merge `next` over the existing RAW file (two levels deep, unknown keys
+ *  preserved), back the previous file up as `harness.json.bak-<timestamp>`,
+ *  atomically write (same-dir tmp + rename), then drop the config cache and
+ *  reload — the returned `effective` round-trips through the same
+ *  loader/coercion path pi uses, so what the wizard displayed is what pi
+ *  reads. Throws BEFORE any write when the backup cannot be made: the
+ *  previous file is never destroyed without one. */
+export async function saveConfig(
+  next: Partial<HarnessConfig> | Record<string, unknown>,
+  path: string = CONFIG_PATH,
+): Promise<SaveConfigResult> {
+  const existing = await readConfigRaw(path);
+  const merged = deepMergeConfig(existing ?? {}, next as Record<string, unknown>);
+  const json = `${JSON.stringify(merged, null, 2)}\n`;
+  // Back up by FILE EXISTENCE, not parse success: a malformed file must be
+  // preserved too (it may hold recoverable content; the rewrite replaces it).
+  let backup: string | undefined;
+  try {
+    await stat(path);
+    backup = `${path}.bak-${backupStamp()}`;
+    await copyFile(path, backup);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; // backup failure → abort, no write
+  }
+  await mkdir(dirname(path), { recursive: true }); // first run: ~/.pi/agent may not exist yet
+  // Unique + exclusive temp name: two concurrent saveConfig calls (two pi
+  // sessions, or two wizards) must never share a tmp file — the loser would
+  // truncate the winner's content or rename it away mid-write. "wx" fails
+  // loudly on collision instead of corrupting (a UUID collision is already
+  // theoretical; this makes it impossible).
+  const tmp = `${path}.tmp-${randomUUID().slice(0, 8)}`;
+  try {
+    await writeFile(tmp, json, { encoding: "utf8", flag: "wx" });
+    await renameRetry(tmp, path); // atomic on POSIX; REPLACE_EXISTING on Windows
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {}); // best-effort tmp cleanup
+    throw err;
+  }
+  resetConfigCache();
+  const effective = await loadConfig(path);
+  return { written: path, backup, merged, effective };
 }
 
 /** Load the config, merged over defaults. Tolerant: missing/malformed → defaults.
