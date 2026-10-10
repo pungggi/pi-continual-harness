@@ -211,9 +211,10 @@ function tally<T>(items: T[], key: (i: T) => string): string {
  *  one opaque line, and users read it as "the feature is broken": the store
  *  is genuinely empty (a new session starts empty — durable sync is opt-in),
  *  everything is owned by another model (per-model isolation), or the kind
- *  filter matched nothing. Each case gets its own actionable explanation so
- *  the model — and the user behind it — can tell a filter effect from an
- *  actually-empty store. */
+ *  filter matched nothing. Each case gets its own actionable explanation,
+ *  attributed from what the store actually holds — a kind miss for a model
+ *  that owns items is never misdiagnosed as model isolation, and the
+ *  model:"*" pointer only appears when it would actually surface something. */
 function emptyListMessage(kind: ComponentKind | undefined, ownerKey: string | undefined): string {
   const all = listItems();
   if (all.length === 0) {
@@ -224,20 +225,34 @@ function emptyListMessage(kind: ComponentKind | undefined, ownerKey: string | un
       "import/export the durable layers automatically."
     );
   }
-  const parts: string[] = [];
   if (ownerKey !== undefined) {
-    parts.push(
-      `No items for model ${ownerKey}. The store holds ${all.length} item(s), owned by: ` +
-        `${tally(all, (i) => i.ownerModel || "(orphan)")}. ` +
-        'Re-run with model:"*" to list every model\'s items.',
+    const owned = all.filter((i) => i.ownerModel === ownerKey);
+    if (owned.length === 0) {
+      // Model isolation is the whole story: the active model owns nothing.
+      const parts = [
+        `No items for model ${ownerKey}. The store holds ${all.length} item(s), owned by: ` +
+          `${tally(all, (i) => i.ownerModel || "(orphan)")}. ` +
+          'Re-run with model:"*" to list every model\'s items.',
+      ];
+      if (kind !== undefined) {
+        parts.push(
+          `No ${kind} items for this model either; across all models the store holds: ${tally(all, (i) => i.kind)}.`,
+        );
+      }
+      return parts.join(" ");
+    }
+    // The model owns items, so only a kind filter can have emptied the result
+    // (an unfiltered owner view of a non-empty `owned` is never empty).
+    const kindElsewhere =
+      kind !== undefined ? all.filter((i) => i.kind === kind && i.ownerModel !== ownerKey) : [];
+    return (
+      `No ${kind} items for model ${ownerKey}; it owns ${owned.length} item(s) in other kinds: ` +
+        `${tally(owned, (i) => i.kind)}.` +
+        (kindElsewhere.length > 0
+          ? ` (${kindElsewhere.length} ${kind} item(s) exist for other models — re-run with model:"*" to see them.)`
+          : "")
     );
   }
-  if (kind !== undefined) {
-    parts.push(
-      ownerKey === undefined
-        ? `No ${kind} items. The store holds ${all.length} item(s) in other kinds: ${tally(all, (i) => i.kind)}.`
-        : `No ${kind} items for this model; across all models the store holds: ${tally(all, (i) => i.kind)}.`,
-    );
-  }
-  return parts.join(" ");
+  // No owner filter: only a kind filter can have emptied the result.
+  return `No ${kind} items. The store holds ${all.length} item(s) in other kinds: ${tally(all, (i) => i.kind)}.`;
 }

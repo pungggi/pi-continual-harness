@@ -225,12 +225,13 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
   `prune --decay`, or the `dedupe` proposer for that.
 
-> **Deprecated:** `durableScope` (0.9.0). Items now carry their own scope
-> (`/harness move`), and durable I/O is always layered — the key no longer
-> switches anything but is still parsed so existing configs keep loading.
-> Migration from a `durableScope: "project"` setup: run `/harness import` once
-> in the project (its file's items adopt project scope), then move any strays
-> with `/harness move` (or classify the whole store with `/harness split`).
+> **Removed:** the store-wide `durableScope` config key (deprecated 0.9.0,
+> removed now). Items carry their own scope (`/harness move`), and durable I/O
+> is always layered. Config files that still set the key load fine — unknown
+> keys are ignored. Migration from a `durableScope: "project"` setup: run
+> `/harness import` once in the project (its file's items adopt project
+> scope), then move any strays with `/harness move` (or classify the whole
+> store with `/harness split`).
 
 ## How it works
 

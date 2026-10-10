@@ -3,7 +3,6 @@ import { buildOmissionDrafts, evaluateAutoRefine, resetAutoRefine, type Projecte
 import type { HarnessConfig } from "../src/config.js";
 
 const cfg = (over: Partial<HarnessConfig> = {}): HarnessConfig => ({
-  durableScope: "global",
   autoRefine: { enabled: true, everyTurns: 10 },
   ...over,
 });

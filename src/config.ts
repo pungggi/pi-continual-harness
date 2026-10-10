@@ -6,14 +6,11 @@
 //    current project's file) and turn_end layered auto-export whenever the
 //    live store changed since the last export. Off by default — importing is
 //    normally an explicit, reviewable /harness import.
-//  - durableScope: DEPRECATED (0.9.0). Items now carry their own scope
-//    (`/harness move <id> global|project`); durable I/O is layered on top of
-//    per-item scope and this key no longer switches anything. Still parsed so
-//    existing configs keep loading; will be removed in a future release.
 //  - remindRefine / autoRefine / outcomeImportance / injection / proposer:
 //    unchanged (see below).
 //
 // Robust by design: missing or malformed file → DEFAULT_CONFIG, never throws.
+// Unknown keys are ignored (e.g. the removed pre-0.9.0 `durableScope`).
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -43,9 +40,6 @@ export interface NormalizedDedupe {
 }
 
 export interface HarnessConfig {
-  /** DEPRECATED (0.9.0): items carry their own scope now (see /harness move);
-   *  durable I/O is always layered. Parsed for compatibility, ignored. */
-  durableScope?: "global" | "project";
   /** Opt-in durable sync (issue #7): session_start layered auto-import +
    *  turn_end layered auto-export when the store changed. Default false. */
   autoImport?: boolean;
@@ -94,7 +88,6 @@ export interface HarnessConfig {
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
-  durableScope: "global",
   autoImport: false,
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
@@ -119,7 +112,6 @@ let cached: HarnessConfig | undefined;
 /** Merge a (possibly partial) parsed file over the defaults. */
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   return {
-    durableScope: over.durableScope === "project" ? "project" : "global",
     autoImport: over.autoImport === true,
     remindRefine: {
       enabled: over.remindRefine?.enabled ?? false,
@@ -184,15 +176,6 @@ export async function loadConfig(path: string = CONFIG_PATH): Promise<HarnessCon
 /** Test hook: drop the in-process cache. */
 export function resetConfigCache(): void {
   cached = undefined;
-}
-
-/**
- * @deprecated Durable I/O is layered on per-item scope (0.9.0); this key no
- * longer switches the durable path. Kept so old configs keep loading.
- */
-export function resolveDurablePath(config: HarnessConfig, cwd?: string): string {
-  if (config.durableScope !== "project") return DEFAULT_DURABLE_PATH;
-  return projectDurablePath(cwd);
 }
 
 /** Path of a project's durable layer file: <projectDir>/<slug>.md. */

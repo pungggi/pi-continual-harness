@@ -379,5 +379,28 @@ describe("harness_list — model filtering", () => {
     text = await list(listTool, { kind: "subagent" });
     expect(text).toContain("No subagent items");
     expect(text).toContain("other kinds");
+
+    // 4. Kind miss for an OWNING model (review #23): the model owns items, so
+    //    the diagnosis must be kind-scoped — never "No items for model" — and
+    //    the model:"*" pointer appears only because skills exist elsewhere.
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      () => {},
+    );
+    setActiveModelKey("anthropic/sonnet");
+    text = await list(listTool, { kind: "skill" });
+    expect(text).not.toContain("No items for model"); // the model DOES own items
+    expect(text).toContain("No skill items for model anthropic/sonnet");
+    expect(text).toContain("memory (1)");
+    expect(text).toContain('model:"*"'); // 2 skills exist for google/gemini
+    expect(text).toContain("skill item(s) exist for other models");
+
+    // 5. Kind miss for an owning model, requested kind absent EVERYWHERE →
+    //    no model:"*" dead end (it would still return nothing).
+    text = await list(listTool, { kind: "prompt" });
+    expect(text).not.toContain("No items for model");
+    expect(text).toContain("No prompt items for model anthropic/sonnet");
+    expect(text).toContain("memory (1)");
+    expect(text).not.toContain('model:"*"');
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_CONFIG,
@@ -11,7 +11,6 @@ import {
   projectDurablePath,
   projectSlug,
   resetConfigCache,
-  resolveDurablePath,
 } from "../src/config.js";
 import { DEFAULT_INJECTION } from "../src/select.js";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR } from "../src/store.js";
@@ -40,11 +39,11 @@ describe("config", () => {
       expect(cfg).toEqual(DEFAULT_CONFIG);
     });
 
-    it("merges a partial file over defaults (project scope, reminder on)", async () => {
+    it("merges a partial file over defaults (auto-import on, reminder on)", async () => {
       await withTempDir(async (file) => {
-        await writeFile(file, JSON.stringify({ durableScope: "project", remindRefine: { enabled: true } }), "utf8");
+        await writeFile(file, JSON.stringify({ autoImport: true, remindRefine: { enabled: true } }), "utf8");
         const cfg = await loadConfig(file);
-        expect(cfg.durableScope).toBe("project");
+        expect(cfg.autoImport).toBe(true);
         expect(cfg.remindRefine?.enabled).toBe(true);
         expect(cfg.remindRefine?.everyTurns).toBe(50); // default retained
       });
@@ -58,7 +57,7 @@ describe("config", () => {
       });
     });
 
-    it("ignores unknown keys and bad durableScope values", async () => {
+    it("ignores unknown keys — including the removed pre-0.9.0 durableScope", async () => {
       await withTempDir(async (file) => {
         await writeFile(
           file,
@@ -66,7 +65,8 @@ describe("config", () => {
           "utf8",
         );
         const cfg = await loadConfig(file);
-        expect(cfg.durableScope).toBe("global"); // unknown durableScope → default
+        // The key is gone from the config type entirely (removed, not defaulted).
+        expect((cfg as Record<string, unknown>).durableScope).toBeUndefined();
         expect(cfg.remindRefine?.everyTurns).toBe(10);
         expect(cfg.remindRefine?.enabled).toBe(false);
       });
@@ -210,21 +210,6 @@ describe("config", () => {
       expect(projectSlug("   ")).toBe("default");
       expect(projectSlug(undefined)).toBe("default");
       expect(projectSlug("/")).toBe("default");
-    });
-  });
-
-  describe("resolveDurablePath", () => {
-    it("global scope returns the shared DEFAULT_DURABLE_PATH", () => {
-      expect(resolveDurablePath({ durableScope: "global" }, "/anywhere")).toBe(DEFAULT_DURABLE_PATH);
-    });
-
-    it("undefined scope defaults to global", () => {
-      expect(resolveDurablePath({}, "/anywhere")).toBe(DEFAULT_DURABLE_PATH);
-    });
-
-    it("project scope returns a per-project file under .pi/agent/harness-state/", () => {
-      const p = resolveDurablePath({ durableScope: "project" }, "/home/me/proj");
-      expect(p).toBe(join(homedir(), ".pi", "agent", "harness-state", "home-me-proj.md"));
     });
   });
 
