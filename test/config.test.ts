@@ -213,6 +213,31 @@ describe("config", () => {
     });
   });
 
+  describe("importRemind (awareness reminders)", () => {
+    it("defaults: enabled, every 25 turns", async () => {
+      expect(DEFAULT_CONFIG.importRemind).toEqual({ enabled: true, everyTurns: 25 });
+      expect((await loadConfig(tempFile())).importRemind).toEqual({ enabled: true, everyTurns: 25 });
+    });
+
+    it("honors explicit disable and custom cadence", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ autoImport: true, importRemind: { enabled: false, everyTurns: 10 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.importRemind).toEqual({ enabled: false, everyTurns: 10 });
+      });
+    });
+
+    it("coerces non-integer / sub-1 cadences to the default (spam guard)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ importRemind: { everyTurns: 0 } }), "utf8");
+        expect((await loadConfig(file)).importRemind?.everyTurns).toBe(25);
+        resetConfigCache();
+        await writeFile(file, JSON.stringify({ importRemind: { everyTurns: 2.5 } }), "utf8");
+        expect((await loadConfig(file)).importRemind?.everyTurns).toBe(25);
+      });
+    });
+  });
+
   describe("autoImport (durable sync, issue #7)", () => {
     it("defaults to false", async () => {
       expect(DEFAULT_CONFIG.autoImport).toBe(false);

@@ -19,10 +19,11 @@
 // harness-state entries as every other mutation (/tree rollback covers them).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR } from "./store.js";
+import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState } from "./store.js";
 import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js";
 import type { LayerFile, LayerPaths } from "./store.js";
-import { layerFilesFor, loadConfig, projectSlug } from "./config.js";
+import type { HarnessItem } from "./types.js";
+import { DEFAULT_IMPORT_REMIND_TURNS, layerFilesFor, loadConfig, projectSlug, type HarnessConfig } from "./config.js";
 
 /** Real (homedir-based) layer paths. Tests inject their own. */
 function layerPaths(): LayerPaths {
@@ -32,9 +33,48 @@ function layerPaths(): LayerPaths {
 // Version at the last auto-export. -1 = never exported this session.
 let lastExportedVersion = -1;
 
-/** Test hook / session reset: next turn_end re-exports once (materialize). */
+/** A durable-imported item the user should stay aware of (id + what it says). */
+export interface ImportedRef {
+  id: string;
+  kind: string;
+  content: string;
+}
+
+// Items created/updated by THIS session's start auto-import — the "new
+// instructions" the awareness reminder re-surfaces. Re-seeded on every
+// session_start (resetDurableSync clears, syncDurableOnStart fills).
+let importedThisSession: ImportedRef[] = [];
+// turnIndex of the last import reminder (or the seed). -1 = unseen.
+let lastRemindTurn = -1;
+// Reminders fired for the current import batch (bounded — see MAX_IMPORT_REMINDERS).
+let remindersFired = 0;
+
+/** A batch never nags forever: after this many reminders the items are
+ *  considered acknowledged-by-repetition until the next session/import. */
+export const MAX_IMPORT_REMINDERS = 3;
+
+/** Test hook / session reset: next turn_end re-exports once (materialize) and
+ *  the import-reminder state starts fresh. */
 export function resetDurableSync(): void {
   lastExportedVersion = -1;
+  importedThisSession = [];
+  lastRemindTurn = -1;
+  remindersFired = 0;
+}
+
+/** Items imported by this session's start auto-import (awareness reminders). */
+export function getImportedThisSession(): ImportedRef[] {
+  return importedThisSession;
+}
+
+/** One listing line per imported item, bounded: `• [id] (kind) content…`. */
+export function summarizeImported(items: ImportedRef[], max = 5): string[] {
+  const lines = items.slice(0, max).map((i) => {
+    const c = i.content.length > 70 ? `${i.content.slice(0, 69)}…` : i.content;
+    return `• [${i.id}] (${i.kind}) ${c}`;
+  });
+  if (items.length > max) lines.push(`(+${items.length - max} more — /harness status)`);
+  return lines;
 }
 
 /**
@@ -53,11 +93,71 @@ export async function syncDurableOnStart(
     pi.appendEntry("harness-state", { state: snapshot, version: ver });
   });
   if (res.missingFile) return; // nothing durable yet — stay quiet
+  // Capture WHAT arrived (created or updated) for the awareness reminders.
+  // Look the ids up in the live store: content/scope there is post-merge truth.
+  importedThisSession = [...res.createdIds, ...res.updatedIds]
+    .map((id) => getState().items.find((i) => i.id === id))
+    .filter((i): i is HarnessItem => Boolean(i))
+    .map((i) => ({ id: i.id, kind: i.kind, content: i.content }));
   const changed = res.created + res.updated + res.pruned;
   if (changed === 0) return; // in sync — no noise
   const bits = [`${res.created} created`, `${res.updated} updated`];
   if (res.pruned > 0) bits.push(`${res.pruned} pruned`);
-  ctx.ui.notify(`Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`, "info");
+  // WHAT arrived, not just counts: silently-injected instructions must be
+  // visible at the moment they enter the session.
+  const lines = [`Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`];
+  if (importedThisSession.length > 0) {
+    lines.push("New instructions now active:", ...summarizeImported(importedThisSession));
+  }
+  ctx.ui.notify(lines.join("\n"), "info");
+}
+
+/**
+ * Pure decision for the import-awareness reminder (mirrors evaluateReminder's
+ * delta-counting semantics). Side-effectful: seeds on the first observed turn,
+ * advances on every fire. `importedCount` is the batch size to remind about.
+ * Fires at most MAX_IMPORT_REMINDERS times per batch.
+ */
+export function evaluateImportReminder(
+  config: HarnessConfig,
+  turnIndex: number,
+  importedCount: number,
+): boolean {
+  // Only meaningful with autoImport on: no silent imports → nothing to flag.
+  if (!config.autoImport) return false;
+  if (config.importRemind?.enabled === false) return false;
+  if (importedCount <= 0) return false;
+  if (remindersFired >= MAX_IMPORT_REMINDERS) return false;
+  const every = config.importRemind?.everyTurns ?? DEFAULT_IMPORT_REMIND_TURNS;
+  if (lastRemindTurn < 0) {
+    lastRemindTurn = turnIndex;
+    return false;
+  }
+  if (turnIndex - lastRemindTurn >= every) {
+    lastRemindTurn = turnIndex;
+    remindersFired += 1;
+    return true;
+  }
+  return false;
+}
+
+/** Subscribe to turn_end and re-surface imported items on the cadence. */
+export function registerImportReminder(pi: ExtensionAPI): void {
+  pi.on("turn_end", async (_event, ctx) => {
+    const config = await loadConfig();
+    if (!evaluateImportReminder(config, (_event as { turnIndex?: number }).turnIndex ?? 0, importedThisSession.length)) {
+      return;
+    }
+    const examples = importedThisSession
+      .slice(0, 2)
+      .map((i) => `[${i.id}] ${i.kind}`)
+      .join(", ");
+    ctx.ui.notify(
+      `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
+        `Review with /harness status; disable reminders via \'importRemind\': { \'enabled\': false } in harness.json.`,
+      "info",
+    );
+  });
 }
 
 /**

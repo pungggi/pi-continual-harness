@@ -634,6 +634,12 @@ scope replace the live values). This is what makes pi-reflect refinements flow
 back online. With `"autoImport": true` the loop runs itself: layers in on
 `session_start`, layers out on `turn_end` whenever the store changed.
 
+**You always know what the sync brought in.** The session-start import lists
+every created/updated item (id, kind, first words of content), and — unless
+`importRemind` is disabled — a one-line reminder re-surfaces the imported
+items every 25 turns (max 3 per batch) so silently-injected instructions
+never go unnoticed.
+
 ---
 
 ## 8. Configuration
@@ -644,6 +650,7 @@ defaults (the loader never throws).
 ```jsonc
 {
   "autoImport": false,                      // opt-in durable sync (import + export bundle)
+  "importRemind":  { "enabled": true, "everyTurns": 25 },  // awareness reminders for the sync
   "proposer": "steering",                   // steering | dedupe | <custom>
   "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
@@ -660,6 +667,8 @@ defaults (the loader never throws).
 | Key | Default | Values | Effect |
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
+| `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence (completed turns). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |

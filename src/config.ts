@@ -23,6 +23,8 @@ export const DEFAULT_EVERY_TURNS = 50;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
+/** Default cadence (turns) for the auto-import awareness reminder. */
+export const DEFAULT_IMPORT_REMIND_TURNS = 25;
 
 /** How the binding key treats virtual (router) models. "virtual" (default):
  * key = the selected model's own provider/id. "physical": when the selection
@@ -43,6 +45,14 @@ export interface HarnessConfig {
   /** Opt-in durable sync (issue #7): session_start layered auto-import +
    *  turn_end layered auto-export when the store changed. Default false. */
   autoImport?: boolean;
+  /** Awareness reminders for durable imports (only effective when `autoImport`
+   *  is on): the session-start import notifies WHAT arrived, and a bounded
+   *  cadence reminder re-surfaces those items so silently-imported instructions
+   *  never go unnoticed. `enabled` defaults true; `everyTurns` defaults 25. */
+  importRemind?: {
+    enabled?: boolean;
+    everyTurns?: number;
+  };
   remindRefine?: {
     enabled?: boolean;
     everyTurns?: number;
@@ -89,6 +99,7 @@ export interface HarnessConfig {
 
 export const DEFAULT_CONFIG: HarnessConfig = {
   autoImport: false,
+  importRemind: { enabled: true, everyTurns: DEFAULT_IMPORT_REMIND_TURNS },
   remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
   classifier: { model: undefined },
@@ -113,6 +124,10 @@ let cached: HarnessConfig | undefined;
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
   return {
     autoImport: over.autoImport === true,
+    importRemind: {
+      enabled: over.importRemind?.enabled !== false,
+      everyTurns: coerceMinTurns(over.importRemind?.everyTurns, DEFAULT_IMPORT_REMIND_TURNS),
+    },
     remindRefine: {
       enabled: over.remindRefine?.enabled ?? false,
       everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
@@ -142,6 +157,14 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       merge: over.dedupe?.merge !== false,
     },
   };
+}
+
+/** Coerce a user-provided turn count to a finite integer ≥ 1, else the
+ *  default. Cadence arithmetic divides/compares against it; 0 or a fraction
+ *  would fire every turn (spam) and NaN never fires. */
+function coerceMinTurns(raw: unknown, def: number): number {
+  if (typeof raw === "number" && Number.isFinite(raw) && Number.isInteger(raw) && raw >= 1) return raw;
+  return def;
 }
 
 /** Coerce a user-provided bump to a finite number, else the default. The bump

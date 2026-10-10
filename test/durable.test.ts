@@ -15,8 +15,8 @@ import {
   getState,
   reconstruct,
 } from "../src/store.js";
-import { loadConfig, resetConfigCache } from "../src/config.js";
-import { registerAutoExport, resetDurableSync, syncDurableOnStart } from "../src/durable.js";
+import { loadConfig, resetConfigCache, type HarnessConfig } from "../src/config.js";
+import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart, evaluateImportReminder, getImportedThisSession, MAX_IMPORT_REMINDERS } from "../src/durable.js";
 import { makeFakePi } from "./helpers.js";
 
 let dir: string;
@@ -154,6 +154,99 @@ describe("registerAutoExport (turn_end layered export)", () => {
     resetDurableSync();
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     expect(existsSync(paths.globalPath)).toBe(true);
+  });
+});
+
+describe("import awareness (what arrived + cadence reminder)", () => {
+  it("session-start notify lists WHAT was imported, not just counts", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, [
+      "- **[h_g]** (importance 0.50) global fact about deployments",
+      "  - evidence: e",
+    ]);
+    const { pi, ctx, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    const msg = notifications.map((n) => n.msg).join("\n");
+    expect(msg).toContain("durable sync imported 1 item(s) (1 created");
+    expect(msg).toContain("New instructions now active:");
+    expect(msg).toContain("[h_g] (memory) global fact about deployments");
+  });
+
+  it("the imported batch is captured for reminders; reset clears it", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    expect(getImportedThisSession().map((i) => i.id)).toEqual(["h_g"]);
+    resetDurableSync();
+    expect(getImportedThisSession()).toHaveLength(0);
+  });
+
+  it("evaluateImportReminder: gates, cadence, bounded repeats", async () => {
+    await reset();
+    const on = { autoImport: true } as HarnessConfig;
+    // gates
+    expect(evaluateImportReminder({ ...on, autoImport: false }, 30, 3)).toBe(false);
+    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, 30, 3)).toBe(false);
+    expect(evaluateImportReminder(on, 30, 0)).toBe(false);
+    // cadence: seed at 0, fire every 25
+    expect(evaluateImportReminder(on, 0, 2)).toBe(false);
+    expect(evaluateImportReminder(on, 24, 2)).toBe(false);
+    expect(evaluateImportReminder(on, 25, 2)).toBe(true);
+    expect(evaluateImportReminder(on, 26, 2)).toBe(false);
+    expect(evaluateImportReminder(on, 50, 2)).toBe(true);
+    expect(evaluateImportReminder(on, 75, 2)).toBe(true);
+    // bounded: never more than MAX_IMPORT_REMINDERS per batch
+    expect(evaluateImportReminder(on, 100, 2)).toBe(false);
+    expect(MAX_IMPORT_REMINDERS).toBe(3);
+  });
+
+  it("turn_end reminder fires on the cadence after an import, then stops at the cap", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    for (let t = 0; t <= 100; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
+    expect(reminders).toHaveLength(3); // 25, 50, 75 — capped after
+    expect(reminders[0]!.msg).toContain("[h_g]");
+    expect(reminders[0]!.msg).toContain("/harness status");
+    expect(reminders[0]!.msg).toContain("importRemind");
+  });
+
+  it("no import → no reminders, whatever the cadence", async () => {
+    await primeConfig({ autoImport: true });
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    registerImportReminder(pi);
+    for (let t = 0; t <= 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+  });
+
+  it("reminders respect importRemind.enabled: false", async () => {
+    await primeConfig({ autoImport: true, importRemind: { enabled: false } });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    for (let t = 0; t <= 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    // the session-start WHAT-listing still fires (awareness at import time)
+    expect(notifications.some((n) => /New instructions now active/.test(n.msg))).toBe(true);
   });
 });
 
