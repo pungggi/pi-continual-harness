@@ -16,7 +16,7 @@ import {
   reconstruct,
 } from "../src/store.js";
 import { loadConfig, resetConfigCache, type HarnessConfig } from "../src/config.js";
-import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart, evaluateImportReminder, getImportedThisSession, MAX_IMPORT_REMINDERS } from "../src/durable.js";
+import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart, evaluateImportReminder, getImportedThisSession, getLiveImported, MAX_IMPORT_REMINDERS } from "../src/durable.js";
 import { makeFakePi } from "./helpers.js";
 
 let dir: string;
@@ -226,6 +226,53 @@ describe("import awareness (what arrived + cadence reminder)", () => {
   it("no import → no reminders, whatever the cadence", async () => {
     await primeConfig({ autoImport: true });
     const { pi, ctx, fire, notifications } = makeFakePi([]);
+    registerImportReminder(pi);
+    for (let t = 0; t <= 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+  });
+
+  it("reminders only name/count LIVE imports — deleted/deactivated items drop out (review #24)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, [
+      "- **[h_g]** (importance 0.50) keep fact",
+      "  - evidence: e",
+      "- **[h_d]** (importance 0.50) deleted fact",
+      "  - evidence: e",
+      "- **[h_p]** (importance 0.50) deactivated fact",
+      "  - evidence: e",
+    ]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    expect(getImportedThisSession()).toHaveLength(3); // the raw batch
+    // harness_mutate: one delete, one deactivate — only h_g stays eligible.
+    applyDeltas([{ op: "delete", id: "h_d", reason: "wrong" }], vi.fn());
+    applyDeltas([{ op: "update", id: "h_p", active: false }], vi.fn());
+    expect(getLiveImported().map((i) => i.id)).toEqual(["h_g"]);
+
+    registerImportReminder(pi);
+    for (let t = 0; t <= 25; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0]!.msg).toContain("1 imported item(s)");
+    expect(reminders[0]!.msg).toContain("[h_g]");
+    expect(reminders[0]!.msg).not.toContain("h_d");
+    expect(reminders[0]!.msg).not.toContain("h_p");
+  });
+
+  it("no LIVE imports left → no reminder at all", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_d]** (importance 0.50) doomed fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    applyDeltas([{ op: "delete", id: "h_d", reason: "wrong" }], vi.fn());
     registerImportReminder(pi);
     for (let t = 0; t <= 30; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());

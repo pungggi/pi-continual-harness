@@ -19,6 +19,10 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   reminder re-surfaces the imported batch every `importRemind.everyTurns`
   turns (default 25). Bounded by design: at most 3 reminders per imported
   batch, then quiet until the next session — awareness without nagging.
+  Reminders are reconciled against the **live** store at every fire: an
+  imported item deleted or deactivated (`harness_mutate`, `/harness prune`,
+  `/harness drop`) stops being named/counted immediately — removed
+  instructions are never advertised as "active" (review #24).
   Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
   (effective only with `autoImport`; kill-switch `enabled: false` keeps the
   start-of-session listing). `DurableImportResult` now carries

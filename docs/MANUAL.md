@@ -638,7 +638,9 @@ back online. With `"autoImport": true` the loop runs itself: layers in on
 every created/updated item (id, kind, first words of content), and — unless
 `importRemind` is disabled — a one-line reminder re-surfaces the imported
 items every 25 turns (max 3 per batch) so silently-injected instructions
-never go unnoticed.
+never go unnoticed. Reminders track the **live** store: an imported item you
+delete or deactivate (via `harness_mutate` or `/harness prune`) stops being
+named immediately.
 
 ---
 
@@ -667,7 +669,7 @@ defaults (the loader never throws).
 | Key | Default | Values | Effect |
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
-| `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
+| `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. Only items still LIVE in the store are named (deleted/deactivated imports drop out). |
 | `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence (completed turns). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |

@@ -170,8 +170,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   The session-start import doesn't just count — it **lists what arrived**
   (item id, kind, first words of content), and every `everyTurns` turns a
   one-line reminder re-surfaces the imported items so silently-injected
-  instructions never go unnoticed. Bounded: at most 3 reminders per imported
-  batch, then quiet until the next session. Kill-switch:
+  instructions never go unnoticed. Reminders speak only about items still
+  **live** in the store (deleted/deactivated imports drop out immediately).
+  Bounded: at most 3 reminders per imported batch, then quiet until the next
+  session. Kill-switch:
   `{ "importRemind": { "enabled": false } }` (the start-of-session listing
   still fires).
 - **`injection`** — the selection policy for WHAT gets surfaced in the system

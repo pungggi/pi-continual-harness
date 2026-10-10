@@ -67,6 +67,18 @@ export function getImportedThisSession(): ImportedRef[] {
   return importedThisSession;
 }
 
+/** The LIVE subset of the imported batch: items still present AND active in
+ *  the store (i.e. eligible for injection). The reminder only ever names and
+ *  counts these — a `harness_mutate` delete/deactivate or a `/harness prune`
+ *  of an imported item drops it from reminders immediately, so they never
+ *  advertise removed instructions as "active this session". */
+export function getLiveImported(): ImportedRef[] {
+  const ids = new Set(importedThisSession.map((i) => i.id));
+  return getState().items
+    .filter((i) => ids.has(i.id) && i.active)
+    .map((i) => ({ id: i.id, kind: i.kind, content: i.content }));
+}
+
 /** One listing line per imported item, bounded: `• [id] (kind) content…`. */
 export function summarizeImported(items: ImportedRef[], max = 5): string[] {
   const lines = items.slice(0, max).map((i) => {
@@ -145,15 +157,18 @@ export function evaluateImportReminder(
 export function registerImportReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
     const config = await loadConfig();
-    if (!evaluateImportReminder(config, (_event as { turnIndex?: number }).turnIndex ?? 0, importedThisSession.length)) {
+    // Speak only about instructions still live in the store: deleted or
+    // deactivated imports stop being named/counted the moment they drop out.
+    const live = getLiveImported();
+    if (!evaluateImportReminder(config, (_event as { turnIndex?: number }).turnIndex ?? 0, live.length)) {
       return;
     }
-    const examples = importedThisSession
+    const examples = live
       .slice(0, 2)
       .map((i) => `[${i.id}] ${i.kind}`)
       .join(", ");
     ctx.ui.notify(
-      `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
+      `Continual Harness: ${live.length} imported item(s) are active this session (e.g. ${examples}). ` +
         `Review with /harness status; disable reminders via \'importRemind\': { \'enabled\': false } in harness.json.`,
       "info",
     );
