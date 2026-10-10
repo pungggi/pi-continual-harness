@@ -451,6 +451,10 @@ export interface DurableImportResult {
   pruned: number;
   /** True if the file did not exist (no-op). */
   missingFile: boolean;
+  /** Ids of the items this import CREATED (may be brand-new h_… ids). */
+  createdIds: string[];
+  /** Ids of the items this import UPDATED in place (durable won). */
+  updatedIds: string[];
 }
 
 export interface ParsedItem {
@@ -587,6 +591,8 @@ function mergeParsed(
   let created = 0;
   let updated = 0;
   let dirty = false;
+  const createdIds: string[] = [];
+  const updatedIds: string[] = [];
   const now = Date.now();
   for (const p of parsed) {
     const existing = p.id ? existingById.get(p.id) : undefined;
@@ -617,6 +623,7 @@ function mergeParsed(
       else delete existing.project;
       existing.updatedAt = now;
       updated += 1;
+      updatedIds.push(existing.id);
       dirty = true;
     } else {
       const id = p.id && /^h_/.test(p.id) ? p.id : genId();
@@ -633,6 +640,7 @@ function mergeParsed(
         updatedAt: now,
       });
       created += 1;
+      createdIds.push(id);
       dirty = true;
       // Keep the lookup current so a later layer's copy of the same id
       // UPDATES the item we just created instead of duplicating it (the same
@@ -654,10 +662,10 @@ function mergeParsed(
     if (pruned > 0) dirty = true;
   }
 
-  if (!dirty) return { imported: parsed.length, created, updated, pruned, missingFile: false };
+  if (!dirty) return { imported: parsed.length, created, updated, pruned, missingFile: false, createdIds, updatedIds };
   version += 1;
   persist(state, version);
-  return { imported: parsed.length, created, updated, pruned, missingFile: false };
+  return { imported: parsed.length, created, updated, pruned, missingFile: false, createdIds, updatedIds };
 }
 
 /** Resolve a parsed item's scope against the layer default (for items without
@@ -688,7 +696,7 @@ export async function reconstructFromDurable(
   try {
     text = await readFile(path, "utf8");
   } catch {
-    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
+    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true, createdIds: [], updatedIds: [] };
   }
   return mergeParsed(parseDurable(text).map((p) => withDefaultScope(p, { scope: "global" })), options, persist);
 }
@@ -725,6 +733,6 @@ export async function importDurableLayers(
     foundAny = true;
     for (const p of parseDurable(text)) all.push(withDefaultScope(p, f.defaultScope));
   }
-  if (!foundAny) return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true };
+  if (!foundAny) return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true, createdIds: [], updatedIds: [] };
   return mergeParsed(all, options, persist);
 }

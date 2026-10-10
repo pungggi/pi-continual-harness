@@ -144,6 +144,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 ```json
 {
   "autoImport": false,
+  "importRemind": { "enabled": true, "everyTurns": 25 },
   "proposer": "steering",
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
@@ -164,6 +165,17 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   into **new** sessions without manual export/import ceremony. Both halves are
   visible (one notify line) and use the same persisted `harness-state` entries
   as every other mutation (`/tree` rollback covers them).
+- **`importRemind`** — **awareness reminders** for that sync (effective only
+  when `autoImport` is on; default `{ "enabled": true, "everyTurns": 25 }`).
+  The session-start import doesn't just count — it **lists what arrived**
+  (item id, kind, first words of content), and every `everyTurns` turns a
+  one-line reminder re-surfaces the imported items so silently-injected
+  instructions never go unnoticed. Reminders speak only about items still
+  **live** in the store (deleted/deactivated imports drop out immediately).
+  Bounded: at most 3 reminders per imported batch, then quiet until the next
+  session. Kill-switch:
+  `{ "importRemind": { "enabled": false } }` (the start-of-session listing
+  still fires).
 - **`injection`** — the selection policy for WHAT gets surfaced in the system
   prompt each turn (see [Injection selection](#injection-selection-on-by-default)).
   ON by default: items are importance-ordered, capped at `maxPerKind` (default

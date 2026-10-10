@@ -10,6 +10,27 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Added
+
+- **Awareness reminders for durable sync (`importRemind`)** — with
+  `"autoImport": true`, silently-imported instructions now announce
+  themselves. The session-start import lists **what arrived** (item id, kind,
+  first words of content — bounded to 5 lines), and a one-line `turn_end`
+  reminder re-surfaces the imported batch every `importRemind.everyTurns`
+  turns (default 25). Bounded by design: at most 3 reminders per imported
+  batch, then quiet until the next session — awareness without nagging.
+  Reminders are reconciled against the **live** store at every fire: an
+  imported item deleted or deactivated (`harness_mutate`, `/harness prune`,
+  `/harness drop`) stops being named/counted immediately — removed
+  instructions are never advertised as "active" (review #24).
+  Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
+  (effective only with `autoImport`; kill-switch `enabled: false` keeps the
+  start-of-session listing). `DurableImportResult` now carries
+  `createdIds`/`updatedIds` (additive) so the sync knows exactly which items
+  to re-surface; `evaluateImportReminder`/`registerImportReminder`/
+  `getImportedThisSession`/`summarizeImported` exported for tests and
+  companions.
+
 ### Removed
 
 - **`durableScope` config key removed** (deprecated since 0.9.0 as a no-op):
