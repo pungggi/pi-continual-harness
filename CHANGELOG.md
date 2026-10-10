@@ -10,7 +10,36 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Changed
+
+- **`remindRefine` defaults flipped: on, every 25 turns** (issue #19). Fresh
+  installs were silent, so the cheapest activation lever (a notify-only
+  nudge) never fired. A reminder mutates nothing, which keeps the "manual by
+  default" safety posture intact while the `/refine` habit gets built for
+  you. **Migration note for existing silent-by-default users:** if your
+  `harness.json` has no `remindRefine` key you will start seeing nudges
+  (first one at 25 completed turns). Restore the old silence with
+  `{ "remindRefine": { "enabled": false } }`. Explicit config keeps winning
+  in both directions, and the cadence still counts completed turns (seed on
+  the first observed `turn_end`, reset per fire and per session).
+
 ### Added
+
+- **Tiered, rotating reminder content (`remindRefine.detailEvery`)** — every
+  4th fired reminder (default) escalates from the one-line nudge to a
+  detailed educational guide, rotating through 7 slots so repeat viewers
+  never see the same wall of text: how the improvement loop works (3
+  alternating descriptions), the `/refine` workflow, `keep`/`drop`/
+  `prune --decay` hygiene, `push-mem` (pi-mem composition), `split` (global
+  vs project scopes), `export-corpus` (pi-reflex contract), and a recommended
+  starter config. Config: `"remindRefine": { "everyTurns": 25,
+  "detailEvery": 4 }` with `1` = every reminder detailed; non-integer/sub-1
+  values coerce to the default (spam guard). The short nudge is now
+  data-aware ("12 active item(s), 4 never cited since creation"; an empty
+  store gets first-run guidance instead), derived from `getState()` with no
+  new persisted state. Copy builders are pure and exported (`buildNudge`,
+  `buildDetailGuide`, `reminderState`, `ReminderState`) so the richer
+  `/harness status` (companion issue) can share the same copy source.
 
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce

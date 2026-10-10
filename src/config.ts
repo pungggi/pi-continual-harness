@@ -6,8 +6,10 @@
 //    current project's file) and turn_end layered auto-export whenever the
 //    live store changed since the last export. Off by default — importing is
 //    normally an explicit, reviewable /harness import.
-//  - remindRefine / autoRefine / outcomeImportance / injection / proposer:
-//    unchanged (see below).
+//  - remindRefine: the /refine activation nudge (issue #19), ON by default
+//    since 0.14.0 (notify-only, never mutates; `enabled: false` opts back
+//    out). autoRefine / outcomeImportance / injection / proposer: unchanged
+//    (see below).
 //
 // Robust by design: missing or malformed file → DEFAULT_CONFIG, never throws.
 // Unknown keys are ignored (e.g. the removed pre-0.9.0 `durableScope`).
@@ -19,12 +21,15 @@ import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeIn
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 import { DEDUPE_THRESHOLD } from "./proposer.js";
 
-export const DEFAULT_EVERY_TURNS = 50;
+export const DEFAULT_EVERY_TURNS = 25;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
 /** Default cadence (turns) for the auto-import awareness reminder. */
 export const DEFAULT_IMPORT_REMIND_TURNS = 25;
+/** Default escalation cadence for the /refine reminder: every Nth fired
+ *  reminder is the detailed guide instead of the one-line nudge. */
+export const DEFAULT_DETAIL_EVERY = 4;
 
 /** How the binding key treats virtual (router) models. "virtual" (default):
  * key = the selected model's own provider/id. "physical": when the selection
@@ -53,9 +58,16 @@ export interface HarnessConfig {
     enabled?: boolean;
     everyTurns?: number;
   };
+  /** /refine cadence nudge (ON since 0.14.0 — activation nudge, notify-only):
+ *  every `everyTurns` completed turns a one-line reminder fires; every
+ *  `detailEvery`-th reminder escalates to a rotating educational guide
+ *  (see src/remind.ts). Never mutates state; `enabled: false` restores the
+ *  pre-0.14 silence. */
   remindRefine?: {
     enabled?: boolean;
     everyTurns?: number;
+    /** Every Nth fired reminder is the detailed guide (1 = every reminder). */
+    detailEvery?: number;
   };
   autoRefine?: {
     enabled?: boolean;
@@ -100,7 +112,7 @@ export interface HarnessConfig {
 export const DEFAULT_CONFIG: HarnessConfig = {
   autoImport: false,
   importRemind: { enabled: true, everyTurns: DEFAULT_IMPORT_REMIND_TURNS },
-  remindRefine: { enabled: false, everyTurns: DEFAULT_EVERY_TURNS },
+  remindRefine: { enabled: true, everyTurns: DEFAULT_EVERY_TURNS, detailEvery: DEFAULT_DETAIL_EVERY },
   autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
   classifier: { model: undefined },
   virtualBinding: "virtual",
@@ -129,8 +141,11 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       everyTurns: coerceMinTurns(over.importRemind?.everyTurns, DEFAULT_IMPORT_REMIND_TURNS),
     },
     remindRefine: {
-      enabled: over.remindRefine?.enabled ?? false,
-      everyTurns: over.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS,
+      // Default-on (0.14.0): a notify-only nudge mutates nothing, so the
+      // activation lever is pulled unless explicitly declined.
+      enabled: over.remindRefine?.enabled !== false,
+      everyTurns: coerceMinTurns(over.remindRefine?.everyTurns, DEFAULT_EVERY_TURNS),
+      detailEvery: coerceMinTurns(over.remindRefine?.detailEvery, DEFAULT_DETAIL_EVERY),
     },
     autoRefine: {
       enabled: over.autoRefine?.enabled ?? false,

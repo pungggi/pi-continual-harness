@@ -131,6 +131,16 @@ export {
   VIRTUAL_MODEL_API,
 } from "./vmodel.js";
 
+// /refine reminder copy (0.14.0, issue #19): pure nudge/guide builders + the
+// state snapshot they render from, exported so tests and companions (e.g. a
+// richer /harness status) share the same copy source.
+export {
+  buildDetailGuide,
+  buildNudge,
+  reminderState,
+  type ReminderState,
+} from "./remind.js";
+
 // Classifier seam (pi ≥ 0.99, 0.12.0): the minimal structural ClassifyFn
 // contract proposers see, plus the gate builders (pure, testable).
 export {

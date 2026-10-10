@@ -45,7 +45,7 @@ describe("config", () => {
         const cfg = await loadConfig(file);
         expect(cfg.autoImport).toBe(true);
         expect(cfg.remindRefine?.enabled).toBe(true);
-        expect(cfg.remindRefine?.everyTurns).toBe(50); // default retained
+        expect(cfg.remindRefine?.everyTurns).toBe(25); // default retained (0.14.0)
       });
     });
 
@@ -68,7 +68,7 @@ describe("config", () => {
         // The key is gone from the config type entirely (removed, not defaulted).
         expect((cfg as Record<string, unknown>).durableScope).toBeUndefined();
         expect(cfg.remindRefine?.everyTurns).toBe(10);
-        expect(cfg.remindRefine?.enabled).toBe(false);
+        expect(cfg.remindRefine?.enabled).toBe(true); // on by default since 0.14.0
       });
     });
 
@@ -234,6 +234,50 @@ describe("config", () => {
         resetConfigCache();
         await writeFile(file, JSON.stringify({ importRemind: { everyTurns: 2.5 } }), "utf8");
         expect((await loadConfig(file)).importRemind?.everyTurns).toBe(25);
+      });
+    });
+  });
+
+  describe("remindRefine (activation nudge, issue #19)", () => {
+    it("defaults: on, every 25 turns, detail every 4th reminder", async () => {
+      expect(DEFAULT_CONFIG.remindRefine).toEqual({ enabled: true, everyTurns: 25, detailEvery: 4 });
+      expect((await loadConfig(tempFile())).remindRefine).toEqual({
+        enabled: true,
+        everyTurns: 25,
+        detailEvery: 4,
+      });
+    });
+
+    it("overridable in both directions: explicit disable keeps custom cadences", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({ remindRefine: { enabled: false, everyTurns: 10, detailEvery: 2 } }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.remindRefine).toEqual({ enabled: false, everyTurns: 10, detailEvery: 2 });
+      });
+    });
+
+    it("coerces non-integer / sub-1 cadences to the defaults (spam guard)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ remindRefine: { everyTurns: 0, detailEvery: 0 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.remindRefine?.everyTurns).toBe(25);
+        expect(cfg.remindRefine?.detailEvery).toBe(4);
+        resetConfigCache();
+        await writeFile(file, JSON.stringify({ remindRefine: { everyTurns: 2.5, detailEvery: 1.5 } }), "utf8");
+        const cfg2 = await loadConfig(file);
+        expect(cfg2.remindRefine?.everyTurns).toBe(25);
+        expect(cfg2.remindRefine?.detailEvery).toBe(4);
+      });
+    });
+
+    it("detailEvery: 1 is valid (every reminder detailed)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ remindRefine: { detailEvery: 1 } }), "utf8");
+        expect((await loadConfig(file)).remindRefine?.detailEvery).toBe(1);
       });
     });
   });
