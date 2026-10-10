@@ -14,33 +14,41 @@ describe("evaluateReminder", () => {
   it("never reminds when disabled", () => {
     const disabled = cfg({ remindRefine: { enabled: false, everyTurns: 5 } });
     for (let i = 0; i < 30; i++) {
-      expect(evaluateReminder(disabled, i)).toBe(false);
+      expect(evaluateReminder(disabled)).toBe(false);
     }
   });
 
-  it("seeds a baseline on the first turn, then reminds exactly every N turns", () => {
+  it("seeds a baseline on the first turn, then reminds exactly every N completed turns", () => {
     const enabled = cfg({ remindRefine: { enabled: true, everyTurns: 5 } });
-    expect(evaluateReminder(enabled, 0)).toBe(false); // seed baseline at 0
-    expect(evaluateReminder(enabled, 1)).toBe(false);
-    expect(evaluateReminder(enabled, 4)).toBe(false);
-    expect(evaluateReminder(enabled, 5)).toBe(true); // first nudge
-    expect(evaluateReminder(enabled, 6)).toBe(false);
-    expect(evaluateReminder(enabled, 9)).toBe(false);
-    expect(evaluateReminder(enabled, 10)).toBe(true); // second nudge, cadence resets
-    expect(evaluateReminder(enabled, 14)).toBe(false);
-    expect(evaluateReminder(enabled, 15)).toBe(true); // third nudge
+    expect(evaluateReminder(enabled)).toBe(false); // seed (doesn't count)
+    for (let n = 1; n < 5; n++) expect(evaluateReminder(enabled)).toBe(false);
+    expect(evaluateReminder(enabled)).toBe(true); // 5th completed turn
+    for (let n = 1; n < 5; n++) expect(evaluateReminder(enabled)).toBe(false);
+    expect(evaluateReminder(enabled)).toBe(true); // cadence resets
   });
 
   it("never reminds when everyTurns <= 0", () => {
     const zero = cfg({ remindRefine: { enabled: true, everyTurns: 0 } });
-    expect(evaluateReminder(zero, 0)).toBe(false);
-    expect(evaluateReminder(zero, 1000)).toBe(false);
+    for (let i = 0; i < 5; i++) {
+      expect(evaluateReminder(zero)).toBe(false);
+    }
   });
 
   it("falls back to the default cadence when everyTurns is absent", () => {
     const noEvery = cfg({ remindRefine: { enabled: true } });
-    expect(evaluateReminder(noEvery, 0)).toBe(false); // seed
-    expect(evaluateReminder(noEvery, 49)).toBe(false);
-    expect(evaluateReminder(noEvery, 50)).toBe(true); // default 50
+    expect(evaluateReminder(noEvery)).toBe(false); // seed
+    for (let n = 1; n < 50; n++) expect(evaluateReminder(noEvery)).toBe(false);
+    expect(evaluateReminder(noEvery)).toBe(true); // default 50
+  });
+
+  it("aborted/error turns neither seed nor advance the completed-turn count", () => {
+    const enabled = cfg({ remindRefine: { enabled: true, everyTurns: 2 } });
+    expect(evaluateReminder(enabled, "aborted")).toBe(false); // bad turn: no seed
+    expect(evaluateReminder(enabled)).toBe(false); // seed
+    expect(evaluateReminder(enabled, "error")).toBe(false); // skipped
+    expect(evaluateReminder(enabled)).toBe(false); // 1st completed — no nudge
+    expect(evaluateReminder(enabled)).toBe(true); // 2nd completed — nudge
+    expect(evaluateReminder(enabled, undefined)).toBe(false); // undefined = completed, count reset
+    expect(evaluateReminder(enabled, undefined)).toBe(true);
   });
 });

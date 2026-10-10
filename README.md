@@ -183,7 +183,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   abstaining pair is always kept, never merged or deleted.
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
-  informational only — it never mutates state.
+  informational only — it never mutates state. Aborted/error turns are
+  skipped, so `everyTurns` counts completed turns of work.
 - **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
   When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
   (default 100). It is one of the package's opt-in autonomous paths: it reuses
@@ -195,14 +196,21 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   signal, not just time (errors fall back to the plain cadence). The steering
   prompt is delivered via the pi ≥ 0.87 actionable `turn_end` boundary (a
   structural `harness.auto-refine-request` entry + `continue: true`), not a
-  synthetic user message.
+  synthetic user message. Aborted/error turns (pi `turn_end`
+  `BoundaryState.outcome`) are inert: they neither seed nor advance the
+  cadence window — a refine never fires over partial evidence.
 - **`classifier`** — opt-in classifier model (pi ≥ 0.99) for the cheap gated
   paths: `"provider/id"` or a bare id of a **classifier** catalog entry, e.g.
   `"typesafe/jev-latest"` or a local `llama-cpp` classifier (every chat model
-  listed for llama.cpp also appears as a classifier). When set and resolvable
-  it enables the classifier-confirmed dedupe (see `dedupe` above) and the
-  auto-refine `gate`. When unset or unresolvable, every classifier feature
-  degrades to its no-classifier behavior.
+  listed for llama.cpp also appears as one). With pi ≥ 1.1.0 the catalog also
+  offers OpenAI's GPT-6 Luna through the Decisions API (e.g.
+  `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp
+  decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`,
+  llama.cpp ≥ 0.6.0 — listed *only* as classifiers, which is exactly our use:
+  a free local gate). When set and resolvable it enables the
+  classifier-confirmed dedupe (see `dedupe` above) and the auto-refine `gate`.
+  When unset or unresolvable, every classifier feature degrades to its
+  no-classifier behavior.
 - **`virtualBinding`** — how the per-model isolation key treats pi **virtual
   models** (router extensions, pi ≥ 0.99). Default `"virtual"`: the key is
   the selected model's own `provider/id` — a router starts a blank harness.
@@ -215,7 +223,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (**off by
   default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
-  turn's output. Referenced items gain importance and get their `updatedAt`
+  turn's output. Citations are read from completed turns only — an aborted
+  turn's partial text is scanned by the next completed turn (the initial seed
+  turn itself is never scanned, as before). Referenced items
+  gain importance and get their `updatedAt`
   touched (so they survive time-based decay); ignored items keep decaying. This
   is the package's second opt-in autonomous path — promotion only, never
   deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
