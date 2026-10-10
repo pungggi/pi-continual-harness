@@ -26,12 +26,14 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   keys preserved, and a reload that round-trips through the loader's
   coercion path so the printed effective config is exactly what pi reads.
   Scripted form: `/harness setup --preset recommended [--yes]` (`--yes` is
-  the scripted consent and skips every prompt). Any cancel/decline degrades
-  to no write; the wizard touches config files only — never harness state.
-  Preset values derive from `DEFAULT_CONFIG` (not hardcoded), so wizard and
-  loader cannot drift. Presets are pure data: `PRESETS` / `expandPreset` /
-  `planWrite` / `setPath` / `saveConfig` exported for tests and companions;
-  subcommand + `--preset`/`--yes` flags autocomplete in the TUI.
+  the scripted consent and skips every prompt). Nothing is written on
+  unknown input, a cancelled preset menu, or a declined final write;
+  declining an individual feature only skips that feature. The wizard
+  touches config files only — never harness state. Preset values derive
+  from `DEFAULT_CONFIG` (not hardcoded), so wizard and loader cannot drift.
+  Presets are pure data: `PRESETS` / `expandPreset` / `planWrite` / `setPath`
+  / `saveConfig` exported for tests and companions; subcommand +
+  `--preset`/`--yes` flags autocomplete in the TUI.
 
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce
@@ -73,6 +75,48 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `model:"*"` pointer only appears when the requested kind actually exists
   for another model. `structuredContent` is unchanged (stable schema); only
   the model-facing text changed.
+- **`harness_list`'s `model:"*"` pointer also holds when the model owns
+  nothing (review #26)** — requesting a kind that exists for NO model used
+  to still show the pointer (which returns nothing with the same kind
+  filter); that case now says "no `<kind>` items for this model or any other
+  model" with an honest kind tally, and the pointer only appears when the
+  kind exists elsewhere.
+- **Late `autoImport` enable can no longer clobber the durable layers
+  (review #26)** — enabling `autoImport` mid-session (wizard or hand-edit)
+  used to make the very next `turn_end` auto-export overwrite the
+  global/project durable files with the never-imported live store (the
+  session-start import had been skipped, so saved refinements were lost).
+  The export hook now runs the layered import FIRST when the session's
+  start-sync never happened; a failing catch-up import defers the export
+  to the next turn.
+- **Cadences count `turn_end` events, not pi's `turnIndex` (review #26)** —
+  pi resets `turnIndex` to 0 on every `agent_start` (each user prompt), so
+  the import-reminder (and the older `/refine` reminder) cadences could
+  never accumulate across prompts: 25 separate prompts never fired a
+  reminder. Both reminders now count completed turn_end events
+  (session-stable ordinal; resets on session_start as before).
+- **`saveConfig` is safe under concurrency (review #26)** — the temp file is
+  unique per call (UUID + exclusive `wx` create), so two concurrent writes
+  (two pi sessions) can never truncate or rename each other's temp file;
+  the final rename retries briefly on Windows' transient `EPERM` (target
+  just replaced).
+- **`planWrite` merges like `saveConfig` (review #26)** — the wizard's
+  reviewed JSON preview previously dropped nested unknown keys (e.g. a
+  future `importRemind.<key>`), which the write then re-added from disk, so
+  the written file could differ from the confirmed preview. Deltas now
+  apply with the same two-level deep-merge: the preview equals the file.
+- **`expandPreset` no longer leaks `Object.prototype` (review #26)** —
+  `--preset constructor` (or `toString`/`__proto__`) passed validation and
+  crashed; inherited names now report `Unknown preset` and nothing is
+  written.
+- **The import-reminder's disable hint is now valid JSON (review #26)** —
+  the suggested snippet used single quotes; pasting it broke the whole
+  config file (all settings fell back to defaults). It now reads
+  `"importRemind": { "enabled": false }`.
+- **Global/project id collisions list once (review #26)** — an id created
+  by the global layer then updated by the project layer appeared twice in
+  the "what arrived" listing and inflated the reminder counts; the batch
+  is now de-duplicated.
 
 ### Added
 

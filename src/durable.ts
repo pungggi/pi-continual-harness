@@ -13,12 +13,16 @@
 //   turn_end → registerAutoExport(): layered export when the store version
 //     changed since the last export (bounded: the layer files are small).
 //     Materializes the session-restored store on the first turn of a session,
-//     so a missing/stale durable file self-heals.
+//     so a missing/stale durable file self-heals. When autoImport was enabled
+//     AFTER session_start (wizard or hand-edit), the first turn_end runs the
+//     layered import FIRST — a late enable can never overwrite the durable
+//     layers with a never-imported store.
 //
 // Both paths are visible (one notify line) and use the same persisted
 // harness-state entries as every other mutation (/tree rollback covers them).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState } from "./store.js";
 import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js";
 import type { LayerFile, LayerPaths } from "./store.js";
@@ -32,6 +36,18 @@ function layerPaths(): LayerPaths {
 
 // Version at the last auto-export. -1 = never exported this session.
 let lastExportedVersion = -1;
+
+// True once THIS session's session_start layered import ran (with autoImport
+// on). A session that starts with autoImport off leaves it false, so a later
+// enable (wizard or hand-edit) can trigger the turn_end catch-up import
+// BEFORE any export — never clobbering the durable layers (review #26).
+let startSyncRan = false;
+
+// Completed turn_end EVENTS this session — the session-stable ordinal the
+// import-reminder cadence counts against. pi's `turnIndex` resets to 0 on
+// every agent_start (each user prompt), so absolute-index deltas would never
+// accumulate across prompts (review #26).
+let turnsSeen = 0;
 
 /** A durable-imported item the user should stay aware of (id + what it says). */
 export interface ImportedRef {
@@ -57,6 +73,8 @@ export const MAX_IMPORT_REMINDERS = 3;
  *  the import-reminder state starts fresh. */
 export function resetDurableSync(): void {
   lastExportedVersion = -1;
+  startSyncRan = false;
+  turnsSeen = 0;
   importedThisSession = [];
   lastRemindTurn = -1;
   remindersFired = 0;
@@ -92,10 +110,16 @@ export async function syncDurableOnStart(
   const res = await importDurableLayers(layers, {}, (snapshot, ver) => {
     pi.appendEntry("harness-state", { state: snapshot, version: ver });
   });
+  // The start-sync completed (a throw above leaves it false, so the turn_end
+  // catch-up retries before any export; missing layers are a completed no-op).
+  startSyncRan = true;
   if (res.missingFile) return; // nothing durable yet — stay quiet
   // Capture WHAT arrived (created or updated) for the awareness reminders.
+  // A global/project layer collision UPDATES what the global layer just
+  // created — one id, one listing line: a Set de-dupes the union so the
+  // "what arrived" listing and the reminder counts stay truthful.
   // Look the ids up in the live store: content/scope there is post-merge truth.
-  importedThisSession = [...res.createdIds, ...res.updatedIds]
+  importedThisSession = [...new Set([...res.createdIds, ...res.updatedIds])]
     .map((id) => getState().items.find((i) => i.id === id))
     .filter((i): i is HarnessItem => Boolean(i))
     .map((i) => ({ id: i.id, kind: i.kind, content: i.content }));
@@ -113,14 +137,15 @@ export async function syncDurableOnStart(
 }
 
 /**
- * Pure decision for the import-awareness reminder (mirrors evaluateReminder's
- * delta-counting semantics). Side-effectful: seeds on the first observed turn,
- * advances on every fire. `importedCount` is the batch size to remind about.
- * Fires at most MAX_IMPORT_REMINDERS times per batch.
+ * Pure decision for the import-awareness reminder. Side-effectful: seeds on
+ * the first observed turn, advances on every fire. `turnOrdinal` is the
+ * SESSION-STABLE count of completed turn_end events — NOT pi's `turnIndex`,
+ * which resets to 0 on every agent_start. `importedCount` is the batch size
+ * to remind about. Fires at most MAX_IMPORT_REMINDERS times per batch.
  */
 export function evaluateImportReminder(
   config: HarnessConfig,
-  turnIndex: number,
+  turnOrdinal: number,
   importedCount: number,
 ): boolean {
   // Only meaningful with autoImport on: no silent imports → nothing to flag.
@@ -130,11 +155,11 @@ export function evaluateImportReminder(
   if (remindersFired >= MAX_IMPORT_REMINDERS) return false;
   const every = config.importRemind?.everyTurns ?? DEFAULT_IMPORT_REMIND_TURNS;
   if (lastRemindTurn < 0) {
-    lastRemindTurn = turnIndex;
+    lastRemindTurn = turnOrdinal;
     return false;
   }
-  if (turnIndex - lastRemindTurn >= every) {
-    lastRemindTurn = turnIndex;
+  if (turnOrdinal - lastRemindTurn >= every) {
+    lastRemindTurn = turnOrdinal;
     remindersFired += 1;
     return true;
   }
@@ -145,7 +170,10 @@ export function evaluateImportReminder(
 export function registerImportReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
     const config = await loadConfig();
-    if (!evaluateImportReminder(config, (_event as { turnIndex?: number }).turnIndex ?? 0, importedThisSession.length)) {
+    // Session-stable ordinal (see `turnsSeen`): counting EVENTS keeps the
+    // cadence meaningful across pi's per-agent-start turnIndex resets.
+    turnsSeen += 1;
+    if (!evaluateImportReminder(config, turnsSeen, importedThisSession.length)) {
       return;
     }
     const examples = importedThisSession
@@ -154,10 +182,22 @@ export function registerImportReminder(pi: ExtensionAPI): void {
       .join(", ");
     ctx.ui.notify(
       `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
-        `Review with /harness status; disable reminders via \'importRemind\': { \'enabled\': false } in harness.json.`,
+        `Review with /harness status; disable reminders via "importRemind": { "enabled": false } in harness.json.`,
       "info",
     );
   });
+}
+
+/** Layer files matching the (possibly injected) export paths — same shape
+ *  and order as config.layerFilesFor: global first, the current project's
+ *  file second (project wins id collisions). Undefined → real session paths. */
+function startFilesFor(cwd: string, injected?: LayerPaths): LayerFile[] | undefined {
+  if (!injected) return undefined;
+  const slug = projectSlug(cwd);
+  return [
+    { path: injected.globalPath, defaultScope: { scope: "global" } },
+    { path: join(injected.projectDir, `${slug}.md`), defaultScope: { scope: "project", project: slug } },
+  ];
 }
 
 /**
@@ -169,6 +209,21 @@ export function registerAutoExport(pi: ExtensionAPI, paths?: LayerPaths): void {
   pi.on("turn_end", async (_event, ctx) => {
     const config = await loadConfig();
     if (!config.autoImport) return;
+    if (!startSyncRan) {
+      // autoImport was enabled AFTER session_start (wizard or hand-edit):
+      // this session's layered import never ran. Import BEFORE any export —
+      // otherwise the first auto-export would overwrite the durable layers
+      // with the never-imported live store (data loss, review #26).
+      try {
+        await syncDurableOnStart(pi, ctx, startFilesFor(ctx.cwd, paths));
+      } catch (err) {
+        ctx.ui.notify(
+          `Durable catch-up import failed (no export this turn; retried next turn): ${(err as Error).message}`,
+          "warning",
+        );
+        return; // export only once the layers are safely in the store
+      }
+    }
     if (getVersion() === lastExportedVersion) return;
     try {
       const written = await exportDurableLayers(

@@ -516,11 +516,15 @@ into place instead:
 Preset values are **derived from the config module's defaults**, never
 hardcoded, so the wizard cannot drift when a default changes (e.g. the
 `importRemind` defaults). `--yes` is the scripted form of consent: it skips
-every prompt, including the autonomous confirms — that is its point. Any
-cancel, decline, or dismissed prompt degrades to **no write**; the wizard
-writes config files only and never touches harness state. When the UI has no
-blocking prompts, the interactive menu cancels itself — use the `--preset`
-form there.
+every prompt, including the autonomous confirms — that is its point.
+
+**When nothing is written:** an unknown preset, a missing `--preset` value,
+cancelling the preset menu, or declining the final write. Declining an
+**individual feature** only skips that feature — the remaining deltas still
+apply once you accept the final write, and the diff + JSON preview always
+shows exactly what will land. The wizard writes config files only and never
+touches harness state. When the UI has no blocking prompts, the interactive
+menu cancels itself — use the `--preset` form there.
 
 ---
 
@@ -719,9 +723,9 @@ defaults (the loader never throws).
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
+| `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. Enabling it **mid-session** is safe: the first `turn_end` imports the layers *before* any export, so a late enable can never overwrite the durable files with a never-imported store. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence (completed turns). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, counted in completed `turn_end` **events** (session-stable; pi's per-run `turnIndex` resets on every prompt). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |
@@ -730,7 +734,7 @@ defaults (the loader never throws).
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
 | `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
 | `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
-| `remindRefine.everyTurns` | `50` | int | Reminder cadence. |
+| `remindRefine.everyTurns` | `50` | int | Reminder cadence, counted in completed `turn_end` **events** (session-stable; pi's per-run `turnIndex` resets on every prompt). |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
 | `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
@@ -893,13 +897,16 @@ Then `my-proposer` is selectable via `/refine --proposer my-proposer` or
 
 Three `turn_end` hooks. **All are opt-in and off by default.** All cadence
 counters **reset on `session_start`**, so a forked/resumed session starts from a
-fresh baseline.
+fresh baseline. Cadences count completed `turn_end` **events** — a
+session-stable ordinal — because pi's own `turnIndex` resets to 0 on every
+`agent_start` (each user prompt); counting events is what makes "every N
+turns" mean N prompts, not N turns inside one long run.
 
 ### Reminder (`src/remind.ts`)
 
 `remindRefine: { enabled, everyTurns }` — informational only.
 
-- Fires every `everyTurns` (default **50**) turns.
+- Fires every `everyTurns` (default **50**) completed turns.
 - Notifies you to run `/refine`. **Never mutates state.**
 - First observed turn seeds the baseline (no reminder on the seed turn).
 

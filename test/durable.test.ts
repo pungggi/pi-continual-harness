@@ -155,6 +155,50 @@ describe("registerAutoExport (turn_end layered export)", () => {
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     expect(existsSync(paths.globalPath)).toBe(true);
   });
+
+  it("late enable: the first turn_end imports the layers BEFORE exporting (no clobber, review #26)", async () => {
+    // The session started with autoImport OFF, so session_start skipped the
+    // import — the durable layer holds a refinement this session never saw.
+    writeLayer(paths.globalPath, ["- **[h_saved]** (importance 0.50) saved refinement", "  - evidence: e"]);
+    await primeConfig({ autoImport: false });
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    registerAutoExport(pi, paths);
+    // ...the user enables autoImport mid-session (wizard or hand-edit):
+    await primeConfig({ autoImport: true });
+    // a store mutation makes the auto-export trigger on the next turn_end
+    applyDeltas([{ op: "create", kind: "memory", content: "session fact", evidence: "e" }], vi.fn());
+    await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+    // The durable layer was MERGED, not overwritten: both items survive.
+    const layer = readFileSync(paths.globalPath, "utf8");
+    expect(layer).toContain("saved refinement");
+    expect(layer).toContain("session fact");
+    // ...and the never-imported item IS in the live store now
+    expect(getState().items.some((i) => i.id === "h_saved")).toBe(true);
+    // the catch-up import announced itself (awareness, like session_start)
+    expect(notifications.some((n) => /durable sync imported/.test(n.msg))).toBe(true);
+  });
+
+  it("late enable with a FAILING catch-up import: no export this turn (review #26)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    // make the layered import itself fail: its persist callback (appendEntry)
+    // throws — readFile errors are handled gracefully, so this is the
+    // realistic failure surface (e.g. a session-mutation error mid-import).
+    const raw = pi as unknown as { appendEntry: (t: string, d: unknown) => void };
+    raw.appendEntry = () => {
+      throw new Error("boom");
+    };
+    registerAutoExport(pi, paths);
+    resetDurableSync(); // session never ran its start-sync (autoImport was off)
+    applyDeltas([{ op: "create", kind: "memory", content: "session fact", evidence: "e" }], vi.fn());
+    await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+    expect(notifications.some((n) => /catch-up import failed/.test(n.msg))).toBe(true);
+    // the layer was NOT exported over: original content intact, no additions
+    const layer = readFileSync(paths.globalPath, "utf8");
+    expect(layer).toContain("fact");
+    expect(layer).not.toContain("session fact");
+  });
 });
 
 describe("import awareness (what arrived + cadence reminder)", () => {
@@ -184,6 +228,25 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(getImportedThisSession().map((i) => i.id)).toEqual(["h_g"]);
     resetDurableSync();
     expect(getImportedThisSession()).toHaveLength(0);
+  });
+
+  it("a global/project layer id collision lists the item ONCE (no double count, review #26)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_same]** (importance 0.50) global version", "  - evidence: e"]);
+    writeLayer(join(paths.projectDir, "proj.md"), [
+      "- **[h_same]** (importance 0.50) project version",
+      "  - evidence: e",
+    ]);
+    const { pi, ctx } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+      { path: join(paths.projectDir, "proj.md"), defaultScope: { scope: "project", project: "proj" } },
+    ]);
+    // h_same is created by the global layer then updated by the project layer
+    // (project wins collisions) — one real instruction, one listing entry.
+    const imported = getImportedThisSession();
+    expect(imported.map((i) => i.id)).toEqual(["h_same"]);
+    expect(getState().items.filter((i) => i.id === "h_same")).toHaveLength(1);
   });
 
   it("evaluateImportReminder: gates, cadence, bounded repeats", async () => {
@@ -217,10 +280,29 @@ describe("import awareness (what arrived + cadence reminder)", () => {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
     const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
-    expect(reminders).toHaveLength(3); // 25, 50, 75 — capped after
+    expect(reminders).toHaveLength(3); // cadence + cap
     expect(reminders[0]!.msg).toContain("[h_g]");
     expect(reminders[0]!.msg).toContain("/harness status");
-    expect(reminders[0]!.msg).toContain("importRemind");
+    // the suggested snippet is copy-pasteable VALID JSON (review #26)
+    expect(reminders[0]!.msg).toContain('"importRemind": { "enabled": false }');
+  });
+
+  it("counts turn_end EVENTS, not pi's per-run turnIndex (resets to 0 each agent_start, review #26)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    // 26 separate prompts, each a fresh agent run → turnIndex resets to 0
+    // every time. Absolute-index math would NEVER reach a 25-turn cadence;
+    // event counting does (seed on the first, fire 25 events later).
+    for (let t = 0; t < 26; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+    }
+    const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
+    expect(reminders).toHaveLength(1);
   });
 
   it("no import → no reminders, whatever the cadence", async () => {

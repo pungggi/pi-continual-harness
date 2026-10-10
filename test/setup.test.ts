@@ -48,6 +48,12 @@ describe("presets (pure data)", () => {
     expect(expandPreset("nope")).toBeUndefined();
   });
 
+  it("inherited Object members are not presets (prototype leak, review #26)", () => {
+    for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      expect(expandPreset(name)).toBeUndefined();
+    }
+  });
+
   it("quiet pins every opt-in feature key to the shipped default", () => {
     const quiet = expandPreset("quiet")!;
     const paths = quiet.deltas.map((d) => d.path);
@@ -134,6 +140,19 @@ describe("planWrite", () => {
     expect(planned.importRemind).toEqual(DEFAULT_CONFIG.importRemind);
   });
 
+  it("merges nested blocks like saveConfig: nested unknown keys stay in the reviewed JSON (review #26)", () => {
+    const rec = expandPreset("recommended")!;
+    const planned = planWrite({ importRemind: { futureKey: 42 } }, rec.deltas);
+    // the preset's keys win; the nested sibling rides along — VISIBLY, with
+    // exactly saveConfig's merge semantics (no post-hoc re-merge surprises)
+    expect(planned.importRemind).toEqual({
+      futureKey: 42,
+      enabled: DEFAULT_CONFIG.importRemind?.enabled,
+      everyTurns: DEFAULT_CONFIG.importRemind?.everyTurns,
+    });
+    expect(planned.autoImport).toBe(true);
+  });
+
   it("skips declined deltas", () => {
     const power = expandPreset("power")!;
     const planned = planWrite(undefined, power.deltas, new Set(["autoImport"]));
@@ -217,6 +236,31 @@ describe("saveConfig (backup + atomic write + reload)", () => {
       await cleanup();
     }
   });
+
+  it("concurrent saves do not corrupt each other (unique exclusive tmp, review #26)", async () => {
+    try {
+      await writeFile(file, JSON.stringify({ base: 1 }), "utf8");
+      const [a, b] = await Promise.all([
+        saveConfig({ autoImport: true }, file),
+        saveConfig({ proposer: "dedupe" }, file),
+      ]);
+      expect(a.written).toBe(file); // both resolved — no ENOENT mid-write
+      expect(b.written).toBe(file);
+      const final = JSON.parse(await readFile(file, "utf8"));
+      // last rename wins entirely (each call merged over the same original);
+      // either final state is a valid, complete write — never a splice
+      if (final.autoImport === true) {
+        expect(final.proposer).toBeUndefined();
+      } else {
+        expect(final.proposer).toBe("dedupe");
+      }
+      expect(final.base).toBe(1); // the original content was never lost
+      const litter = (await readdir(dir)).filter((f) => f.includes(".tmp"));
+      expect(litter).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("handleSetup (wizard flow)", () => {
@@ -230,6 +274,17 @@ describe("handleSetup (wizard flow)", () => {
       const { fake, ctx } = wizard();
       await handleSetup(ctx, ["--preset", "bogus"], file);
       expect(fake.notifications.some((n) => n.level === "warning" && /Unknown preset/.test(n.msg))).toBe(true);
+      await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("rejects --preset constructor like any unknown preset (prototype leak, review #26)", async () => {
+    try {
+      const { fake, ctx } = wizard();
+      await handleSetup(ctx, ["--preset", "constructor"], file);
+      expect(fake.notifications.some((n) => n.level === "warning" && /Unknown preset "constructor"/.test(n.msg))).toBe(true);
       await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await cleanup();
@@ -341,6 +396,22 @@ describe("handleSetup (wizard flow)", () => {
       expect(first.msg).toContain("harness-state.md"); // global layer path
       expect(first.msg).toContain("Current effective config");
       expect(first.msg).toContain(`autoImport: false`);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("the confirmed JSON preview equals the written file (nested unknown keys visible AND preserved, review #26)", async () => {
+    try {
+      await writeFile(file, JSON.stringify({ importRemind: { futureKey: 42 } }), "utf8");
+      const { fake, ctx } = wizard();
+      await handleSetup(ctx, ["--preset", "recommended", "--yes"], file);
+      // the reviewed preview names the nested unknown key...
+      const preview = fake.notifications.find((n) => /Planned /.test(n.msg))!;
+      expect(preview.msg).toContain("futureKey");
+      // ...and the written file is EXACTLY that plan (no post-hoc re-merge)
+      const plannedJson = preview.msg.split("\n\n").at(-1)!;
+      expect(await readConfigRaw(file)).toEqual(JSON.parse(plannedJson));
     } finally {
       await cleanup();
     }

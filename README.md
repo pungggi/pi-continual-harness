@@ -158,8 +158,10 @@ unchanged by a push — pi-mem gets a separate copy.
 
 For scripted setups: `/harness setup --preset recommended --yes` (the `--yes`
 flag is the scripted form of the confirmations, so it enables autonomous
-features without prompts). Cancelling anywhere degrades to **no write**; the
-wizard never touches harness state, only the config file.
+features without prompts). Nothing is written on unknown input, a cancelled
+preset menu, or a declined final write; declining an individual feature only
+skips that feature (the accepted deltas still apply). The wizard never
+touches harness state, only the config file.
 
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
 
@@ -186,7 +188,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   changed since the last export. This is what makes `/refine` output survive
   into **new** sessions without manual export/import ceremony. Both halves are
   visible (one notify line) and use the same persisted `harness-state` entries
-  as every other mutation (`/tree` rollback covers them).
+  as every other mutation (`/tree` rollback covers them). Enabling it
+  mid-session (e.g. via `/harness setup`) is safe: the first `turn_end`
+  imports the layers *before* any export, so a late enable can never
+  overwrite the durable files with a never-imported store.
 - **`importRemind`** — **awareness reminders** for that sync (effective only
   when `autoImport` is on; default `{ "enabled": true, "everyTurns": 25 }`).
   The session-start import doesn't just count — it **lists what arrived**

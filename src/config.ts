@@ -13,6 +13,7 @@
 // Unknown keys are ignored (e.g. the removed pre-0.9.0 `durableScope`).
 
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
@@ -232,6 +233,27 @@ function backupStamp(d = new Date()): string {
   return d.toISOString().replace(/[:.]/g, "-");
 }
 
+/** rename with a bounded retry. On Windows, replacing a file that was itself
+ *  JUST replaced (a concurrent save racing to the same target) can transiently
+ *  fail with EPERM/EACCES/ENOTEMPTY while the previous replacement settles
+ *  into the delete-pending state. A short backoff clears it; every other
+ *  error (and errors that persist) propagates. */
+async function renameRetry(tmp: string, path: string, tries = 3): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(tmp, path);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt < tries && (code === "EPERM" || code === "EACCES" || code === "ENOTEMPTY")) {
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** The ONE reviewed write path for harness.json (used by /harness setup):
  *  merge `next` over the existing RAW file (two levels deep, unknown keys
  *  preserved), back the previous file up as `harness.json.bak-<timestamp>`,
@@ -258,10 +280,15 @@ export async function saveConfig(
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; // backup failure → abort, no write
   }
   await mkdir(dirname(path), { recursive: true }); // first run: ~/.pi/agent may not exist yet
-  const tmp = `${path}.tmp`;
+  // Unique + exclusive temp name: two concurrent saveConfig calls (two pi
+  // sessions, or two wizards) must never share a tmp file — the loser would
+  // truncate the winner's content or rename it away mid-write. "wx" fails
+  // loudly on collision instead of corrupting (a UUID collision is already
+  // theoretical; this makes it impossible).
+  const tmp = `${path}.tmp-${randomUUID().slice(0, 8)}`;
   try {
-    await writeFile(tmp, json, "utf8");
-    await rename(tmp, path); // atomic on POSIX; REPLACE_EXISTING on Windows
+    await writeFile(tmp, json, { encoding: "utf8", flag: "wx" });
+    await renameRetry(tmp, path); // atomic on POSIX; REPLACE_EXISTING on Windows
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => {}); // best-effort tmp cleanup
     throw err;

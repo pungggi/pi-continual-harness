@@ -23,12 +23,17 @@
 //    outcomeImportance.enabled) require their own explicit confirm step
 //    regardless of preset. `--yes` is the scripted equivalent of that consent
 //    and skips every prompt — documented on the flag itself.
-//  - Any cancel, decline, or bad input degrades to "no write".
+//  - No write on: unknown preset / missing --preset value, cancelling the
+//    preset menu, or declining the final write. Declining an INDIVIDUAL
+//    feature only skips that feature — the remaining deltas still apply
+//    (that is what the per-feature loop is for); the final diff + JSON
+//    preview always shows exactly what will land.
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   CONFIG_PATH,
   DEFAULT_CONFIG,
+  deepMergeConfig,
   isPlainObject,
   loadConfig,
   projectDurablePath,
@@ -147,9 +152,11 @@ export const PRESET_COMPLETIONS: Array<{ value: string; description: string }> =
 ];
 
 /** Expand a preset name to its data. Unknown names → undefined; callers
- *  degrade to a warning + no write. */
+ *  degrade to a warning + no write. hasOwn guards the prototype chain:
+ *  "constructor" / "__proto__" are not presets, they are inherited Object
+ *  members (review #26). */
 export function expandPreset(name: string): Preset | undefined {
-  return PRESETS[name as PresetName];
+  return Object.hasOwn(PRESETS, name) ? PRESETS[name as PresetName] : undefined;
 }
 
 /** Pure dotted-path setter: returns a clone of `obj` with `path` set to
@@ -178,8 +185,11 @@ export function getPath(obj: unknown, path: string): unknown {
 }
 
 /** Apply the accepted deltas to a raw parsed config file (the object handed
- *  to saveConfig). Declined deltas are skipped; unknown existing keys ride
- *  along. Pure. */
+ *  to saveConfig). Declined deltas are skipped. Each delta is applied with
+ *  saveConfig's own two-level deep-merge semantics — nested sibling keys
+ *  (known or unknown) survive and are VISIBLE in the reviewed JSON — so the
+ *  JSON the user confirms is byte-for-byte what lands on disk (review #26).
+ *  Pure. */
 export function planWrite(
   existing: Record<string, unknown> | undefined,
   deltas: PresetDelta[],
@@ -188,7 +198,7 @@ export function planWrite(
   let out: Record<string, unknown> = { ...(existing ?? {}) };
   for (const d of deltas) {
     if (declined.has(d.path)) continue;
-    out = setPath(out, d.path, d.value);
+    out = deepMergeConfig(out, setPath({}, d.path, d.value));
   }
   return out;
 }
