@@ -61,7 +61,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 Durable I/O (round-trip with pi-reflect):
 
 ```
-/harness status                  # counts + durable layer presence/mtime
+/harness status                  # counts, audit-trail impact, injection stats, durable layers + a rotating hint
 /harness export [path]           # layered export (or full snapshot to a path)
 /harness export-corpus [path]    # calibration corpus JSONL for pi-reflex (local-only; dedupe pairs + lifecycle)
 /harness import [--prune] [path] # layered import (or single file from a path)
@@ -416,6 +416,13 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   **layered on per-item scope**: every item is `global` or `project`
   (`/harness move`, `/harness split`), and `/harness export|import` operate on
   both layers.
+- **Rich `/harness status`**: besides the counts, it derives an **impact
+  summary** from the session's audit trail (refine runs manual/auto, items
+  created/updated/kept/cited/dropped/pruned/deleted/merged — whole store and
+  per active model), reports **injection stats** (renders served, items
+  surfaced, token-budget use), shows **zero-state guidance** for an empty
+  store, and rotates a single-line **hint** at an under-discovered feature.
+  Read-only; everything is derived, nothing persisted.
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
 - **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent

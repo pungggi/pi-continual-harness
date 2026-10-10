@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerHarness } from "./harness.js";
-import { registerInjection } from "./inject.js";
+import { registerInjection, resetInjectionStats } from "./inject.js";
 import { registerRefine } from "./refine.js";
 import { registerTools } from "./tools.js";
 import { registerReminder, resetReminder } from "./remind.js";
@@ -16,6 +16,7 @@ import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
 import { registerOutcome, resetOutcome } from "./outcome.js";
 import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart } from "./durable.js";
 import { getState, reconstruct, setActiveModelKey, setSessionProject, STATE_ENTRY } from "./store.js";
+import { resetHints } from "./hints.js";
 import { projectSlug } from "./config.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
@@ -29,6 +30,10 @@ export default function continualHarness(pi: ExtensionAPI): void {
     resetReminder();
     resetOutcome();
     resetDurableSync();
+    // Session-scoped telemetry for /harness status: fresh session → fresh
+    // injection stats and hint rotation.
+    resetInjectionStats();
+    resetHints();
     // Drop any stale active-model key from the previous session: the next
     // before_agent_start re-caches it before any tool can run.
     setActiveModelKey(undefined);
@@ -99,13 +104,33 @@ export {
 // into internal paths.
 export {
   buildCorpus,
+  classifyTransition,
   NOT_DUP_FLOOR,
   parseDedupeDelete,
   type CorpusResult,
   type DedupePairRecord,
   type LifecycleEvent,
   type LifecycleRecord,
+  type LifecycleTransition,
 } from "./corpus.js";
+
+// Status report (issue #20): the pure /harness status builder + the rotating
+// one-line hint library (shared copy source with #19's content library), plus
+// the session injection telemetry. Re-exported for tests and companions.
+export {
+  buildStatusReport,
+  renderStatusReport,
+  type ImpactCounts,
+  type StatusOptions,
+  type StatusReport,
+} from "./status.js";
+export {
+  nextHint,
+  pickHint,
+  resetHints,
+  type StatusHint,
+} from "./hints.js";
+export { getInjectionStats, resetInjectionStats, type InjectionStats } from "./inject.js";
 
 // Injection selection policy (on by default). Re-exported so companion packages
 // and tests can reuse the pure selection/normalization without reaching into

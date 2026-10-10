@@ -158,6 +158,7 @@ The package ships raw TypeScript; no compilation is needed.
 
 ```
 /harness status        # should report 0 active / 0 total, durable: none
+                       # (plus zero-state first-steps guidance)
 ```
 
 ---
@@ -317,10 +318,44 @@ Subcommands:
 /harness status
 ```
 
-Reports whole-store active/total counts broken down by kind (status is a
-whole-store command), annotated with the active model's share, the scope split
-(`X global / Y project`), and **both durable layers**' presence and
-last-modified time (the global file + the current project's file).
+A read-only, single-notify report in three bands on top of the classic
+counts. **Counts** come first: whole-store active/total broken down by kind
+(status is a whole-store command), annotated with the active model's share,
+the scope split (`X global / Y project`), and **both durable layers**'
+presence and last-modified time (the global file + the current project's
+file).
+
+**Impact** is derived on the fly from this session branch's audit trail
+(`harness-state` snapshots + `harness-refinement` entries) by reusing the
+corpus lifecycle classification — no new persisted state, nothing mutated:
+
+- **Runs**: how many `/refine` runs the branch records, split manual vs
+  auto-refine.
+- **Items**: `created` (appeared in a snapshot — `/refine`, `harness_mutate`,
+  or import alike), `updated` (direct-apply proposer batches; a lower bound —
+  steering-path content edits don't change importance, so snapshot diffs
+  can't see them), `kept`/`dropped` (the ±0.1 bumps), `cited` (outcome-loop
+  promotions, classified with the *configured* bump), `pruned` (removed
+  below the importance floor), `deleted` (removed at/above it), and `merged`
+  (dedupe merges, from the "merged into h_…" delete reasons).
+
+The whole-store line is followed by a `For [provider/id]: …` line with the
+same lifecycle counters attributed to the active model's items (mirroring the
+per-model annotation in the counts band).
+
+**Injection** summarizes what the harness delivered this session (in-memory,
+reset on `session_start`): renders that served items, items surfaced, the
+last block's estimated-token usage vs `injection.maxTokens`, and how many
+items the selection policy dropped.
+
+When the store has **0 active items**, the counts are followed by zero-state
+guidance (run `/refine` after a working session; MANUAL §3's Quick start)
+instead of bare zeros. Finally, one rotating **hint** line cross-promotes an
+under-discovered feature that applies right now (classifier gate, outcome
+loop, `push-mem`, `remindRefine`, `split`) — never the hint shown on the
+previous call. The report builder is pure and exported
+(`buildStatusReport`/`renderStatusReport`, plus the hint library in
+`src/hints.ts`) so companions reuse the same copy source.
 
 #### `export [path]`
 
@@ -1123,6 +1158,13 @@ import {
   type InjectionConfig,
   type NormalizedInjection,
   type SelectionResult,
+  // status report — see §5 → "status"
+  buildStatusReport,  // pure: state + branch entries + opts → StatusReport
+  renderStatusReport, // StatusReport (+ durable line, picked hint) → text
+  pickHint,           // pure hint rotation (skip last shown)
+  type StatusReport,
+  type ImpactCounts,
+  type StatusHint,
 } from "pi-continual-harness";
 ```
 

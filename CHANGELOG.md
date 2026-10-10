@@ -12,6 +12,25 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **Rich `/harness status` (issue #20)** — the status report is now a
+  three-band, still read-only notify. **Impact**: derived from the session
+  branch's audit trail by reusing the corpus lifecycle classification
+  (`classifyTransition` now exported with item attribution): refine runs
+  (manual vs auto), items created / updated (direct-apply, a lower bound) /
+  kept / cited (config-aware bump) / dropped / pruned / deleted / merged
+  (dedupe merges), whole-store plus a per-active-model line. **Injection
+  stats**: renders that served items, items surfaced, last block's estimated
+  tokens vs `injection.maxTokens`, and selection-omitted counts
+  (`InjectionStats`, recorded at render time in `inject.ts`, reset on
+  `session_start`). **Zero-state guidance**: 0 active items → actionable
+  first steps (`/refine`, MANUAL Quick start) instead of bare zeros. **Hint**:
+  one rotating contextual one-liner per call (classifier gate, outcome loop,
+  `push-mem`, `remindRefine`, `split`), never repeating the previous call's
+  hint (`src/hints.ts`, shared copy source for #19's content library). The
+  report builder is pure and exported — `buildStatusReport` /
+  `renderStatusReport` — and `handleStatus` stays thin glue. No new persisted
+  state; no mutation.
+
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce
   themselves. The session-start import lists **what arrived** (item id, kind,
