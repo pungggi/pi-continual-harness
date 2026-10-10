@@ -28,6 +28,7 @@ import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js
 import type { LayerFile, LayerPaths } from "./store.js";
 import type { HarnessItem } from "./types.js";
 import { DEFAULT_IMPORT_REMIND_TURNS, layerFilesFor, loadConfig, projectSlug, type HarnessConfig } from "./config.js";
+import { turnEndedBadly } from "./auto-refine.js";
 
 /** Real (homedir-based) layer paths. Tests inject their own. */
 function layerPaths(): LayerPaths {
@@ -43,11 +44,12 @@ let lastExportedVersion = -1;
 // BEFORE any export — never clobbering the durable layers (review #26).
 let startSyncRan = false;
 
-// Completed turn_end EVENTS this session — the session-stable ordinal the
-// import-reminder cadence counts against. pi's `turnIndex` resets to 0 on
-// every agent_start (each user prompt), so absolute-index deltas would never
-// accumulate across prompts (review #26).
-let turnsSeen = 0;
+// Completed turns observed since the last import reminder (or the seeded
+// baseline). -1 = unseen. Aborted/error turns never touch this count — the
+// cadence counts completed turns of work (mirrors remind.ts / #18), never raw
+// turn indices: pi's `turnIndex` resets to 0 on every agent_start (each user
+// prompt), so index deltas would never accumulate across prompts (review #26).
+let completedTurns = -1;
 
 /** A durable-imported item the user should stay aware of (id + what it says). */
 export interface ImportedRef {
@@ -60,8 +62,6 @@ export interface ImportedRef {
 // instructions" the awareness reminder re-surfaces. Re-seeded on every
 // session_start (resetDurableSync clears, syncDurableOnStart fills).
 let importedThisSession: ImportedRef[] = [];
-// turnIndex of the last import reminder (or the seed). -1 = unseen.
-let lastRemindTurn = -1;
 // Reminders fired for the current import batch (bounded — see MAX_IMPORT_REMINDERS).
 let remindersFired = 0;
 
@@ -74,9 +74,8 @@ export const MAX_IMPORT_REMINDERS = 3;
 export function resetDurableSync(): void {
   lastExportedVersion = -1;
   startSyncRan = false;
-  turnsSeen = 0;
   importedThisSession = [];
-  lastRemindTurn = -1;
+  completedTurns = -1;
   remindersFired = 0;
 }
 
@@ -137,29 +136,34 @@ export async function syncDurableOnStart(
 }
 
 /**
- * Pure decision for the import-awareness reminder. Side-effectful: seeds on
- * the first observed turn, advances on every fire. `turnOrdinal` is the
- * SESSION-STABLE count of completed turn_end events — NOT pi's `turnIndex`,
- * which resets to 0 on every agent_start. `importedCount` is the batch size
- * to remind about. Fires at most MAX_IMPORT_REMINDERS times per batch.
+ * Pure decision for the import-awareness reminder (mirrors evaluateReminder's
+ * completed-turn counting from #18). Side-effectful: the first observed
+ * COMPLETED turn seeds the baseline (the seed turn itself doesn't count);
+ * every completed turn after it advances the count, and each fired reminder
+ * resets it. `outcome` is pi's BoundaryState.outcome — aborted/error turns
+ * are inert (they neither seed nor advance, so an aborted turn cannot
+ * shorten the window). `importedCount` is the batch size to remind about.
+ * Fires at most MAX_IMPORT_REMINDERS times per batch.
  */
 export function evaluateImportReminder(
   config: HarnessConfig,
-  turnOrdinal: number,
-  importedCount: number,
+  outcome?: string,
+  importedCount = 0,
 ): boolean {
   // Only meaningful with autoImport on: no silent imports → nothing to flag.
   if (!config.autoImport) return false;
   if (config.importRemind?.enabled === false) return false;
   if (importedCount <= 0) return false;
+  if (turnEndedBadly(outcome)) return false;
   if (remindersFired >= MAX_IMPORT_REMINDERS) return false;
   const every = config.importRemind?.everyTurns ?? DEFAULT_IMPORT_REMIND_TURNS;
-  if (lastRemindTurn < 0) {
-    lastRemindTurn = turnOrdinal;
+  if (completedTurns < 0) {
+    completedTurns = 0; // seed: the seed turn itself doesn't count
     return false;
   }
-  if (turnOrdinal - lastRemindTurn >= every) {
-    lastRemindTurn = turnOrdinal;
+  completedTurns += 1;
+  if (completedTurns >= every) {
+    completedTurns = 0;
     remindersFired += 1;
     return true;
   }
@@ -168,12 +172,12 @@ export function evaluateImportReminder(
 
 /** Subscribe to turn_end and re-surface imported items on the cadence. */
 export function registerImportReminder(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    // Session-stable ordinal (see `turnsSeen`): counting EVENTS keeps the
-    // cadence meaningful across pi's per-agent-start turnIndex resets.
-    turnsSeen += 1;
-    if (!evaluateImportReminder(config, turnsSeen, importedThisSession.length)) {
+    // Completed-turn counting (see `completedTurns`): aborted/error outcomes
+    // are inert and pi's per-agent-start turnIndex resets never matter.
+    const outcome = (event as { outcome?: string }).outcome;
+    if (!evaluateImportReminder(config, outcome, importedThisSession.length)) {
       return;
     }
     const examples = importedThisSession

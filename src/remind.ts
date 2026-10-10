@@ -3,43 +3,40 @@
 // harness.json { remindRefine: { enabled: true, everyTurns: 50 } }.
 //
 // The decision logic is factored into evaluateReminder() so it is unit-testable
-// without a live pi runtime; registerReminder() is thin glue over pi.on. The
-// cadence counts completed turn_end EVENTS (session-stable), not pi's
-// `turnIndex` — pi resets that to 0 on every agent_start (each user prompt),
-// so absolute-index deltas would never accumulate across prompts.
+// without a live pi runtime; registerReminder() is thin glue over pi.on.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
+import { turnEndedBadly } from "./auto-refine.js";
 
-// turnIndex of the last reminder (or the baseline we seeded from). -1 = unseen.
-let lastTurn = -1;
-
-// Completed turn_end events this session (the cadence's ordinal).
-let turnsSeen = 0;
+// Completed turns observed since the last reminder (or the seeded baseline).
+// -1 = unseen. Aborted/error turns never touch this count.
+let completedTurns = -1;
 
 /** Test hook: reset internal counter. */
 export function resetReminder(): void {
-  lastTurn = -1;
-  turnsSeen = 0;
+  completedTurns = -1;
 }
 
 /**
- * Decide whether to remind this turn. Side-effectful: the first observed turn
- * seeds the baseline (no reminder then), and each fired reminder resets it.
- * `turnOrdinal` is the session-stable count of completed turn_end events (NOT
- * pi's per-run `turnIndex`, which resets every agent_start). Returns true
- * when it is time to nudge.
+ * Decide whether to remind this turn. Side-effectful: the first observed
+ * completed turn seeds the baseline (no reminder then); every completed turn
+ * after it advances the count, and each fired reminder resets it.
+ * Aborted/error turns are inert — the cadence counts completed turns of work,
+ * never raw turn indices. Returns true when it is time to nudge.
  */
-export function evaluateReminder(config: HarnessConfig, turnOrdinal: number): boolean {
+export function evaluateReminder(config: HarnessConfig, outcome?: string): boolean {
   if (!config.remindRefine?.enabled) return false;
+  if (turnEndedBadly(outcome)) return false;
   const every = config.remindRefine.everyTurns ?? DEFAULT_EVERY_TURNS;
   if (every <= 0) return false;
-  if (lastTurn < 0) {
-    lastTurn = turnOrdinal;
+  if (completedTurns < 0) {
+    completedTurns = 0; // seed: the seed turn itself doesn't count
     return false;
   }
-  if (turnOrdinal - lastTurn >= every) {
-    lastTurn = turnOrdinal;
+  completedTurns += 1;
+  if (completedTurns >= every) {
+    completedTurns = 0;
     return true;
   }
   return false;
@@ -47,10 +44,9 @@ export function evaluateReminder(config: HarnessConfig, turnOrdinal: number): bo
 
 /** Subscribe to turn_end and notify on the configured cadence. */
 export function registerReminder(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    turnsSeen += 1; // session-stable ordinal — see the header comment
-    if (!evaluateReminder(config, turnsSeen)) return;
+    if (!evaluateReminder(config, event.outcome)) return;
     const every = config.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS;
     ctx.ui.notify(
       `${every} turns since the last check — consider running /refine to refine harness state.`,

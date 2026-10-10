@@ -249,22 +249,28 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(getState().items.filter((i) => i.id === "h_same")).toHaveLength(1);
   });
 
-  it("evaluateImportReminder: gates, cadence, bounded repeats", async () => {
+  it("evaluateImportReminder: gates, cadence, bounded repeats, bad turns inert", async () => {
     await reset();
     const on = { autoImport: true } as HarnessConfig;
+    const step = (outcome?: string) => evaluateImportReminder(on, outcome, 2);
     // gates
-    expect(evaluateImportReminder({ ...on, autoImport: false }, 30, 3)).toBe(false);
-    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, 30, 3)).toBe(false);
-    expect(evaluateImportReminder(on, 30, 0)).toBe(false);
-    // cadence: seed at 0, fire every 25
-    expect(evaluateImportReminder(on, 0, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 24, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 25, 2)).toBe(true);
-    expect(evaluateImportReminder(on, 26, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 50, 2)).toBe(true);
-    expect(evaluateImportReminder(on, 75, 2)).toBe(true);
+    expect(evaluateImportReminder({ ...on, autoImport: false }, undefined, 3)).toBe(false);
+    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, undefined, 3)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 0)).toBe(false);
+    expect(evaluateImportReminder(on, "aborted", 2)).toBe(false); // bad turn: no seed
+    // cadence: seed (doesn't count), then fire every 25 completed turns
+    expect(step()).toBe(false); // seed
+    for (let i = 0; i < 24; i++) expect(step()).toBe(false);
+    expect(step()).toBe(true); // reminder 1
+    expect(step("error")).toBe(false); // skipped — window unchanged
+    expect(step()).toBe(false); // 1st completed after
+    for (let i = 0; i < 23; i++) expect(step()).toBe(false);
+    expect(step()).toBe(true); // reminder 2
+    for (let i = 0; i < 24; i++) expect(step()).toBe(false);
+    expect(step()).toBe(true); // reminder 3
     // bounded: never more than MAX_IMPORT_REMINDERS per batch
-    expect(evaluateImportReminder(on, 100, 2)).toBe(false);
+    expect(step()).toBe(false);
+    expect(step("aborted")).toBe(false); // inert either way now
     expect(MAX_IMPORT_REMINDERS).toBe(3);
   });
 
@@ -287,7 +293,7 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(reminders[0]!.msg).toContain('"importRemind": { "enabled": false }');
   });
 
-  it("counts turn_end EVENTS, not pi's per-run turnIndex (resets to 0 each agent_start, review #26)", async () => {
+  it("counts completed turn_end events, not pi's per-run turnIndex (reset to 0 each agent_start, review #26)", async () => {
     await primeConfig({ autoImport: true });
     writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
     const { pi, ctx, fire, notifications } = makeFakePi([]);
@@ -297,11 +303,36 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     registerImportReminder(pi);
     // 26 separate prompts, each a fresh agent run → turnIndex resets to 0
     // every time. Absolute-index math would NEVER reach a 25-turn cadence;
-    // event counting does (seed on the first, fire 25 events later).
+    // completed-turn counting does (seed on the first, fire 25 later).
     for (let t = 0; t < 26; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     }
     const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
+    expect(reminders).toHaveLength(1);
+  });
+
+  it("aborted/error turn_ends never advance the import-reminder cadence (#18 semantics)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    // 30 bad turns (mixed aborted/error): had they counted, the window would
+    // have fired twice over by now — they neither seed nor advance.
+    for (let t = 0; t < 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t, outcome: t % 2 ? "aborted" : "error" }, ctx());
+    }
+    // 25 completed turns: seed + 24 counted → still under 25
+    for (let t = 0; t < 25; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    let reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
+    expect(reminders).toHaveLength(0);
+    // the 26th completed turn (25 counted) fires — exactly the cadence, nothing borrowed
+    await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+    reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
     expect(reminders).toHaveLength(1);
   });
 

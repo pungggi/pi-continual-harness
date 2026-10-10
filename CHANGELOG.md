@@ -10,6 +10,32 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Removed
+
+- **`durableScope` config key removed** (deprecated since 0.9.0 as a no-op):
+  items carry their own scope and durable I/O is always layered, so the key
+  switched nothing. The dead `resolveDurablePath()` helper is gone too (no
+  callers). Config files that still set `durableScope` load unchanged —
+  unknown keys are ignored; migration is the documented one-time
+  `/harness import` + `/harness move`/`split`.
+
+### Fixed
+
+- **`harness_list` empty results are now diagnostic** — the bare
+  `"Harness state is empty."` collapsed three very different situations into
+  one opaque line, which users read as "the feature is broken": (1) a
+  genuinely empty store (a new session starts empty — durable sync is
+  opt-in), (2) everything owned by another model (per-model isolation hides
+  it from the default view), (3) a `kind` filter that matched nothing. Each
+  case now gets its own actionable text: zero-state guidance (`/refine`,
+  `harness_mutate`, `"autoImport": true`), an owner tally with a
+  `model:"*"` pointer, and a kind tally respectively. The diagnosis is
+  attributed from the store's actual contents (review #23): a kind miss for a
+  model that owns items is never reported as model isolation, and the
+  `model:"*"` pointer only appears when the requested kind actually exists
+  for another model. `structuredContent` is unchanged (stable schema); only
+  the model-facing text changed.
+
 ### Added
 
 - **`/harness setup` — guided configuration wizard (presets, reviewed
@@ -49,6 +75,27 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   to re-surface; `evaluateImportReminder`/`registerImportReminder`/
   `getImportedThisSession`/`summarizeImported` exported for tests and
   companions.
+
+- **Aborted/error turns are inert (pi `turn_end` `BoundaryState.outcome`)** —
+  a `turn_end` whose outcome is `"aborted"` or `"error"` no longer counts
+  toward the auto-refine or reminder cadence: both windows now count
+  *completed* turns (never raw turn indices, so an aborted turn in between
+  cannot shorten a window). The outcome loop seeds its scan cursor on the
+  first observed `turn_end` regardless of outcome, then defers an aborted
+  turn's partial assistant text to the next completed turn — a refine can no
+  longer fire, and the classifier gate no longer judges, a trajectory that
+  was cut off. A missing outcome (synthetic events, earliest 0.99.x) is
+  treated as completed. Durable auto-export deliberately still exports on
+  aborted turns (committed entries must not be lost). Pure `turnEndedBadly()`
+  re-exported from the package entry; `evaluateAutoRefine`/`evaluateReminder`
+  accept an optional `outcome` argument (the dead `turnIndex` parameter was
+  dropped — the count replaced the index arithmetic).
+- **pi 1.1.0 classifier catalog documented** — `classifier.model` accepts the
+  new entries with no code change: OpenAI's GPT-6 Luna (Decisions API, e.g.
+  `openai/gpt-6-luna`, needs `OPENAI_API_KEY`) and the native llama.cpp
+  decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`,
+  llama.cpp ≥ 0.6.0 — classifier-only listings, a free local gate). README +
+  MANUAL updated; no minimum-pi change (the APIs used still ship by 0.99.0).
 
 ### Removed
 

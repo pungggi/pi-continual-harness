@@ -725,7 +725,7 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. Enabling it **mid-session** is safe: the first `turn_end` imports the layers *before* any export, so a late enable can never overwrite the durable files with a never-imported store. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, counted in completed `turn_end` **events** (session-stable; pi's per-run `turnIndex` resets on every prompt). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped. At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |
@@ -734,15 +734,15 @@ defaults (the loader never throws).
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
 | `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
 | `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
-| `remindRefine.everyTurns` | `50` | int | Reminder cadence, counted in completed `turn_end` **events** (session-stable; pi's per-run `turnIndex` resets on every prompt). |
+| `remindRefine.everyTurns` | `50` | int | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped: the cadence counts completed turns of work. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
-| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
+| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. Aborted/error `turn_end`s (pi `BoundaryState.outcome`) are inert — they neither seed nor advance the completed-turn count, and a refine never fires over partial evidence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
-| `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
+| `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. With pi ≥ 1.1.0 the catalog also offers OpenAI's GPT-6 Luna (Decisions API, e.g. `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`, llama.cpp ≥ 0.6.0 — listed only as classifiers, ideal as a free local gate). Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
 | `virtualBinding` | `"virtual"` | `virtual` \| `physical` | How the per-model isolation key treats **virtual models** (routers). `virtual`: key = the selection's own id (pre-0.12 behavior). `physical`: when the selection is virtual, key = the physical model behind the latest successful response on the branch; before the first response the key is unknown (creates orphan, adopted on first contact). |
 
 ### Injection selection (on by default)
@@ -900,7 +900,10 @@ counters **reset on `session_start`**, so a forked/resumed session starts from a
 fresh baseline. Cadences count completed `turn_end` **events** — a
 session-stable ordinal — because pi's own `turnIndex` resets to 0 on every
 `agent_start` (each user prompt); counting events is what makes "every N
-turns" mean N prompts, not N turns inside one long run.
+turns" mean N prompts, not N turns inside one long run. Aborted/error
+`turn_end`s (pi's `BoundaryState.outcome`) are inert: they neither seed nor
+advance a cadence window (durable auto-export deliberately still exports —
+committed entries must not be lost).
 
 ### Reminder (`src/remind.ts`)
 
@@ -947,6 +950,11 @@ self-mutation**.
 - First observed turn seeds the baseline (no auto-refine on the seed turn); each
   fired refine resets the counter (so the refine turn can't immediately
   re-trigger).
+- **Aborted/error turns are inert** (pi `turn_end` `BoundaryState.outcome`):
+  they neither seed nor advance the cadence window — `everyTurns` counts
+  *completed* turns of work, and a refine never fires over a trajectory that
+  was cut off. (Durable auto-export deliberately still runs on such turns —
+  committed entries must not be lost.)
 
 This is the package's **first** opt-in autonomous-mutation path.
 
@@ -965,6 +973,10 @@ This is the package's **first** opt-in autonomous-mutation path.
   rollback, visible (notifies per turn).
 - **Seeding**: the first observed turn sets the scan cursor (no retroactive bump
   for the whole history). Enabling mid-session is safe.
+- **Completed turns only**: aborted/error `turn_end`s are skipped — their partial
+  assistant text is scanned by the next completed turn (the cursor holds). The
+  first observed `turn_end` seeds the cursor regardless of outcome, so the seed
+  turn's own text — partial or not — is never scanned (as before).
 
 This is the package's **second** opt-in autonomous-mutation path. It closes the
 outcome half of the fitness loop: useful items rise, ignored items keep decaying.
