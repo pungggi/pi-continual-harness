@@ -12,6 +12,27 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **`/harness setup` — guided configuration wizard (presets, reviewed
+  harness.json write)** — every opt-in feature used to require hand-editing
+  `~/.pi/agent/harness.json` with exact key spellings; the wizard replaces
+  that with presets, per-feature confirms, and one safe write. Flow: show
+  the current effective config (file merged over defaults) + durable-layer
+  paths; choose `quiet` (pin the shipped defaults), `recommended`
+  (`autoImport` + `importRemind` on, with a gate-readiness note), or `power`
+  (`recommended` + `autoRefine`); confirm each implied delta (autonomous
+  switches get their own explicit "mutates state on a cadence" confirm
+  regardless of preset); then write via the new `saveConfig` — timestamped
+  backup (`harness.json.bak-<timestamp>`), atomic same-dir write, unknown
+  keys preserved, and a reload that round-trips through the loader's
+  coercion path so the printed effective config is exactly what pi reads.
+  Scripted form: `/harness setup --preset recommended [--yes]` (`--yes` is
+  the scripted consent and skips every prompt). Any cancel/decline degrades
+  to no write; the wizard touches config files only — never harness state.
+  Preset values derive from `DEFAULT_CONFIG` (not hardcoded), so wizard and
+  loader cannot drift. Presets are pure data: `PRESETS` / `expandPreset` /
+  `planWrite` / `setPath` / `saveConfig` exported for tests and companions;
+  subcommand + `--preset`/`--yes` flags autocomplete in the TUI.
+
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce
   themselves. The session-start import lists **what arrived** (item id, kind,

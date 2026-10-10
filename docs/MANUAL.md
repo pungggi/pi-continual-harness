@@ -160,6 +160,10 @@ The package ships raw TypeScript; no compilation is needed.
 /harness status        # should report 0 active / 0 total, durable: none
 ```
 
+Then optionally run `/harness setup` (see
+[§5](#setup---preset-name---yes)) to pick a config preset instead of
+hand-editing `harness.json`.
+
 ---
 
 ## 3. Quick start
@@ -305,9 +309,10 @@ proposes evidence-backed CRUD deltas.
 Durable I/O and importance hygiene. The command registers argument
 autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
 menu of subcommands with a one-line help each; one level deeper it completes
-flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`), `--kind` / `--model`
-values, and `keep`/`drop` item ids straight from the live store. Path
-arguments intentionally get no menu (use editor path completion).
+flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--preset`,
+`--yes`), `--kind` / `--model` / `--preset` values, and `keep`/`drop` item
+ids straight from the live store. Path arguments intentionally get no menu
+(use editor path completion).
 
 Subcommands:
 
@@ -473,6 +478,49 @@ push (pi-mem gets a separate copy).
 Default scope is the `memory` kind (the clean 1:1 mapping); `--all` / `--kind`
 override; `--model` scopes to one owner model (default: every model; `active` =
 the model driving the command). See [§11](#11-compositions).
+
+#### `setup [--preset <name>] [--yes]`
+
+```
+/harness setup                          # interactive wizard
+/harness setup --preset recommended     # scripted preset (still confirms)
+/harness setup --preset power --yes     # scripted consent: no prompts
+```
+
+The **guided configuration wizard** (first-run setup). Editing
+`harness.json` by hand works, but exact key spellings are friction exactly
+where the compounding machinery turns on — so the wizard walks the config
+into place instead:
+
+1. **Current state** — shows the effective config (your file merged over the
+   shipped defaults) and both durable-layer paths.
+2. **Presets** — pure data, each shown as a declarative diff before anything
+   is applied:
+   - `quiet` — pins every opt-in feature key to the shipped defaults (an
+     explicit "all manual", not just an absent file).
+   - `recommended` — `autoImport: true` + the `importRemind` awareness
+     reminders, with a gate-readiness note (`classifier.model` +
+     `autoRefine.gate` are the later upgrade).
+   - `power` — `recommended` + `autoRefine: { enabled: true }`.
+3. **Per-feature confirms** — every delta gets its own confirm with a
+   one-line rationale; deltas already at their target value are not
+   re-asked. Autonomous switches (`autoImport`, `autoRefine.enabled`,
+   `outcomeImportance.enabled`) get their own explicit "this lets the agent
+   mutate state on a cadence" confirmation **regardless of preset**.
+4. **Reviewed write** — one `saveConfig` call: back up the existing file to
+   `harness.json.bak-<timestamp>`, atomically write the merged result
+   (unknown keys preserved), then reload and print the effective config —
+   round-tripped through the same loader/coercion path pi uses, so what you
+   saw is what pi reads.
+
+Preset values are **derived from the config module's defaults**, never
+hardcoded, so the wizard cannot drift when a default changes (e.g. the
+`importRemind` defaults). `--yes` is the scripted form of consent: it skips
+every prompt, including the autonomous confirms — that is its point. Any
+cancel, decline, or dismissed prompt degrades to **no write**; the wizard
+writes config files only and never touches harness state. When the UI has no
+blocking prompts, the interactive menu cancels itself — use the `--preset`
+form there.
 
 ---
 
@@ -643,6 +691,11 @@ never go unnoticed.
 ---
 
 ## 8. Configuration
+
+**First-run setup:** run `/harness setup` instead of editing this file by
+hand — see [§5](#setup---preset-name---yes). It shows the effective config,
+walks you through three presets, confirms each change (autonomous switches
+get their own explicit confirmation), and writes with a timestamped backup.
 
 Optional config at **`~/.pi/agent/harness.json`**. Missing or malformed →
 defaults (the loader never throws).

@@ -339,6 +339,7 @@ describe("/harness command", () => {
       "move",
       "split",
       "push-mem",
+      "setup",
     ]);
     for (const i of items) {
       expect(i.label).toBe(i.value); // label mirrors the subcommand name
@@ -400,6 +401,30 @@ describe("/harness command", () => {
       "push-mem --model active",
       "push-mem --model anthropic/sonnet",
       "push-mem --model google/gemini",
+    ]);
+  });
+
+  it("completes setup flags and --preset values (issue #22)", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    // fresh token → the setup flags
+    expect(complete("setup ")).toEqual([
+      { value: "setup --preset", label: "--preset", description: expect.any(String) },
+      { value: "setup --yes", label: "--yes", description: expect.any(String) },
+    ]);
+    // used flags are not re-offered
+    expect(complete("setup --yes --")).toEqual([
+      { value: "setup --yes --preset", label: "--preset", description: expect.any(String) },
+    ]);
+    // --preset completes the three preset names as full replacement values
+    expect(complete("setup --preset ")).toEqual([
+      { value: "setup --preset quiet", label: "quiet", description: expect.any(String) },
+      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
+      { value: "setup --preset power", label: "power", description: expect.any(String) },
+    ]);
+    expect(complete("setup --preset re")).toEqual([
+      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
     ]);
   });
 

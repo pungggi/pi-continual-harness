@@ -71,6 +71,7 @@ Durable I/O (round-trip with pi-reflect):
 /harness move <id> global|project  # move an item between durable layers
 /harness split                   # steer the agent to classify every item's scope
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
+/harness setup [--preset <quiet|recommended|power>] [--yes]  # guided config wizard
 ```
 
 Subcommands, flags, `--kind`/`--model` values, `move` scopes, and `keep`/
@@ -138,6 +139,27 @@ kind, or `--model <provider/id|active>` to scope the push to one model's items
 unchanged by a push — pi-mem gets a separate copy.
 
 ## Configuration
+
+**First-run setup:** instead of hand-editing the JSON below, run
+`/harness setup`. It is a guided wizard:
+
+1. Shows the **current effective config** (your file merged over the shipped
+   defaults) plus the durable-layer paths.
+2. Offers three **presets**: `quiet` (pin every opt-in to the shipped
+   defaults), `recommended` (`autoImport` + import reminders on), `power`
+   (`recommended` + `autoRefine`). Each preset is shown as a declarative diff
+   before anything is applied.
+3. Confirms **each delta** with a one-line rationale. Autonomous switches
+   get their own explicit "this lets the agent mutate state on a cadence"
+   confirmation regardless of preset.
+4. Writes via one reviewed path: backs up the existing file
+   (`harness.json.bak-<timestamp>`), atomically writes the merged result,
+   then reloads and prints the effective config exactly as pi will read it.
+
+For scripted setups: `/harness setup --preset recommended --yes` (the `--yes`
+flag is the scripted form of the confirmations, so it enables autonomous
+features without prompts). Cancelling anywhere degrades to **no write**; the
+wizard never touches harness state, only the config file.
 
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
 
