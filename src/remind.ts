@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
+import { turnEndedBadly } from "./auto-refine.js";
 
 // turnIndex of the last reminder (or the baseline we seeded from). -1 = unseen.
 let lastTurn = -1;
@@ -19,10 +20,13 @@ export function resetReminder(): void {
 /**
  * Decide whether to remind this turn. Side-effectful: the first observed turn
  * seeds the baseline (no reminder then), and each fired reminder resets it.
- * Returns true when it is time to nudge.
+ * Aborted/error turns are inert (they neither seed nor advance the window),
+ * so the cadence counts completed turns of work. Returns true when it is time
+ * to nudge.
  */
-export function evaluateReminder(config: HarnessConfig, turnIndex: number): boolean {
+export function evaluateReminder(config: HarnessConfig, turnIndex: number, outcome?: string): boolean {
   if (!config.remindRefine?.enabled) return false;
+  if (turnEndedBadly(outcome)) return false;
   const every = config.remindRefine.everyTurns ?? DEFAULT_EVERY_TURNS;
   if (every <= 0) return false;
   if (lastTurn < 0) {
@@ -40,7 +44,7 @@ export function evaluateReminder(config: HarnessConfig, turnIndex: number): bool
 export function registerReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    if (!evaluateReminder(config, event.turnIndex)) return;
+    if (!evaluateReminder(config, event.turnIndex, event.outcome)) return;
     const every = config.remindRefine?.everyTurns ?? DEFAULT_EVERY_TURNS;
     ctx.ui.notify(
       `${every} turns since the last check — consider running /refine to refine harness state.`,

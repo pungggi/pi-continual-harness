@@ -43,4 +43,13 @@ describe("evaluateReminder", () => {
     expect(evaluateReminder(noEvery, 49)).toBe(false);
     expect(evaluateReminder(noEvery, 50)).toBe(true); // default 50
   });
+
+  it("aborted/error turns neither seed nor advance the cadence window", () => {
+    const enabled = cfg({ remindRefine: { enabled: true, everyTurns: 5 } });
+    expect(evaluateReminder(enabled, 0, "aborted")).toBe(false); // no seed
+    expect(evaluateReminder(enabled, 2)).toBe(false); // seed at 2
+    expect(evaluateReminder(enabled, 6, "error")).toBe(false); // bad turn: no nudge
+    expect(evaluateReminder(enabled, 7)).toBe(true); // 7 - 2 >= 5
+    expect(evaluateReminder(enabled, 12, undefined)).toBe(true); // undefined = completed
+  });
 });

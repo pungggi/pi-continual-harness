@@ -25,6 +25,12 @@
 //    sendUserMessage when the boundary cannot continue (event.context.
 //    canContinue false, e.g. after an error turn).
 //
+// Aborted/error turns are inert here: a turn_end whose BoundaryState.outcome
+// is "aborted" or "error" neither seeds nor advances the cadence window, so
+// "every N turns" counts completed turns of work and a refine never fires
+// over partial evidence. (Durable auto-export deliberately still exports on
+// such turns — committed entries must not be lost.)
+//
 // It stays visible: it notifies before firing, and the boundary draft (and the
 // gate decision) appear in the transcript. The decision logic is factored into
 // evaluateAutoRefine() so it is unit-testable without a live pi runtime.
@@ -43,12 +49,25 @@ export function resetAutoRefine(): void {
 }
 
 /**
+ * True when a turn_end's outcome marks a turn that ended badly (pi's
+ * BoundaryState.outcome: "aborted" | "error"). Undefined is treated as
+ * completed — current pi always reports the field, but synthetic events and
+ * the earliest 0.99.x may omit it.
+ */
+export function turnEndedBadly(outcome?: string): boolean {
+  return outcome === "aborted" || outcome === "error";
+}
+
+/**
  * Decide whether to auto-refine this turn. Side-effectful: the first observed
  * turn seeds the baseline (no refine then); each fired refine resets it, which
  * also prevents the refine turn itself from immediately re-triggering.
+ * Aborted/error turns are inert: they neither seed nor advance the window —
+ * the cadence counts completed turns of work only.
  */
-export function evaluateAutoRefine(config: HarnessConfig, turnIndex: number): boolean {
+export function evaluateAutoRefine(config: HarnessConfig, turnIndex: number, outcome?: string): boolean {
   if (!config.autoRefine?.enabled) return false;
+  if (turnEndedBadly(outcome)) return false;
   const every = config.autoRefine.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
   if (every <= 0) return false;
   if (lastTurn < 0) {
@@ -112,7 +131,7 @@ export function buildOmissionDrafts(projected: Iterable<ProjectedLike>): Omissio
 export function registerAutoRefine(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    if (!evaluateAutoRefine(config, event.turnIndex)) return;
+    if (!evaluateAutoRefine(config, event.turnIndex, event.outcome)) return;
     const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
 
     // Opt-in classifier gate: cheap yes/no before spending the refine.

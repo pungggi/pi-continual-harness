@@ -673,6 +673,46 @@ describe("runRefine + auto-refine", () => {
     }
   });
 
+  it("turn_end with an aborted/error outcome never triggers auto-refine", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-outcome-guard-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile);
+    try {
+      const { pi, fire, ctx, sentMessages, entries } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ]);
+      continualHarness(pi);
+
+      // Seed on a completed turn; each aborted/error turn would fire at
+      // everyTurns=1 if the outcome were ignored. None may produce a boundary
+      // continuation, an audit entry, or a steering send.
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx());
+      for (const outcome of ["aborted", "error"]) {
+        const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true }, outcome }, ctx())) as Array<
+          { continue?: boolean } | undefined
+        >;
+        expect(rets.find((r) => r?.continue === true)).toBeUndefined();
+      }
+      expect(sentMessages).toHaveLength(0);
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(0);
+
+      // The aborted turns did not advance the window: the next COMPLETED turn
+      // still fires (2 - 0 >= 1 from the seed).
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx())) as Array<
+        { continue?: boolean } | undefined
+      >;
+      expect(rets.find((r) => r?.continue === true)).toBeDefined();
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("boundary omits stale auto-refine drafts from future context (pi ≥ 0.87 context edits); kill-switch off", async () => {
     resetAutoRefine();
     resetConfigCache();

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { buildOmissionDrafts, evaluateAutoRefine, resetAutoRefine, type ProjectedLike } from "../src/auto-refine.js";
+import { buildOmissionDrafts, evaluateAutoRefine, resetAutoRefine, turnEndedBadly, type ProjectedLike } from "../src/auto-refine.js";
 import type { HarnessConfig } from "../src/config.js";
 
 const cfg = (over: Partial<HarnessConfig> = {}): HarnessConfig => ({
@@ -75,5 +75,28 @@ describe("evaluateAutoRefine", () => {
     expect(evaluateAutoRefine(noEvery, 0)).toBe(false); // seed
     expect(evaluateAutoRefine(noEvery, 99)).toBe(false);
     expect(evaluateAutoRefine(noEvery, 100)).toBe(true); // default 100
+  });
+
+  it("aborted/error turns neither seed nor advance the cadence window", () => {
+    const enabled = cfg({ autoRefine: { enabled: true, everyTurns: 10 } });
+    // A bad first turn does not seed; the first COMPLETED turn does.
+    expect(evaluateAutoRefine(enabled, 0, "aborted")).toBe(false);
+    expect(evaluateAutoRefine(enabled, 5, "error")).toBe(false); // also no seed
+    expect(evaluateAutoRefine(enabled, 5)).toBe(false); // seed at 5
+    // Bad turns inside the window don't fire and don't reset anything…
+    expect(evaluateAutoRefine(enabled, 14, "aborted")).toBe(false);
+    // …so the window still counts completed turns from the seed.
+    expect(evaluateAutoRefine(enabled, 15)).toBe(true); // 15 - 5 >= 10
+    // Undefined outcome is treated as completed (synthetic / early 0.99.x).
+    expect(evaluateAutoRefine(enabled, 25, undefined)).toBe(true);
+  });
+});
+
+describe("turnEndedBadly", () => {
+  it("is true only for aborted and error outcomes", () => {
+    expect(turnEndedBadly("aborted")).toBe(true);
+    expect(turnEndedBadly("error")).toBe(true);
+    expect(turnEndedBadly("completed")).toBe(false);
+    expect(turnEndedBadly(undefined)).toBe(false);
   });
 });

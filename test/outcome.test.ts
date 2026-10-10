@@ -124,6 +124,35 @@ describe("registerOutcome handler", () => {
     expect(notifications.some((n) => /referenced item/.test(n.msg))).toBe(true);
   });
 
+  it("skips aborted/error turns; the next completed turn scans the deferred text", async () => {
+    await setConfig(true, 0.05);
+    seedItem("h_abc", 0.5);
+    const branch = [asst("seed")];
+    const { pi, handlers, ctx, notifications, entries } = makeMini(branch);
+    registerOutcome(pi);
+
+    // Seed on a completed turn, then an aborted turn whose PARTIAL assistant
+    // message cites the item: no scan, no cursor advance, no bump, no persist.
+    await handlers.get("turn_end")!({ turnIndex: 0 }, ctx());
+    branch.push(asst("partial output citing [h_abc]"));
+    await handlers.get("turn_end")!({ turnIndex: 1, outcome: "aborted" }, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.5);
+    expect(notifications).toHaveLength(0);
+    expect(entries).toHaveLength(0);
+
+    // The next completed turn scans the aborted turn's text together with its
+    // own — the citation is counted then (cursor held through the abort).
+    branch.push(asst("final message"));
+    await handlers.get("turn_end")!({ turnIndex: 2 }, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.55);
+    expect(notifications.some((n) => /referenced item/.test(n.msg))).toBe(true);
+
+    // An error outcome behaves the same way (skipped).
+    branch.push(asst("another partial [h_abc]"));
+    await handlers.get("turn_end")!({ turnIndex: 3, outcome: "error" }, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.55);
+  });
+
   it("is inert when outcomeImportance is disabled (the default)", async () => {
     await setConfig(false);
     seedItem("h_abc", 0.5);
