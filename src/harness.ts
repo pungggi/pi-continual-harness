@@ -5,6 +5,9 @@
 //   /harness import [--prune] [path]     layered import (or single file from path)
 //   /harness move <id> <global|project>  move an item between durable layers
 //   /harness split                       steer the agent to classify scopes
+//   /harness adopt --from <provider/id> [--all]
+//                                         steer the agent to adopt another
+//                                         model's items (copy, not move)
 //   /harness setup [--preset <name>] [--yes]  guided config wizard (issue #22)
 //
 // The command registers getArgumentCompletions so the TUI offers a filtered
@@ -69,6 +72,7 @@ const SUBCOMMANDS: CompletionEntry[] = [
   { name: "drop", description: "Lower item importance (−0.1)" },
   { name: "move", description: "Move an item between durable scopes (global | project)" },
   { name: "split", description: "Steer the agent to classify every item global vs project" },
+  { name: "adopt", description: "Steer the agent to adopt another model's items (--from <provider/id> [--all])" },
   { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
   { name: "setup", description: "Guided config wizard — presets: quiet | recommended | power (--yes for scripted)" },
 ];
@@ -83,6 +87,10 @@ const FLAGS: Record<string, CompletionEntry[]> = {
     { name: "--all", description: "Push every active item, not just memories" },
     { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
     { name: "--model", description: "Limit to one owner model (provider/id or \"active\")" },
+  ],
+  adopt: [
+    { name: "--from", description: "Source model (provider/id) whose active items are up for adoption" },
+    { name: "--all", description: "Adopt everything; skip the generalizes-vs-stays filter" },
   ],
   setup: [
     { name: "--preset", description: "Apply one preset: quiet | recommended | power" },
@@ -148,6 +156,18 @@ function completions(argumentPrefix: string) {
   }
   if (prev === "--preset" && sub === "setup") {
     return filterValues(PRESET_COMPLETIONS, last, before);
+  }
+  // --from completes from the model keys actually present in the store (the
+  // adoption source pool), with each owner's active-item count as the help
+  // line — the same store-backed completion style as --model above.
+  if (prev === "--from" && sub === "adopt") {
+    return filterValues(
+      [...activeOwnerCounts().entries()].map(
+        ([m, n]) => ({ value: m, description: `${n} active item(s) owned by this model` }),
+      ),
+      last,
+      before,
+    );
   }
 
   // Flag completion ("--…" prefix, or a fresh token for flag-taking subs).
@@ -220,7 +240,7 @@ export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
     description:
       "Durable harness-state I/O + importance hygiene " +
-      "(import · export · status · prune · keep · drop · push-mem — " +
+      "(import · export · status · adopt · prune · keep · drop · push-mem — " +
       "subcommands autocomplete as you type)",
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
@@ -250,6 +270,9 @@ export function registerHarness(pi: ExtensionAPI): void {
           return;
         case "split":
           await handleSplit(pi, ctx);
+          return;
+        case "adopt":
+          await handleAdopt(pi, ctx, rest);
           return;
         case "push-mem":
           await handlePushMem(pi, ctx, rest);
@@ -502,6 +525,143 @@ async function handleSplit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
   }
   pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd));
   ctx.ui.notify(`Steering agent to classify ${items.length} item(s) global vs project "${projectSlug(ctx.cwd)}".`, "info");
+}
+
+/** Active items grouped by owning model key ("provider/id" → count). The
+ *  adoption source pool — powers --from completion and the unknown-model
+ *  diagnosis. Orphans (owner "") are excluded: they are adopted automatically
+ *  on first contact, not via /harness adopt. */
+function activeOwnerCounts(): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const i of getState().items) {
+    if (i.active && i.ownerModel) counts.set(i.ownerModel, (counts.get(i.ownerModel) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Upper bound on one adoption batch. Matches harness_mutate's per-call delta
+ *  cap (maxItems: 20 in tools.ts) so the steered agent can land the WHOLE
+ *  adoption in ONE audited, rollback-able batch — the property /tree rollback
+ *  and the audit story rely on. Keep the two constants in sync. */
+export const ADOPT_BATCH_CAP = 20;
+
+/** Select a source model's active items for adoption: importance desc (ties
+ *  keep store order — the same stable policy as injection selection), capped
+ *  to ADOPT_BATCH_CAP. A huge source harness adopts its best items first; the
+ *  notify/prompt surface the truncation so nothing is silently lost. */
+export function selectAdoptSource(items: HarnessItem[]): HarnessItem[] {
+  return items
+    .filter((i) => i.active)
+    .map((i, idx) => [i, idx] as const)
+    .sort((a, b) => b[0].importance - a[0].importance || a[1] - b[1])
+    .map(([i]) => i)
+    .slice(0, ADOPT_BATCH_CAP);
+}
+
+/** Compose the /harness adopt steering message (issue #21): the agent
+ *  classifies each source item generalizes-vs-stays (unless --all) and applies
+ *  the adoption as ONE harness_mutate batch of create deltas — copy, not move:
+ *  the source model's harness stays untouched, and because ownerModel is not
+ *  exposed to the model, the creates stamp to the ACTIVE model via the normal
+ *  create-stamping path. Pure: (items, fromKey, opts) → string. */
+export function buildAdoptPrompt(
+  items: HarnessItem[],
+  fromKey: string,
+  opts: { all?: boolean } = {},
+): string {
+  const lines = [
+    `/harness adopt${opts.all ? " --all" : ""} — ${items.length} item(s) up for adoption from ${fromKey}`,
+    "",
+  ];
+  if (opts.all) {
+    lines.push(
+      "`--all` skips the filter: adopt EVERY item below.",
+      "",
+    );
+  } else {
+    lines.push(
+      "For EACH item below, decide whether it transfers into YOUR harness:",
+      "- `generalizes` — model-agnostic knowledge (engineering practices, user preferences, project facts): ADOPT it.",
+      `- \`stays\` — specific to ${fromKey} (its quirks, formatting preferences, failure modes): SKIP it.`,
+      "",
+      "The filter decides WHETHER an item transfers — never rewrite its content (anti-collapse).",
+      "",
+    );
+  }
+  lines.push(
+    "Apply the adoption in ONE harness_mutate call of create deltas ONLY (a create per adopted item), e.g.",
+    `{ "op": "create", "kind": "memory", "content": "<source content, copied verbatim>", "evidence": "<source evidence> (adopted from ${fromKey})", "importance": 0.62 }`,
+    "Rules:",
+    "- This is COPY, not move — never update or delete the source items (they belong to " + fromKey + ").",
+    "- Never set ownerModel — creates stamp to the active model automatically.",
+    "- Copy content VERBATIM and carry over kind, importance, and durable scope (a project item keeps { \"scope\": \"project\" }, stamped to THIS session's slug).",
+    "- Skip an item whose content you already own; overlaps clean up later with `/refine --proposer dedupe`.",
+    opts.all
+      ? "- Summarize at the end: adopted N item(s), skipped any you already owned."
+      : "- Summarize at the end: adopted N, skipped M (stays) — with one short reason per skip.",
+    "",
+    "Items:",
+  );
+  items.forEach((i, n) => {
+    lines.push(
+      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
+      `   evidence: ${i.evidence}`,
+    );
+  });
+  return lines.join("\n");
+}
+
+/** `/harness adopt --from <provider/id> [--all]` (issue #21) — the reviewable
+ *  path for carrying OWNED items across models (orphan adoption only covers
+ *  unowned ones). Manual and explicit only: collect the source model's active
+ *  items (importance-ordered, batch-capped), steer the agent to filter + copy
+ *  them via harness_mutate creates stamped to the ACTIVE model. The command
+ *  itself never mutates — the mutation it steers is audited and /tree-
+ *  rollback-able, exactly like split and push-mem. */
+async function handleAdopt(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  rest: string[],
+): Promise<void> {
+  const fromIdx = rest.indexOf("--from");
+  const from = fromIdx >= 0 && fromIdx + 1 < rest.length && !rest[fromIdx + 1]!.startsWith("--")
+    ? rest[fromIdx + 1]!
+    : undefined;
+  if (!from) {
+    ctx.ui.notify(
+      "/harness adopt requires --from <provider/id> (the source model; values complete from the models in the store).",
+      "warning",
+    );
+    return;
+  }
+  // Adopting from the active model could only duplicate items it already
+  // owns — point the user at another model instead.
+  const active = modelKey(ctx.model);
+  if (from === active) {
+    ctx.ui.notify(
+      `${from} is already the active model's harness — adopt copies from ANOTHER model (see /harness status for the models in the store).`,
+      "warning",
+    );
+    return;
+  }
+  const pool = getState().items.filter((i) => i.active && i.ownerModel === from);
+  if (pool.length === 0) {
+    const owners = activeOwnerCounts();
+    ctx.ui.notify(
+      owners.size === 0
+        ? "No active items in the harness — nothing to adopt from."
+        : `No active items owned by ${from}. Model(s) in the store: ${[...owners.entries()].map(([m, n]) => `${m} (${n})`).join(", ")}.`,
+      "warning",
+    );
+    return;
+  }
+  const items = selectAdoptSource(pool);
+  const capped = items.length < pool.length ? ` (capped to the ${items.length} highest-importance of ${pool.length})` : "";
+  pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }));
+  ctx.ui.notify(
+    `Steering agent to ${rest.includes("--all") ? "adopt" : "review for adoption"} ${items.length} item(s) from ${from}${capped}.`,
+    "info",
+  );
 }
 
 /** Compose a steering message that asks the agent to persist the given active

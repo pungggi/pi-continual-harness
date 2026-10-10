@@ -38,6 +38,29 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Added
 
+- **Cross-model adoption: `/harness adopt --from <provider/id> [--all]`**
+  (issue #21) — the audited, agent-filtered path for carrying **owned** items
+  across models (per-model isolation starts every new model id on a blank
+  harness; orphan adoption only covered *unowned* items). Steers the agent to
+  classify the source model's active items **generalizes** (model-agnostic:
+  engineering practices, user preferences, project facts) vs **stays** (that
+  model's quirks, formatting preferences, failure modes), then apply ONE
+  `harness_mutate` batch of create deltas — **copy, not move**: the source
+  harness is never touched, content is copied verbatim, evidence is annotated
+  `adopted from <provider/id>`, and because `ownerModel` is never
+  model-settable the creates stamp to the **active** model via the existing
+  create-stamping path (audited, `/tree`-rollback-able). `--all` adopts
+  everything without the filter. The batch is capped at 20 items (matching
+  `harness_mutate`'s per-call delta limit so the whole adoption fits one
+  batch), keeping the highest-importance items first and announcing any
+  truncation. Guards: missing `--from`, empty store, unknown model (warning
+  lists the owners present, with counts), self-adopt. `--from` values
+  complete from the model keys in the store. Overlaps afterwards are the
+  dedupe proposer's job: `/refine --proposer dedupe`. No automatic adoption
+  exists — explicit, manual, reviewable only. `buildAdoptPrompt`,
+  `selectAdoptSource`, and `ADOPT_BATCH_CAP` re-exported from the package
+  entry.
+
 - **`/harness setup` — guided configuration wizard (presets, reviewed
   harness.json write)** — every opt-in feature used to require hand-editing
   `~/.pi/agent/harness.json` with exact key spellings; the wizard replaces
