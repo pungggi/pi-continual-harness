@@ -224,7 +224,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
   turn's output. Citations are read from completed turns only — an aborted
-  turn's partial text is scanned by the next completed turn. Referenced items
+  turn's partial text is scanned by the next completed turn (the initial seed
+  turn itself is never scanned, as before). Referenced items
   gain importance and get their `updatedAt`
   touched (so they survive time-based decay); ignored items keep decaying. This
   is the package's second opt-in autonomous path — promotion only, never

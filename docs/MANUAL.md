@@ -656,9 +656,9 @@ defaults (the loader never throws).
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
 | `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
 | `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
-| `remindRefine.everyTurns` | `50` | int | Reminder cadence. Aborted/error `turn_end`s are skipped — the cadence counts completed turns. |
+| `remindRefine.everyTurns` | `50` | int | Reminder cadence. Aborted/error `turn_end`s are skipped — the cadence counts completed turns, not raw turn indices. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
-| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. Aborted/error `turn_end`s (pi `BoundaryState.outcome`) are inert — they neither seed nor advance the window, and a refine never fires over partial evidence. |
+| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. Aborted/error `turn_end`s (pi `BoundaryState.outcome`) are inert — they neither seed nor advance the completed-turn count, and a refine never fires over partial evidence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
@@ -889,7 +889,9 @@ This is the package's **first** opt-in autonomous-mutation path.
 - **Seeding**: the first observed turn sets the scan cursor (no retroactive bump
   for the whole history). Enabling mid-session is safe.
 - **Completed turns only**: aborted/error `turn_end`s are skipped — their partial
-  assistant text is scanned by the next completed turn (the cursor holds).
+  assistant text is scanned by the next completed turn (the cursor holds). The
+  first observed `turn_end` seeds the cursor regardless of outcome, so the seed
+  turn's own text — partial or not — is never scanned (as before).
 
 This is the package's **second** opt-in autonomous-mutation path. It closes the
 outcome half of the fitness loop: useful items rise, ignored items keep decaying.

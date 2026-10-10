@@ -14,16 +14,18 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 - **Aborted/error turns are inert (pi `turn_end` `BoundaryState.outcome`)** —
   a `turn_end` whose outcome is `"aborted"` or `"error"` no longer counts
-  toward the auto-refine or reminder cadence (it neither seeds nor advances
-  the window, so `everyTurns` counts *completed* turns of work) and the
-  outcome loop defers scanning such a turn's partial assistant text to the
-  next completed turn — a refine can no longer fire, and the classifier gate
-  no longer judges, a trajectory that was cut off. A missing outcome
-  (synthetic events, earliest 0.99.x) is treated as completed. Durable
-  auto-export deliberately still exports on aborted turns (committed entries
-  must not be lost). Pure `turnEndedBadly()` re-exported from the package
-  entry; `evaluateAutoRefine`/`evaluateReminder` accept an optional `outcome`
-  argument.
+  toward the auto-refine or reminder cadence: both windows now count
+  *completed* turns (never raw turn indices, so an aborted turn in between
+  cannot shorten a window). The outcome loop seeds its scan cursor on the
+  first observed `turn_end` regardless of outcome, then defers an aborted
+  turn's partial assistant text to the next completed turn — a refine can no
+  longer fire, and the classifier gate no longer judges, a trajectory that
+  was cut off. A missing outcome (synthetic events, earliest 0.99.x) is
+  treated as completed. Durable auto-export deliberately still exports on
+  aborted turns (committed entries must not be lost). Pure `turnEndedBadly()`
+  re-exported from the package entry; `evaluateAutoRefine`/`evaluateReminder`
+  accept an optional `outcome` argument (the dead `turnIndex` parameter was
+  dropped — the count replaced the index arithmetic).
 - **pi 1.1.0 classifier catalog documented** — `classifier.model` accepts the
   new entries with no code change: OpenAI's GPT-6 Luna (Decisions API, e.g.
   `openai/gpt-6-luna`, needs `OPENAI_API_KEY`) and the native llama.cpp
