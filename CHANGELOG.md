@@ -8,6 +8,21 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.15.1] — 2026-10-11
+
+### Fixed
+
+- **`/refine` crash on plain-string message content** — pi messages carry
+  `content` as a plain string OR an array of content blocks depending on the
+  message source; both trajectory readers (`gatherEvidence` behind `/refine`,
+  and the opt-in `outcomeImportance` loop's `turn_end` scan) assumed blocks and
+  threw `((intermediate value) ?? []).map is not a function` the moment a
+  branch contained a string-content message. Both now flatten through one
+  shared pure helper, `messageText()` (re-exported from the package entry):
+  strings pass through, block arrays join on spaces, and any other shape
+  degrades to `""` instead of throwing. No behavior change otherwise —
+  citations, evidence lines, and cadences are untouched.
+
 ## [0.15.0] — 2026-10-11
 
 The activation, visibility, and onboarding release: issues **#19–#22**
@@ -473,6 +488,7 @@ output survive into new sessions without export/import ceremony.
 - Layered import handles the same id in **both** layers (project copy wins,
   no duplicate items).
 
+[0.15.1]: https://github.com/pungggi/pi-continual-harness/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/pungggi/pi-continual-harness/compare/v0.13.0...v0.15.0
 [0.9.0]: https://github.com/pungggi/pi-continual-harness/compare/v0.8.1...v0.9.0
 

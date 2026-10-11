@@ -26,13 +26,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
 import { turnEndedBadly } from "./auto-refine.js";
 import { bumpImportance, getState, modelKey } from "./store.js";
+import { messageText } from "./refine.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
+// Message content is a plain string OR a block array depending on the source.
 type AnyEntry = {
   type?: string;
   message?: {
     role?: string;
-    content?: Array<{ type?: string; text?: string }>;
+    content?: string | Array<{ type?: string; text?: string }>;
   };
 };
 
@@ -88,9 +90,7 @@ export function registerOutcome(pi: ExtensionAPI): void {
     const fresh = asst.slice(scannedMessages);
     scannedMessages = asst.length;
 
-    const text = fresh
-      .map((e) => (e.message?.content ?? []).map((c) => c.text ?? "").join(" "))
-      .join("\n");
+    const text = fresh.map((e) => messageText(e.message?.content)).join("\n");
     if (!text.trim()) return;
 
     // Only the active model's items are injected, so only those can be cited.

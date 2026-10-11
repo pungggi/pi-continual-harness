@@ -31,15 +31,27 @@ const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
 
 // Minimal entry shape for trajectory walking; kept loose to avoid coupling to
-// pi's internal session entry types.
+// pi's internal session entry types. NOTE: message content is a plain string
+// OR a block array depending on the message source — never assume either.
 type AnyEntry = {
   type?: string;
   customType?: string;
   message?: {
     role?: string;
-    content?: Array<{ type?: string; text?: string }>;
+    content?: string | Array<{ type?: string; text?: string }>;
   };
 };
+
+/**
+ * Flatten a pi message content to plain text. Pi messages carry content as a
+ * plain string or as an array of content blocks (text blocks carry `.text`);
+ * anything else degrades to "" instead of throwing. Pure.
+ */
+export function messageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((c) => c?.text ?? "").join(" ");
+}
 
 export function registerRefine(pi: ExtensionAPI): void {
   pi.registerCommand("refine", {
@@ -268,9 +280,7 @@ export function gatherEvidence(ctx: ExtensionContext, lookback: number): string 
   let bytes = 0;
   for (const e of recent) {
     const role = e.message?.role ?? "?";
-    const text = (e.message?.content ?? [])
-      .map((c) => c.text ?? "")
-      .join(" ")
+    const text = messageText(e.message?.content)
       .replace(/\s+/g, " ")
       .trim();
     if (!text) continue;
