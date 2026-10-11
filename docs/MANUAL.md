@@ -817,7 +817,7 @@ defaults (the loader never throws).
   "proposer": "steering",                   // steering | dedupe | <custom>
   "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
-  "remindRefine":  { "enabled": false, "everyTurns": 50 },
+  "remindRefine":  { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "omitStaleDrafts": true },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "classifier":    { "model": "typesafe/jev-latest" },   // opt-in classifier (pi ≥ 0.99)
@@ -839,8 +839,9 @@ defaults (the loader never throws).
 | `injection.maxTokens` | `1500` | number > 0 | Total token budget for the rendered block (intro + headers + items). |
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
 | `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
-| `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
-| `remindRefine.everyTurns` | `50` | int | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped: the cadence counts completed turns of work. |
+| `remindRefine.enabled` | `true` | bool | The **activation nudge** (ON by default, issue #19): a `turn_end` `/refine` reminder. Informational, never mutates. `false` restores the old silence. |
+| `remindRefine.everyTurns` | `25` | int ≥ 1 | Nudge cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped; the first observed completed turn seeds the baseline. Non-integer/sub-1 values coerce to the default. |
+| `remindRefine.detailEvery` | `4` | int ≥ 1 | Every Nth fired reminder is the detailed educational guide instead of the one-line nudge (`1` = every reminder). At the defaults that is roughly every 100 completed turns. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
 | `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. Aborted/error `turn_end`s (pi `BoundaryState.outcome`) are inert — they neither seed nor advance the completed-turn count, and a refine never fires over partial evidence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
@@ -1001,10 +1002,11 @@ Then `my-proposer` is selectable via `/refine --proposer my-proposer` or
 
 ## 10. Autonomous features
 
-Three `turn_end` hooks. **All are opt-in and off by default.** All cadence
-counters **reset on `session_start`**, so a forked/resumed session starts from a
-fresh baseline. Cadences count completed `turn_end` **events** — a
-session-stable ordinal — because pi's own `turnIndex` resets to 0 on every
+Three `turn_end` hooks. The reminder nudge is **ON by default** (issue #19);
+auto-refine and the outcome loop are **opt-in and off by default**. All
+cadence counters **reset on `session_start`**, so a forked/resumed session
+starts from a fresh baseline. Cadences count completed `turn_end` **events** —
+a session-stable ordinal — because pi's own `turnIndex` resets to 0 on every
 `agent_start` (each user prompt); counting events is what makes "every N
 turns" mean N prompts, not N turns inside one long run. Aborted/error
 `turn_end`s (pi's `BoundaryState.outcome`) are inert: they neither seed nor
@@ -1013,13 +1015,27 @@ committed entries must not be lost).
 
 ### Reminder (`src/remind.ts`)
 
-`remindRefine: { enabled, everyTurns }` — informational only.
+`remindRefine: { enabled, everyTurns, detailEvery }` — informational only.
 
-- Fires every `everyTurns` (default **50**) completed turns.
-- Notifies you to run `/refine`. **Never mutates state.**
-- First observed turn seeds the baseline (no reminder on the seed turn).
+- Fires every `everyTurns` (default **25**) completed turns.
+- **Short tier** (the usual fire): a one-line nudge to run `/refine`,
+  garnished with cheap facts from the live store — "12 active item(s),
+  4 never cited since creation" (never-cited = `updatedAt === createdAt`;
+  citations and updates both touch `updatedAt`). An empty store gets
+  first-run guidance instead of counts.
+- **Detailed tier**: every `detailEvery`-th fired reminder (default **4**, so
+  roughly every 100 turns at the default cadence) escalates to a rotating
+  educational guide: the improvement loop (three alternating descriptions),
+  the `/refine` workflow, `keep`/`drop`/`prune --decay` hygiene, `push-mem`,
+  `split`, `export-corpus`, and a recommended starter config. Rotation is
+  derived from the fire count — no new persisted state.
+- **Never mutates state.** `enabled: false` silences both tiers.
+- First observed **completed** turn seeds the baseline (no reminder on the
+  seed turn). Aborted/error `turn_end`s are inert: they neither seed nor
+  advance the count, so `everyTurns` counts completed turns of work.
 
-This is the gentlest option — autonomy without mutation.
+This is the gentlest option — autonomy without mutation (notify-only, which
+is why it could safely default on).
 
 ### Auto-refine (`src/auto-refine.ts`)
 
@@ -1348,7 +1364,8 @@ to the current turn) on top (see [§8 → Injection selection](#injection-select
 | Evidence byte cap | `16000` | `refine.ts` `DEFAULT_EVIDENCE_BYTES` |
 | `keep` / `drop` nudge | `±0.1` | `harness.ts` |
 | Decay step | `0.1` per aging pass | `store.ts` `decayAndPrune` |
-| Reminder cadence | `50` turns | `config.ts` `DEFAULT_EVERY_TURNS` |
+| Reminder cadence | `25` turns | `config.ts` `DEFAULT_EVERY_TURNS` |
+| Reminder detail cadence | every `4`th reminder | `config.ts` `DEFAULT_DETAIL_EVERY` |
 | Auto-refine cadence | `100` turns | `config.ts` `DEFAULT_AUTO_EVERY_TURNS` |
 | Outcome bump | `0.03` per reference | `config.ts` `DEFAULT_REF_BUMP` |
 | Injection enabled | `true` (on by default; opt-out) | `select.ts` `DEFAULT_INJECTION` |

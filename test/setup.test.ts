@@ -54,20 +54,28 @@ describe("presets (pure data)", () => {
     }
   });
 
-  it("quiet pins every opt-in feature key to the shipped default", () => {
+  it("quiet pins every opt-in feature key to the shipped default (the notify-only nudge is silenced)", () => {
     const quiet = expandPreset("quiet")!;
     const paths = quiet.deltas.map((d) => d.path);
     expect(paths).toEqual(["autoImport", "importRemind", "remindRefine", "autoRefine", "outcomeImportance"]);
     for (const d of quiet.deltas) {
+      if (d.path === "remindRefine") continue; // the deliberate exception
       expect(d.value).toEqual(getPath(DEFAULT_CONFIG, d.path));
     }
+    // The one deliberate divergence from "pin the defaults": the /refine
+    // activation nudge is default-ON (issue #19) and notify-only — quiet
+    // means silence, so it is explicitly disabled (cadences stay derived).
+    expect(getPath(planWrite(undefined, quiet.deltas), "remindRefine")).toEqual({
+      ...DEFAULT_CONFIG.remindRefine,
+      enabled: false,
+    });
     // Nothing in quiet enables an autonomous switch.
     expect(getPath(planWrite(undefined, quiet.deltas), "autoImport")).toBe(false);
     expect(getPath(planWrite(undefined, quiet.deltas), "autoRefine.enabled")).toBe(false);
     expect(getPath(planWrite(undefined, quiet.deltas), "outcomeImportance.enabled")).toBe(false);
   });
 
-  it("recommended = autoImport on (autonomous flag) + importRemind at the config-module default", () => {
+  it("recommended = autoImport on (autonomous flag) + importRemind and remindRefine at the config-module defaults", () => {
     const rec = expandPreset("recommended")!;
     const auto = rec.deltas.find((d) => d.path === "autoImport")!;
     expect(auto.value).toBe(true);
@@ -77,6 +85,11 @@ describe("presets (pure data)", () => {
     // Coordinated with #19: the value IS the loader's default, whatever it is.
     expect(remind.value).toEqual(DEFAULT_CONFIG.importRemind);
     expect(remind.autonomous).toBeFalsy();
+    // The #19 activation nudge is a first-class (visible) delta too — pinned
+    // to the loader's default so the wizard review shows it either way.
+    const nudge = rec.deltas.find((d) => d.path === "remindRefine")!;
+    expect(nudge.value).toEqual(DEFAULT_CONFIG.remindRefine);
+    expect(nudge.autonomous).toBeFalsy(); // notify-only, never mutates
   });
 
   it("power = recommended + autoRefine enabled (autonomous flag, default cadence)", () => {

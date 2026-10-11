@@ -90,7 +90,7 @@ export function summarizeImported(items: ImportedRef[], max = 5): string[] {
     const c = i.content.length > 70 ? `${i.content.slice(0, 69)}…` : i.content;
     return `• [${i.id}] (${i.kind}) ${c}`;
   });
-  if (items.length > max) lines.push(`(+${items.length - max} more — see harness_list)`);
+  if (items.length > max) lines.push(`(+${items.length - max} more — full list via the agent's harness_list tool)`);
   return lines;
 }
 
@@ -201,7 +201,7 @@ export function registerImportReminder(pi: ExtensionAPI): void {
       .join(", ");
     ctx.ui.notify(
       `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
-        `Review with the harness_list tool; disable reminders via "importRemind": { "enabled": false } in harness.json.`,
+        `Review via the agent's harness_list tool; disable reminders via "importRemind": { "enabled": false } in harness.json.`,
       "info",
     );
   });

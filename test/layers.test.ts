@@ -101,7 +101,8 @@ describe("/harness layered I/O (real path layout, fake HOME)", () => {
     expect(byId.get("h_dup")!.content).toBe("fresh project copy"); // later layer wins
     expect(byId.get("h_dup")!.scope).toBe("project");
     expect(store.getState().items.filter((i) => i.id === "h_dup")).toHaveLength(1); // no dup
-    expect(notifications.some((n) => /Imported 4 item\(s\)/.test(n.msg))).toBe(true);
+    // Distinct count: h_dup's two copies are ONE item (review #28).
+    expect(notifications.some((n) => /Imported 3 item\(s\)/.test(n.msg))).toBe(true);
   });
 
   it("import warns when neither layer exists", async () => {

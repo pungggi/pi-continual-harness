@@ -10,6 +10,68 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ## [Unreleased]
 
+### Changed
+
+- **`remindRefine` defaults flipped: on, every 25 turns** (issue #19). Fresh
+  installs were silent, so the cheapest activation lever (a notify-only
+  nudge) never fired. A reminder mutates nothing, which keeps the "manual by
+  default" safety posture intact while the `/refine` habit gets built for
+  you. **Migration note for existing silent-by-default users:** if your
+  `harness.json` has no `remindRefine` key you will start seeing nudges
+  (first one at 25 completed turns). Restore the old silence with
+  `{ "remindRefine": { "enabled": false } }`. Explicit config keeps winning
+  in both directions, and the cadence still counts completed turns per the
+  aborted/error-inert semantics (seed on the first observed completed
+  `turn_end`, reset per fire and per session).
+
+### Added
+
+- **Tiered, rotating reminder content (`remindRefine.detailEvery`)** — every
+  4th fired reminder (default) escalates from the one-line nudge to a
+  detailed educational guide, rotating through 7 slots so repeat viewers
+  never see the same wall of text: how the improvement loop works (3
+  alternating descriptions), the `/refine` workflow, `keep`/`drop`/
+  `prune --decay <days>` hygiene, `push-mem` (pi-mem composition), `split`
+  (global vs project scopes), `export-corpus` (pi-reflex contract), and a
+  recommended starter config whose guidance is honest about autonomy (review
+  #28): with `autoImport` on, durable layers are already written on every
+  store change — `commit` only adds a refine-time flush when `autoImport` is
+  off — so the conservative start is `autoImport` off + manual
+  `/harness export`. Config: `"remindRefine": { "everyTurns": 25,
+  "detailEvery": 4 }` with `1` = every reminder detailed; non-integer/sub-1
+  values coerce to the default (spam guard). The short nudge is now
+  data-aware ("12 active item(s), 4 never cited since creation"; an empty
+  store gets first-run guidance instead), derived from `getState()` with no
+  new persisted state. Copy builders are pure and exported (`buildNudge`,
+  `buildDetailGuide`, `reminderState`, `ReminderState`) so the richer
+  `/harness status` (companion issue) can share the same copy source.
+
+- **Awareness reminders for durable sync (`importRemind`)** — with
+  `"autoImport": true`, silently-imported instructions now announce
+  themselves. The session-start import lists **what arrived** (item id, kind,
+  first words of content — bounded to 5 lines; an id present in both layers
+  is listed once, with its post-merge content), and a one-line `turn_end`
+  reminder re-surfaces the imported batch every `importRemind.everyTurns`
+  **completed** turns (default 25; aborted/error `turn_end`s are inert — they
+  neither seed nor fire, so they never consume one of the bounded notices,
+  and the count cannot be defeated by pi resetting `turnIndex` on every
+  `agent_start`). Both pointers are truthful (review #28): the overflow line
+  and the reminder point at the agent's `harness_list` tool (which actually
+  lists ids/content), not `/harness status` (counts only), and the advertised
+  kill-switch is valid, paste-able JSON. Bounded by design: at most 3
+  reminders per imported batch, then quiet until the next session — awareness
+  without nagging.
+  Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
+  (effective only with `autoImport`; kill-switch `enabled: false` keeps the
+  start-of-session listing). `DurableImportResult` now carries
+  `createdIds`/`updatedIds` (additive) so the sync knows exactly which items
+  to re-surface, and `imported` counts DISTINCT items — an id folded across
+  layers is one item, not one per copy (so the "imported N item(s)" notify
+  no longer double-counts collisions);
+  `evaluateImportReminder`/`registerImportReminder`/
+  `getImportedThisSession`/`summarizeImported` exported for tests and
+  companions.
+
 ### Removed
 
 - **`durableScope` config key removed** (deprecated since 0.9.0 as a no-op):

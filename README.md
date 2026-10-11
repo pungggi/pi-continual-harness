@@ -173,7 +173,7 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   "proposer": "steering",
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
-  "remindRefine": { "enabled": false, "everyTurns": 50 },
+  "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "classifier": { "model": "typesafe/jev-latest" },
@@ -198,8 +198,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   The session-start import doesn't just count — it **lists what arrived**
   (item id, kind, first words of content), and every `everyTurns` turns a
   one-line reminder re-surfaces the imported items so silently-injected
-  instructions never go unnoticed. Bounded: at most 3 reminders per imported
-  batch, then quiet until the next session. Kill-switch:
+  instructions never go unnoticed (full list via the agent's `harness_list`
+  tool — `/harness status` shows only counts). Bounded: at most 3 reminders
+  per imported batch, then quiet until the next session; aborted/error turns
+  are inert (completed-turn cadence). Kill-switch:
   `{ "importRemind": { "enabled": false } }` (the start-of-session listing
   still fires).
 - **`injection`** — the selection policy for WHAT gets surfaced in the system
@@ -222,10 +224,20 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   companion packages inject a richer comparator whose return may **abstain**
   per pair (`{ score, abstain }` — see [`SimilarityResult`](#proposers)); an
   abstaining pair is always kept, never merged or deleted.
-- **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
-  "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
-  informational only — it never mutates state. Aborted/error turns are
-  skipped, so `everyTurns` counts completed turns of work.
+- **`remindRefine`** — the `turn_end` **activation nudge**, ON by default
+  (informational only; it never mutates state). Every `everyTurns` completed
+  turns (default 25) a one-line reminder suggests `/refine`, garnished with
+  live data from the store (e.g. "12 active item(s), 4 never cited since
+  creation"; an empty store gets first-run guidance instead). Every
+  `detailEvery`-th reminder (default 4: at the default cadence, roughly
+  every 100 turns) escalates to a rotating educational guide: how the loop
+  works (with alternate descriptions so it never reads as boilerplate), the
+  `/refine` workflow, `keep`/`drop`/`prune --decay` hygiene, `push-mem`,
+  `split`, `export-corpus`, and a recommended starter config. Fresh installs
+  used to be silent; that was the bug, not the feature. Aborted/error turns
+  are skipped, so `everyTurns` counts completed turns of work. Silence it
+  with `{ "remindRefine": { "enabled": false } }`; `detailEvery: 1` makes
+  every reminder detailed.
 - **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
   When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
   (default 100). It is one of the package's opt-in autonomous paths: it reuses
@@ -486,10 +498,10 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   auto-import + turn_end layered auto-export when the store changed —
   `/refine` output survives into new sessions with zero ceremony. Off by
   default; every action visible and `/tree`-rollback-able.
-- Optional config (`~/.pi/agent/harness.json`): the durable-sync opt-in, an
-  opt-in `turn_end` reminder, opt-in `turn_end` auto-refine, and an opt-in
-  `turn_end` outcome-importance loop — the package's opt-in autonomous
-  paths (all off by default).
+- Optional config (`~/.pi/agent/harness.json`): the durable-sync opt-in, a
+  default-on `turn_end` reminder (notify-only; the activation nudge), and the
+  opt-in `turn_end` auto-refine and outcome-importance loops. The package's
+  autonomous paths stay opt-in and off by default.
 - **Pluggable delta proposers** with a registry: `steering` (default) and
   `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
 - **Per-model isolation**: every item is bound to a `provider/id` and injected

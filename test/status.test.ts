@@ -196,9 +196,14 @@ describe("buildStatusReport — zero-state guidance", () => {
 });
 
 describe("buildStatusReport — contextual hints", () => {
-  it("empty default-config store: classifier + outcome + remind hints apply", () => {
+  it("empty default-config store: classifier + outcome hints apply (remind nudge is ON by default, #19)", () => {
     const r = buildStatusReport({ items: [] }, [], { config: cfg() });
-    expect(r.hints.map((h) => h.id)).toEqual(["classifier-gate", "outcome-loop", "remind-refine"]);
+    expect(r.hints.map((h) => h.id)).toEqual(["classifier-gate", "outcome-loop"]);
+    // the remind-refine hint only surfaces for users who explicitly disabled the nudge
+    const silenced = buildStatusReport({ items: [] }, [], {
+      config: cfg({ remindRefine: { enabled: false, everyTurns: 25, detailEvery: 4 } }),
+    });
+    expect(silenced.hints.map((h) => h.id)).toContain("remind-refine");
   });
 
   it("the classifier hint stays until the gate is fully configured (review #27)", () => {

@@ -97,6 +97,11 @@ function recommendedDeltas(): PresetDelta[] {
       value: clone(DEFAULT_CONFIG.importRemind),
       rationale: `Awareness reminders for the sync: the start-of-session import lists what arrived; a bounded cadence (default every ${DEFAULT_CONFIG.importRemind?.everyTurns} turns) re-surfaces it.`,
     },
+    {
+      path: "remindRefine",
+      value: clone(DEFAULT_CONFIG.remindRefine),
+      rationale: `Activation nudge (on by default since #19): every ${DEFAULT_CONFIG.remindRefine?.everyTurns} completed turns a one-line /refine reminder, escalating to a rotating educational guide every ${DEFAULT_CONFIG.remindRefine?.detailEvery}th reminder. Notify-only — it never mutates state.`,
+    },
   ];
 }
 
@@ -105,12 +110,12 @@ export const PRESETS: Record<PresetName, Preset> = {
     name: "quiet",
     title: "everything manual (today's shipped defaults, pinned explicitly)",
     description:
-      "Pins the opt-in feature keys to their shipped defaults so nothing autonomous ever runs — an explicit no rather than an absent file.",
+      "Pins the opt-in feature keys to their shipped defaults so nothing autonomous ever runs — an explicit no rather than an absent file. The one exception: the default-on /refine nudge is notify-only, and quiet silences it too.",
     notes: [],
     deltas: [
       { path: "autoImport", value: DEFAULT_CONFIG.autoImport, rationale: "Durable sync stays off: /harness import and /harness export remain manual." },
       { path: "importRemind", value: clone(DEFAULT_CONFIG.importRemind), rationale: "Reminder defaults pinned (only effective with autoImport on)." },
-      { path: "remindRefine", value: clone(DEFAULT_CONFIG.remindRefine), rationale: "No /refine cadence reminders." },
+      { path: "remindRefine", value: { ...clone(DEFAULT_CONFIG.remindRefine), enabled: false }, rationale: "The /refine activation nudge is on by default (notify-only, never mutates); quiet silences it explicitly." },
       { path: "autoRefine", value: clone(DEFAULT_CONFIG.autoRefine), rationale: "Autonomous refinement stays off." },
       { path: "outcomeImportance", value: clone(DEFAULT_CONFIG.outcomeImportance), rationale: "Autonomous importance promotion stays off." },
     ],
@@ -146,7 +151,7 @@ export const PRESETS: Record<PresetName, Preset> = {
 
 /** Menu rows for the TUI's --preset value completion (harness.ts). */
 export const PRESET_COMPLETIONS: Array<{ value: string; description: string }> = [
-  { value: "quiet", description: "Pin every opt-in to the shipped defaults (all manual)" },
+  { value: "quiet", description: "Everything manual: opt-ins off, the default-on /refine nudge silenced" },
   { value: "recommended", description: "autoImport + importRemind awareness reminders" },
   { value: "power", description: "recommended + autoRefine (autonomous, own confirm)" },
 ];
