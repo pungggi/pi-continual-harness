@@ -62,6 +62,7 @@ Durable I/O (round-trip with pi-reflect):
 
 ```
 /harness status                  # counts + durable layer presence/mtime
+/harness list [-f] [--kind <kind>] [--scope <global|project|all>]  # read items — compact rows, -f = full text + evidence
 /harness export [path]           # layered export (or full snapshot to a path)
 /harness export-corpus [path]    # calibration corpus JSONL for pi-reflex (local-only; dedupe pairs + lifecycle)
 /harness import [--prune] [path] # layered import (or single file from a path)
@@ -75,9 +76,9 @@ Durable I/O (round-trip with pi-reflect):
 /harness setup [--preset <quiet|recommended|power>] [--yes]  # guided config wizard
 ```
 
-Subcommands, flags, `--kind`/`--model`/`--from` values, `move` scopes, and
-`keep`/`drop`/`move` item ids all autocomplete in the TUI as you type after
-`/harness `.
+Subcommands, flags (`-f` included), `--kind`/`--model`/`--from`/`--scope`
+values, `move` scopes, and `keep`/`drop`/`move` item ids all autocomplete in
+the TUI as you type after `/harness `.
 
 **Durable layers.** Every item carries its own durable scope: `global`
 (the shared `~/.pi/agent/harness-state.md`) or `project`
