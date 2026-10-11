@@ -24,6 +24,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
+import { turnEndedBadly } from "./auto-refine.js";
 import { bumpImportance, getState, modelKey } from "./store.js";
 
 // Minimal entry shape; kept loose to avoid coupling to pi's internal types.
@@ -63,7 +64,7 @@ export function resetOutcome(): void {
 
 /** Subscribe to turn_end and promote importance of referenced items (opt-in). */
 export function registerOutcome(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
     if (!config.outcomeImportance?.enabled) return;
     const bump = config.outcomeImportance.bump ?? DEFAULT_REF_BUMP;
@@ -72,9 +73,18 @@ export function registerOutcome(pi: ExtensionAPI): void {
     const entries = ctx.sessionManager.getBranch() as AnyEntry[];
     const asst = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
     if (scannedMessages < 0) {
-      scannedMessages = asst.length; // seed: no retroactive bump
+      // Seed on the FIRST observed turn_end regardless of outcome: enabling
+      // mid-session never bumps retroactively, and the seed turn's own text
+      // (partial or not) is never scanned — the same swallow as a normal
+      // seed. Seeding here is what keeps a later completed turn's own
+      // citations scannable after an aborted first observation.
+      scannedMessages = asst.length;
       return;
     }
+    // Aborted/error turns end mid-work: their partial assistant text is not a
+    // final outcome. The cursor holds; the next completed turn scans that text
+    // together with its own.
+    if (turnEndedBadly(event.outcome)) return;
     const fresh = asst.slice(scannedMessages);
     scannedMessages = asst.length;
 

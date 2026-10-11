@@ -161,6 +161,10 @@ The package ships raw TypeScript; no compilation is needed.
                        # (plus zero-state first-steps guidance)
 ```
 
+Then optionally run `/harness setup` (see
+[§5](#setup---preset-name---yes)) to pick a config preset instead of
+hand-editing `harness.json`.
+
 ---
 
 ## 3. Quick start
@@ -306,9 +310,10 @@ proposes evidence-backed CRUD deltas.
 Durable I/O and importance hygiene. The command registers argument
 autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
 menu of subcommands with a one-line help each; one level deeper it completes
-flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`), `--kind` / `--model`
-values, and `keep`/`drop` item ids straight from the live store. Path
-arguments intentionally get no menu (use editor path completion).
+flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--preset`,
+`--yes`), `--kind` / `--model` / `--preset` values, and `keep`/`drop` item
+ids straight from the live store. Path arguments intentionally get no menu
+(use editor path completion).
 
 Subcommands:
 
@@ -514,6 +519,53 @@ Default scope is the `memory` kind (the clean 1:1 mapping); `--all` / `--kind`
 override; `--model` scopes to one owner model (default: every model; `active` =
 the model driving the command). See [§11](#11-compositions).
 
+#### `setup [--preset <name>] [--yes]`
+
+```
+/harness setup                          # interactive wizard
+/harness setup --preset recommended     # scripted preset (still confirms)
+/harness setup --preset power --yes     # scripted consent: no prompts
+```
+
+The **guided configuration wizard** (first-run setup). Editing
+`harness.json` by hand works, but exact key spellings are friction exactly
+where the compounding machinery turns on — so the wizard walks the config
+into place instead:
+
+1. **Current state** — shows the effective config (your file merged over the
+   shipped defaults) and both durable-layer paths.
+2. **Presets** — pure data, each shown as a declarative diff before anything
+   is applied:
+   - `quiet` — pins every opt-in feature key to the shipped defaults (an
+     explicit "all manual", not just an absent file).
+   - `recommended` — `autoImport: true` + the `importRemind` awareness
+     reminders, with a gate-readiness note (`classifier.model` +
+     `autoRefine.gate` are the later upgrade).
+   - `power` — `recommended` + `autoRefine: { enabled: true }`.
+3. **Per-feature confirms** — every delta gets its own confirm with a
+   one-line rationale; deltas already at their target value are not
+   re-asked. Autonomous switches (`autoImport`, `autoRefine.enabled`,
+   `outcomeImportance.enabled`) get their own explicit "this lets the agent
+   mutate state on a cadence" confirmation **regardless of preset**.
+4. **Reviewed write** — one `saveConfig` call: back up the existing file to
+   `harness.json.bak-<timestamp>`, atomically write the merged result
+   (unknown keys preserved), then reload and print the effective config —
+   round-tripped through the same loader/coercion path pi uses, so what you
+   saw is what pi reads.
+
+Preset values are **derived from the config module's defaults**, never
+hardcoded, so the wizard cannot drift when a default changes (e.g. the
+`importRemind` defaults). `--yes` is the scripted form of consent: it skips
+every prompt, including the autonomous confirms — that is its point.
+
+**When nothing is written:** an unknown preset, a missing `--preset` value,
+cancelling the preset menu, or declining the final write. Declining an
+**individual feature** only skips that feature — the remaining deltas still
+apply once you accept the final write, and the diff + JSON preview always
+shows exactly what will land. The wizard writes config files only and never
+touches harness state. When the UI has no blocking prompts, the interactive
+menu cancels itself — use the `--preset` form there.
+
 ---
 
 ## 6. Model-facing tools
@@ -678,15 +730,21 @@ back online. With `"autoImport": true` the loop runs itself: layers in on
 every created/updated item (id, kind, first words of content), and — unless
 `importRemind` is disabled — a one-line reminder re-surfaces the imported
 items every 25 completed turns (max 3 per batch; items deleted or
-deactivated after the import drop out of the reminders) so
+ deactivated after the import drop out of the reminders) so
 silently-injected instructions never go unnoticed. Turns are counted as
-completed `turn_end` events across the whole session — pi's `turnIndex`
-resets to 0 on every `agent_start`, so counting run-local index deltas would
-never cross the cadence for short runs.
+completed `turn_end` events across the whole session (aborted/error turns
+are skipped) — pi's `turnIndex` resets to 0 on every `agent_start`, so
+counting run-local index deltas would never cross the cadence for short
+runs.
 
 ---
 
 ## 8. Configuration
+
+**First-run setup:** run `/harness setup` instead of editing this file by
+hand — see [§5](#setup---preset-name---yes). It shows the effective config,
+walks you through three presets, confirms each change (autonomous switches
+get their own explicit confirmation), and writes with a timestamped backup.
 
 Optional config at **`~/.pi/agent/harness.json`**. Missing or malformed →
 defaults (the loader never throws).
@@ -710,7 +768,7 @@ defaults (the loader never throws).
 
 | Key | Default | Values | Effect |
 |---|---|---|---|
-| `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
+| `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. Enabling it **mid-session** is safe: the first `turn_end` imports the layers *before* any export, so a late enable can never overwrite the durable files with a never-imported store. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
 | `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, in completed `turn_end` events counted session-wide (pi's `turnIndex` resets per `agent_start`, so run-local indices never gate it). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
@@ -721,15 +779,15 @@ defaults (the loader never throws).
 | `injection.maxPerKind` | `10` | number > 0 | Max items surfaced per kind (balanced sections). |
 | `injection.charsPerToken` | `4` | number > 0 | Token estimate (chars per token) for the budget arithmetic. |
 | `remindRefine.enabled` | `false` | bool | Opt-in `/refine` reminder on a cadence (informational, never mutates). |
-| `remindRefine.everyTurns` | `50` | int | Reminder cadence. |
+| `remindRefine.everyTurns` | `50` | int | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped: the cadence counts completed turns of work. |
 | `autoRefine.enabled` | `false` | bool | Opt-in **autonomous** self-refinement. Off by default. |
-| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. |
+| `autoRefine.everyTurns` | `100` | int | Auto-refine cadence. Aborted/error `turn_end`s (pi `BoundaryState.outcome`) are inert — they neither seed nor advance the completed-turn count, and a refine never fires over partial evidence. |
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
-| `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
+| `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. With pi ≥ 1.1.0 the catalog also offers OpenAI's GPT-6 Luna (Decisions API, e.g. `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`, llama.cpp ≥ 0.6.0 — listed only as classifiers, ideal as a free local gate). Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
 | `virtualBinding` | `"virtual"` | `virtual` \| `physical` | How the per-model isolation key treats **virtual models** (routers). `virtual`: key = the selection's own id (pre-0.12 behavior). `physical`: when the selection is virtual, key = the physical model behind the latest successful response on the branch; before the first response the key is unknown (creates orphan, adopted on first contact). |
 
 ### Injection selection (on by default)
@@ -884,13 +942,19 @@ Then `my-proposer` is selectable via `/refine --proposer my-proposer` or
 
 Three `turn_end` hooks. **All are opt-in and off by default.** All cadence
 counters **reset on `session_start`**, so a forked/resumed session starts from a
-fresh baseline.
+fresh baseline. Cadences count completed `turn_end` **events** — a
+session-stable ordinal — because pi's own `turnIndex` resets to 0 on every
+`agent_start` (each user prompt); counting events is what makes "every N
+turns" mean N prompts, not N turns inside one long run. Aborted/error
+`turn_end`s (pi's `BoundaryState.outcome`) are inert: they neither seed nor
+advance a cadence window (durable auto-export deliberately still exports —
+committed entries must not be lost).
 
 ### Reminder (`src/remind.ts`)
 
 `remindRefine: { enabled, everyTurns }` — informational only.
 
-- Fires every `everyTurns` (default **50**) turns.
+- Fires every `everyTurns` (default **50**) completed turns.
 - Notifies you to run `/refine`. **Never mutates state.**
 - First observed turn seeds the baseline (no reminder on the seed turn).
 
@@ -931,6 +995,11 @@ self-mutation**.
 - First observed turn seeds the baseline (no auto-refine on the seed turn); each
   fired refine resets the counter (so the refine turn can't immediately
   re-trigger).
+- **Aborted/error turns are inert** (pi `turn_end` `BoundaryState.outcome`):
+  they neither seed nor advance the cadence window — `everyTurns` counts
+  *completed* turns of work, and a refine never fires over a trajectory that
+  was cut off. (Durable auto-export deliberately still runs on such turns —
+  committed entries must not be lost.)
 
 This is the package's **first** opt-in autonomous-mutation path.
 
@@ -949,6 +1018,10 @@ This is the package's **first** opt-in autonomous-mutation path.
   rollback, visible (notifies per turn).
 - **Seeding**: the first observed turn sets the scan cursor (no retroactive bump
   for the whole history). Enabling mid-session is safe.
+- **Completed turns only**: aborted/error `turn_end`s are skipped — their partial
+  assistant text is scanned by the next completed turn (the cursor holds). The
+  first observed `turn_end` seeds the cursor regardless of outcome, so the seed
+  turn's own text — partial or not — is never scanned (as before).
 
 This is the package's **second** opt-in autonomous-mutation path. It closes the
 outcome half of the fitness loop: useful items rise, ignored items keep decaying.

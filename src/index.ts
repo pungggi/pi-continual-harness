@@ -167,13 +167,36 @@ export {
   type ClassifyFn,
 } from "./classify.js";
 
-// Auto-refine boundary helpers (pi ≥ 0.87, 0.12.0–0.13.0): the steering draft
-// and the stale-draft context-edit omissions. Re-exported for tests and
-// companion packages without reaching into internal paths.
+// Auto-refine boundary helpers (pi ≥ 0.87, 0.12.0–0.13.0): the steering draft,
+// the stale-draft context-edit omissions, and the shared aborted/error-turn
+// predicate (pi BoundaryState.outcome). Re-exported for tests and companion
+// packages without reaching into internal paths.
 export {
   AUTO_REFINE_ENTRY,
   buildOmissionDrafts,
   buildRefineDraft,
+  turnEndedBadly,
   type OmissionDraft,
   type ProjectedLike,
 } from "./auto-refine.js";
+
+// Setup wizard (issue #22): presets as pure data + expandPreset, and the one
+// reviewed write path for harness.json (backup + atomic write + reload).
+// Re-exported so tests and companion packages never reach into internal
+// paths.
+export {
+  deepMergeConfig,
+  readConfigRaw,
+  saveConfig,
+  type SaveConfigResult,
+} from "./config.js";
+export {
+  expandPreset,
+  getPath,
+  planWrite,
+  PRESETS,
+  setPath,
+  type Preset,
+  type PresetDelta,
+  type PresetName,
+} from "./setup.js";

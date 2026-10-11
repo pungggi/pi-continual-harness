@@ -12,7 +12,8 @@
 // Robust by design: missing or malformed file → DEFAULT_CONFIG, never throws.
 // Unknown keys are ignored (e.g. the removed pre-0.9.0 `durableScope`).
 
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
@@ -181,6 +182,120 @@ function coerceBump(raw: unknown): number {
  *  silently matching everything (0/-1) or nothing (>1). */
 function coerceThreshold(raw: unknown): number {
   return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEDUPE_THRESHOLD;
+}
+
+/** Result of a reviewed config write (see saveConfig). */
+export interface SaveConfigResult {
+  /** The file that was written (== `path`). */
+  written: string;
+  /** Backup of the previous file (`harness.json.bak-<timestamp>`), when one existed. */
+  backup: string | undefined;
+  /** The exact object serialized to disk (existing raw file ∪ `next`). */
+  merged: Record<string, unknown>;
+  /** Effective config re-read through loadConfig — what pi will actually load. */
+  effective: HarnessConfig;
+}
+
+/** True for a non-array plain object (a deep-merge candidate). */
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Two-level deep merge (the config shape is two levels deep at most):
+ *  plain-object keys merge key-by-key so sibling settings survive; everything
+ *  else is replaced by `next`. Unknown existing keys ride along untouched. */
+export function deepMergeConfig(
+  existing: Record<string, unknown>,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(next)) {
+    const cur = out[k];
+    out[k] = isPlainObject(cur) && isPlainObject(v) ? { ...cur, ...v } : v;
+  }
+  return out;
+}
+
+/** Parse the raw file when it is a JSON object; undefined for missing,
+ *  malformed, or non-object content. Unknown keys are preserved verbatim
+ *  (the loader ignores them, a rewrite must not drop them). */
+export async function readConfigRaw(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Filesystem-safe, sortable backup timestamp (colons/dots → dashes). */
+function backupStamp(d = new Date()): string {
+  return d.toISOString().replace(/[:.]/g, "-");
+}
+
+/** rename with a bounded retry. On Windows, replacing a file that was itself
+ *  JUST replaced (a concurrent save racing to the same target) can transiently
+ *  fail with EPERM/EACCES/ENOTEMPTY while the previous replacement settles
+ *  into the delete-pending state. A short backoff clears it; every other
+ *  error (and errors that persist) propagates. */
+async function renameRetry(tmp: string, path: string, tries = 3): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(tmp, path);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (attempt < tries && (code === "EPERM" || code === "EACCES" || code === "ENOTEMPTY")) {
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+/** The ONE reviewed write path for harness.json (used by /harness setup):
+ *  merge `next` over the existing RAW file (two levels deep, unknown keys
+ *  preserved), back the previous file up as `harness.json.bak-<timestamp>`,
+ *  atomically write (same-dir tmp + rename), then drop the config cache and
+ *  reload — the returned `effective` round-trips through the same
+ *  loader/coercion path pi uses, so what the wizard displayed is what pi
+ *  reads. Throws BEFORE any write when the backup cannot be made: the
+ *  previous file is never destroyed without one. */
+export async function saveConfig(
+  next: Partial<HarnessConfig> | Record<string, unknown>,
+  path: string = CONFIG_PATH,
+): Promise<SaveConfigResult> {
+  const existing = await readConfigRaw(path);
+  const merged = deepMergeConfig(existing ?? {}, next as Record<string, unknown>);
+  const json = `${JSON.stringify(merged, null, 2)}\n`;
+  // Back up by FILE EXISTENCE, not parse success: a malformed file must be
+  // preserved too (it may hold recoverable content; the rewrite replaces it).
+  let backup: string | undefined;
+  try {
+    await stat(path);
+    backup = `${path}.bak-${backupStamp()}`;
+    await copyFile(path, backup);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; // backup failure → abort, no write
+  }
+  await mkdir(dirname(path), { recursive: true }); // first run: ~/.pi/agent may not exist yet
+  // Unique + exclusive temp name: two concurrent saveConfig calls (two pi
+  // sessions, or two wizards) must never share a tmp file — the loser would
+  // truncate the winner's content or rename it away mid-write. "wx" fails
+  // loudly on collision instead of corrupting (a UUID collision is already
+  // theoretical; this makes it impossible).
+  const tmp = `${path}.tmp-${randomUUID().slice(0, 8)}`;
+  try {
+    await writeFile(tmp, json, { encoding: "utf8", flag: "wx" });
+    await renameRetry(tmp, path); // atomic on POSIX; REPLACE_EXISTING on Windows
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {}); // best-effort tmp cleanup
+    throw err;
+  }
+  resetConfigCache();
+  const effective = await loadConfig(path);
+  return { written: path, backup, merged, effective };
 }
 
 /** Load the config, merged over defaults. Tolerant: missing/malformed → defaults.

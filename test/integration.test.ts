@@ -339,6 +339,7 @@ describe("/harness command", () => {
       "move",
       "split",
       "push-mem",
+      "setup",
     ]);
     for (const i of items) {
       expect(i.label).toBe(i.value); // label mirrors the subcommand name
@@ -400,6 +401,30 @@ describe("/harness command", () => {
       "push-mem --model active",
       "push-mem --model anthropic/sonnet",
       "push-mem --model google/gemini",
+    ]);
+  });
+
+  it("completes setup flags and --preset values (issue #22)", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    // fresh token → the setup flags
+    expect(complete("setup ")).toEqual([
+      { value: "setup --preset", label: "--preset", description: expect.any(String) },
+      { value: "setup --yes", label: "--yes", description: expect.any(String) },
+    ]);
+    // used flags are not re-offered
+    expect(complete("setup --yes --")).toEqual([
+      { value: "setup --yes --preset", label: "--preset", description: expect.any(String) },
+    ]);
+    // --preset completes the three preset names as full replacement values
+    expect(complete("setup --preset ")).toEqual([
+      { value: "setup --preset quiet", label: "quiet", description: expect.any(String) },
+      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
+      { value: "setup --preset power", label: "power", description: expect.any(String) },
+    ]);
+    expect(complete("setup --preset re")).toEqual([
+      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
     ]);
   });
 
@@ -765,6 +790,46 @@ describe("runRefine + auto-refine", () => {
       const audits = entries.filter((e) => e.customType === "harness-refinement");
       expect(audits).toHaveLength(1);
       expect((audits[0]!.data as { source: string }).source).toBe("auto");
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("turn_end with an aborted/error outcome never triggers auto-refine", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-outcome-guard-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile);
+    try {
+      const { pi, fire, ctx, sentMessages, entries } = makeFakePi([
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+      ]);
+      continualHarness(pi);
+
+      // Seed on a completed turn; each aborted/error turn would fire at
+      // everyTurns=1 if the outcome were ignored. None may produce a boundary
+      // continuation, an audit entry, or a steering send.
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx());
+      for (const outcome of ["aborted", "error"]) {
+        const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true }, outcome }, ctx())) as Array<
+          { continue?: boolean } | undefined
+        >;
+        expect(rets.find((r) => r?.continue === true)).toBeUndefined();
+      }
+      expect(sentMessages).toHaveLength(0);
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(0);
+
+      // The aborted turns did not advance the window: the next COMPLETED turn
+      // still fires (2 - 0 >= 1 from the seed).
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx())) as Array<
+        { continue?: boolean } | undefined
+      >;
+      expect(rets.find((r) => r?.continue === true)).toBeDefined();
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
     } finally {
       resetAutoRefine();
       resetConfigCache();

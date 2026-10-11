@@ -61,7 +61,7 @@ Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
 Durable I/O (round-trip with pi-reflect):
 
 ```
-/harness status                  # counts, audit-trail impact, injection stats, durable layers + a rotating hint
+/harness status                  # counts + durable layer presence/mtime
 /harness export [path]           # layered export (or full snapshot to a path)
 /harness export-corpus [path]    # calibration corpus JSONL for pi-reflex (local-only; dedupe pairs + lifecycle)
 /harness import [--prune] [path] # layered import (or single file from a path)
@@ -71,6 +71,7 @@ Durable I/O (round-trip with pi-reflect):
 /harness move <id> global|project  # move an item between durable layers
 /harness split                   # steer the agent to classify every item's scope
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
+/harness setup [--preset <quiet|recommended|power>] [--yes]  # guided config wizard
 ```
 
 Subcommands, flags, `--kind`/`--model` values, `move` scopes, and `keep`/
@@ -139,6 +140,29 @@ unchanged by a push — pi-mem gets a separate copy.
 
 ## Configuration
 
+**First-run setup:** instead of hand-editing the JSON below, run
+`/harness setup`. It is a guided wizard:
+
+1. Shows the **current effective config** (your file merged over the shipped
+   defaults) plus the durable-layer paths.
+2. Offers three **presets**: `quiet` (pin every opt-in to the shipped
+   defaults), `recommended` (`autoImport` + import reminders on), `power`
+   (`recommended` + `autoRefine`). Each preset is shown as a declarative diff
+   before anything is applied.
+3. Confirms **each delta** with a one-line rationale. Autonomous switches
+   get their own explicit "this lets the agent mutate state on a cadence"
+   confirmation regardless of preset.
+4. Writes via one reviewed path: backs up the existing file
+   (`harness.json.bak-<timestamp>`), atomically writes the merged result,
+   then reloads and prints the effective config exactly as pi will read it.
+
+For scripted setups: `/harness setup --preset recommended --yes` (the `--yes`
+flag is the scripted form of the confirmations, so it enables autonomous
+features without prompts). Nothing is written on unknown input, a cancelled
+preset menu, or a declined final write; declining an individual feature only
+skips that feature (the accepted deltas still apply). The wizard never
+touches harness state, only the config file.
+
 Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
 
 ```json
@@ -164,7 +188,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   changed since the last export. This is what makes `/refine` output survive
   into **new** sessions without manual export/import ceremony. Both halves are
   visible (one notify line) and use the same persisted `harness-state` entries
-  as every other mutation (`/tree` rollback covers them).
+  as every other mutation (`/tree` rollback covers them). Enabling it
+  mid-session (e.g. via `/harness setup`) is safe: the first `turn_end`
+  imports the layers *before* any export, so a late enable can never
+  overwrite the durable files with a never-imported store.
 - **`importRemind`** — **awareness reminders** for that sync (effective only
   when `autoImport` is on; default `{ "enabled": true, "everyTurns": 25 }`).
   The session-start import doesn't just count — it **lists what arrived**
@@ -196,7 +223,8 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   abstaining pair is always kept, never merged or deleted.
 - **`remindRefine`** — opt-in `turn_end` nudge. `{ "enabled": true,
   "everyTurns": 50 }` notifies you to run `/refine` on a cadence. It is
-  informational only — it never mutates state.
+  informational only — it never mutates state. Aborted/error turns are
+  skipped, so `everyTurns` counts completed turns of work.
 - **`autoRefine`** — opt-in autonomous self-improvement (**off by default**).
   When `enabled`, the agent runs `/refine` itself every `everyTurns` turns
   (default 100). It is one of the package's opt-in autonomous paths: it reuses
@@ -208,14 +236,21 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
   signal, not just time (errors fall back to the plain cadence). The steering
   prompt is delivered via the pi ≥ 0.87 actionable `turn_end` boundary (a
   structural `harness.auto-refine-request` entry + `continue: true`), not a
-  synthetic user message.
+  synthetic user message. Aborted/error turns (pi `turn_end`
+  `BoundaryState.outcome`) are inert: they neither seed nor advance the
+  cadence window — a refine never fires over partial evidence.
 - **`classifier`** — opt-in classifier model (pi ≥ 0.99) for the cheap gated
   paths: `"provider/id"` or a bare id of a **classifier** catalog entry, e.g.
   `"typesafe/jev-latest"` or a local `llama-cpp` classifier (every chat model
-  listed for llama.cpp also appears as a classifier). When set and resolvable
-  it enables the classifier-confirmed dedupe (see `dedupe` above) and the
-  auto-refine `gate`. When unset or unresolvable, every classifier feature
-  degrades to its no-classifier behavior.
+  listed for llama.cpp also appears as one). With pi ≥ 1.1.0 the catalog also
+  offers OpenAI's GPT-6 Luna through the Decisions API (e.g.
+  `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp
+  decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`,
+  llama.cpp ≥ 0.6.0 — listed *only* as classifiers, which is exactly our use:
+  a free local gate). When set and resolvable it enables the
+  classifier-confirmed dedupe (see `dedupe` above) and the auto-refine `gate`.
+  When unset or unresolvable, every classifier feature degrades to its
+  no-classifier behavior.
 - **`virtualBinding`** — how the per-model isolation key treats pi **virtual
   models** (router extensions, pi ≥ 0.99). Default `"virtual"`: the key is
   the selected model's own `provider/id` — a router starts a blank harness.
@@ -228,7 +263,10 @@ Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults
 - **`outcomeImportance`** — opt-in autonomous **promotion** loop (**off by
   default**). When `enabled`, a `turn_end` hook bumps (+`bump`, default 0.03)
   the importance of any active item the agent cited by its `[h_xxxx]` tag in the
-  turn's output. Referenced items gain importance and get their `updatedAt`
+  turn's output. Citations are read from completed turns only — an aborted
+  turn's partial text is scanned by the next completed turn (the initial seed
+  turn itself is never scanned, as before). Referenced items
+  gain importance and get their `updatedAt`
   touched (so they survive time-based decay); ignored items keep decaying. This
   is the package's second opt-in autonomous path — promotion only, never
   deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
@@ -416,13 +454,6 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   **layered on per-item scope**: every item is `global` or `project`
   (`/harness move`, `/harness split`), and `/harness export|import` operate on
   both layers.
-- **Rich `/harness status`**: besides the counts, it derives an **impact
-  summary** from the session's audit trail (refine runs manual/auto, items
-  created/updated/kept/cited/dropped/pruned/deleted/merged — whole store and
-  per active model), reports **injection stats** (renders served, items
-  surfaced, token-budget use), shows **zero-state guidance** for an empty
-  store, and rotates a single-line **hint** at an under-discovered feature.
-  Read-only; everything is derived, nothing persisted.
 - Importance hygiene: `/harness prune [--decay <days>]` and `/harness keep|drop
   <id>`.
 - **pi-mem composition**: `/harness push-mem [--all|--kind|--model]` steers the agent

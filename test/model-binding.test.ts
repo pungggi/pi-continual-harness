@@ -402,5 +402,22 @@ describe("harness_list — model filtering", () => {
     expect(text).toContain("No prompt items for model anthropic/sonnet");
     expect(text).toContain("memory (1)");
     expect(text).not.toContain('model:"*"');
+
+    // 6. Model owns NOTHING + requested kind absent everywhere (review #26):
+    //    model:"*" would still return nothing with the same kind filter —
+    //    the pointer must not appear.
+    setActiveModelKey("openai/gpt-5.2");
+    text = await list(listTool, { kind: "prompt" });
+    expect(text).toContain("No items for model openai/gpt-5.2");
+    expect(text).toContain("No prompt items for this model or any other model");
+    expect(text).toContain("memory (2)"); // the honest kind tally
+    expect(text).not.toContain('model:"*"');
+
+    // 7. Model owns NOTHING + the kind exists elsewhere: the pointer is
+    //    honest here — model:"*" (same kind filter) surfaces those items.
+    text = await list(listTool, { kind: "skill" });
+    expect(text).toContain("No items for model openai/gpt-5.2");
+    expect(text).toContain("skill item(s) exist for other models");
+    expect(text).toContain('model:"*"');
   });
 });
