@@ -56,6 +56,9 @@ import { KIND_LABEL } from "./types.js";
 import type { ComponentKind, Delta, HarnessItem } from "./types.js";
 import { branchEntries, resolveBindingKey } from "./vmodel.js";
 import { buildCorpus } from "./corpus.js";
+import { buildStatusReport, renderStatusReport } from "./status.js";
+import { getInjectionStats } from "./inject.js";
+import { nextHint } from "./hints.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
@@ -68,7 +71,7 @@ const SUBCOMMANDS: CompletionEntry[] = [
   { name: "import", description: "Import durable state, layered (--prune to prune stale items)" },
   { name: "export", description: "Export active items to durable layers (or one file with a path)" },
   { name: "export-corpus", description: "Export calibration corpus JSONL for pi-reflex (dedupe pairs + lifecycle)" },
-  { name: "status", description: "Show harness status (active/total, per-kind counts, durable layers)" },
+  { name: "status", description: "Show harness status (counts, audit-trail impact, injection stats, durable layers)" },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },
   { name: "drop", description: "Lower item importance (−0.1)" },
@@ -771,16 +774,14 @@ async function handlePushMem(
 }
 
 async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
-  const items = getState().items;
-  const active = items.filter((i) => i.active);
-  const key = modelKey(ctx.model);
-  const models = [...new Set(active.map((i) => i.ownerModel).filter(Boolean))];
-  const mine = key ? active.filter((i) => i.ownerModel === key).length : active.length;
-  // Status is a whole-store view: kind counts span every model. Annotate with
-  // the current model's share so the per-model picture is still visible.
-  const counts: Record<ComponentKind, number> = { prompt: 0, memory: 0, skill: 0, subagent: 0 };
-  for (const i of active) counts[i.kind] += 1;
-  const nProject = active.filter((i) => i.scope === "project").length;
+  // Thin glue (issue #20): config + durable-layer stat() I/O here; every
+  // derived band lives in the pure buildStatusReport (src/status.ts).
+  const config = await loadConfig();
+  // Key the per-model bands by the CONFIGURED binding policy (review #27):
+  // under "physical" with a virtual selection, items are owned by the routed
+  // physical model — modelKey(ctx.model) would look up the router id and
+  // report zero for the active owner's events.
+  const key = resolveBindingKey(ctx.model, branchEntries(ctx), config.virtualBinding);
   async function layerState(path: string): Promise<string> {
     try {
       const st = await stat(path);
@@ -792,13 +793,13 @@ async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
   const durable =
     ` Durable: global ${await layerState(DEFAULT_DURABLE_PATH)};` +
     ` project ${await layerState(projectDurablePath(ctx.cwd))}.`;
+  const injection = getInjectionStats();
+  const report = buildStatusReport(getState(), ctx.sessionManager.getBranch() as Iterable<unknown>, {
+    config,
+    ...(key ? { modelKey: key } : {}),
+    ...(injection ? { injection } : {}),
+  });
+  const hint = nextHint(report.hints);
   ctx.ui.setStatus("harness", undefined);
-  ctx.ui.notify(
-    `Harness: ${active.length} active / ${items.length} total — ` +
-      `prompt ${counts.prompt}, memory ${counts.memory}, skill ${counts.skill}, subagent ${counts.subagent}` +
-      ` — scope ${active.length - nProject} global / ${nProject} project.` +
-      (key ? ` ${mine} active for [${key}] across ${models.length} model(s).` : "") +
-      durable,
-    "info",
-  );
+  ctx.ui.notify(renderStatusReport(report, { durable, ...(hint ? { hint } : {}) }), "info");
 }

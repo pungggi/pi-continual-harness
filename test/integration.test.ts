@@ -636,6 +636,105 @@ describe("/harness command", () => {
     await commands.get("harness")!.handler(`drop ${id}`, ctx());
     expect(getState().items[0]!.importance).toBeCloseTo(0.5);
   });
+
+  it("reports counts, audit-trail impact, per-model annotation, and a hint (issue #20)", async () => {
+    const a = (imp: number) => ({
+      id: "h_a",
+      kind: "memory",
+      content: "fact a",
+      evidence: "e",
+      importance: imp,
+      active: true,
+      ownerModel: "test/main",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const branch = [
+      { type: "custom", customType: STATE_ENTRY, data: { state: { items: [a(0.5)] }, version: 1 } },
+      { type: "custom", customType: STATE_ENTRY, data: { state: { items: [a(0.6)] }, version: 2 } }, // kept
+      {
+        type: "custom",
+        customType: "harness-refinement",
+        data: { proposer: "steering", source: "manual", applied: 0, appliedDeltas: [] },
+      },
+      {
+        type: "custom",
+        customType: "harness-refinement",
+        data: {
+          proposer: "dedupe",
+          source: "auto",
+          applied: 1,
+          appliedDeltas: [{ op: "delete", id: "h_z", reason: "merged into h_a (overlap 0.90)" }],
+        },
+      },
+    ];
+    const { pi, commands, ctx, notifications, fire } = makeFakePi(branch);
+    continualHarness(pi);
+    await fire("session_start", { reason: "startup" }, ctx()); // reconstruct from the branch
+    await commands.get("harness")!.handler("status", ctx());
+    const msg = notifications.find((n) => n.msg.startsWith("Harness:"))!.msg;
+    expect(msg).toContain("1 active / 1 total");
+    expect(msg).toContain("1 active for [test/main] across 1 model(s)");
+    expect(msg).toContain("Impact: 2 refine run(s) (1 manual, 1 auto)");
+    expect(msg).toContain("kept 1, cited 0, dropped 0, pruned 0, deleted 0, merged 1");
+    expect(msg).toContain("For [test/main]: created 1, updated 0, kept 1"); // a counts via the implicit empty baseline
+    expect(msg).toMatch(/Hint: .+/);
+    expect(msg).toContain("Durable: global");
+    // read-only: nothing new appended by status itself
+    expect(getState().items).toHaveLength(1);
+  });
+
+  it("zero-state /harness status shows first steps instead of bare zeros", async () => {
+    const { pi, commands, ctx, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("harness")!.handler("status", ctx());
+    const msg = notifications.find((n) => n.msg.startsWith("Harness:"))!.msg;
+    expect(msg).toContain("0 active / 0 total");
+    expect(msg).toContain("First steps");
+    expect(msg).toContain("/refine");
+    expect(msg).toMatch(/docs\/MANUAL\.md/);
+  });
+
+  it("status keys the per-model bands by the physical model under virtualBinding: physical (review #27)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-st-vm-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ virtualBinding: "physical" }), "utf8");
+    resetConfigCache();
+    await loadConfig(cfgFile);
+    try {
+      const a = {
+        id: "h_a",
+        kind: "memory",
+        content: "fact a",
+        evidence: "e",
+        importance: 0.5,
+        active: true,
+        ownerModel: "anthropic/claude-x",
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      const branch = [
+        // a routed response: the virtual selection resolved to claude-x
+        {
+          type: "message",
+          message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [{ type: "text", text: "ok" }] },
+        },
+        { type: "custom", customType: STATE_ENTRY, data: { state: { items: [a] }, version: 1 } },
+      ];
+      const { pi, commands, ctx, notifications, fire } = makeFakePi(branch);
+      continualHarness(pi);
+      const virtualCtx = () => ({ ...ctx(), model: { provider: "openai-codex", id: "auto", api: "pi-virtual" } });
+      await fire("session_start", { reason: "startup" }, virtualCtx());
+      await commands.get("harness")!.handler("status", virtualCtx());
+      const msg = notifications.find((n) => n.msg.startsWith("Harness:"))!.msg;
+      // NOT the router id: items are owned by the routed physical model
+      expect(msg).toContain("1 active for [anthropic/claude-x] across 1 model(s)");
+      expect(msg).toContain("For [anthropic/claude-x]: created 1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
+  });
 });
 
 describe("runRefine + auto-refine", () => {

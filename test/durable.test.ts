@@ -288,7 +288,7 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
     expect(reminders).toHaveLength(3); // cadence + cap
     expect(reminders[0]!.msg).toContain("[h_g]");
-    expect(reminders[0]!.msg).toContain("/harness status");
+    expect(reminders[0]!.msg).toContain("harness_list");
     // the suggested snippet is copy-pasteable VALID JSON (review #26)
     expect(reminders[0]!.msg).toContain('"importRemind": { "enabled": false }');
   });
@@ -360,6 +360,34 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
     // the session-start WHAT-listing still fires (awareness at import time)
     expect(notifications.some((n) => /New instructions now active/.test(n.msg))).toBe(true);
+  });
+});
+
+describe("import awareness — reconciliation (review #27)", () => {
+  it("reminders stop advertising items deleted or deactivated after the import (review #27)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, [
+      "- **[h_g]** (importance 0.50) keep", "  - evidence: e",
+      "- **[h_h]** (importance 0.50) gone", "  - evidence: e",
+    ]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    // delete h_g, deactivate h_h — neither may be advertised as active
+    applyDeltas(
+      [
+        { op: "delete", id: "h_g", reason: "stale" },
+        { op: "update", id: "h_h", active: false },
+      ],
+      () => {},
+    );
+    for (let t = 0; t <= 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    expect(getImportedThisSession()).toHaveLength(0);
   });
 });
 

@@ -158,6 +158,7 @@ The package ships raw TypeScript; no compilation is needed.
 
 ```
 /harness status        # should report 0 active / 0 total, durable: none
+                       # (plus zero-state first-steps guidance)
 ```
 
 Then optionally run `/harness setup` (see
@@ -322,10 +323,49 @@ Subcommands:
 /harness status
 ```
 
-Reports whole-store active/total counts broken down by kind (status is a
-whole-store command), annotated with the active model's share, the scope split
-(`X global / Y project`), and **both durable layers**' presence and
-last-modified time (the global file + the current project's file).
+A read-only, single-notify report in three bands on top of the classic
+counts. **Counts** come first: whole-store active/total broken down by kind
+(status is a whole-store command), annotated with the active model's share,
+the scope split (`X global / Y project`), and **both durable layers**'
+presence and last-modified time (the global file + the current project's
+file).
+
+**Impact** is derived on the fly from this session branch's audit trail
+(`harness-state` snapshots + `harness-refinement` entries) by reusing the
+corpus lifecycle classification — no new persisted state, nothing mutated:
+
+- **Runs**: how many `/refine` runs the branch records, split manual vs
+  auto-refine.
+- **Items**: `created` (appeared in a snapshot — `/refine`, `harness_mutate`,
+  or import alike), `updated` (direct-apply proposer batches; a lower bound —
+  steering-path content edits don't change importance, so snapshot diffs
+  can't see them), `kept`/`dropped` (the ±0.1 bumps), `cited` (outcome-loop
+  promotions, classified with the *configured* bump), `pruned` (removed
+  below the importance floor), `deleted` (removed at/above it), and `merged`
+  (dedupe merges, from the "merged into h_…" delete reasons).
+
+The whole-store line is followed by a `For [provider/id]: …` line attributed to
+the active model's items — lifecycle events **and** direct-apply update/merge
+ops (mirroring the per-model annotation in the counts band). The key follows
+the configured `virtualBinding` policy, so under `"physical"` with a virtual
+selection the bands report the routed physical model, not the router id.
+The branch's first snapshot diffs against an implicit **empty baseline**, so
+a fresh session's first create batch (or auto-import) counts its items as
+created.
+
+**Injection** summarizes what the harness delivered this session (in-memory,
+reset on `session_start`): renders that served items, items surfaced, the
+last block's estimated-token usage vs `injection.maxTokens`, and how many
+items the selection policy dropped.
+
+When the store has **0 active items**, the counts are followed by zero-state
+guidance (run `/refine` after a working session; MANUAL §3's Quick start)
+instead of bare zeros. Finally, one rotating **hint** line cross-promotes an
+under-discovered feature that applies right now (classifier gate, outcome
+loop, `push-mem`, `remindRefine`, `split`) — never the hint shown on the
+previous call. The report builder is pure and exported
+(`buildStatusReport`/`renderStatusReport`, plus the hint library in
+`src/hints.ts`) so companions reuse the same copy source.
 
 #### `export [path]`
 
@@ -750,8 +790,13 @@ back online. With `"autoImport": true` the loop runs itself: layers in on
 **You always know what the sync brought in.** The session-start import lists
 every created/updated item (id, kind, first words of content), and — unless
 `importRemind` is disabled — a one-line reminder re-surfaces the imported
-items every 25 turns (max 3 per batch) so silently-injected instructions
-never go unnoticed.
+items every 25 completed turns (max 3 per batch; items deleted or
+ deactivated after the import drop out of the reminders) so
+silently-injected instructions never go unnoticed. Turns are counted as
+completed `turn_end` events across the whole session (aborted/error turns
+are skipped) — pi's `turnIndex` resets to 0 on every `agent_start`, so
+counting run-local index deltas would never cross the cadence for short
+runs.
 
 ---
 
@@ -786,7 +831,7 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. Enabling it **mid-session** is safe: the first `turn_end` imports the layers *before* any export, so a late enable can never overwrite the durable files with a never-imported store. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped. At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, in completed `turn_end` events counted session-wide (pi's `turnIndex` resets per `agent_start`, so run-local indices never gate it). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |
@@ -1256,6 +1301,13 @@ import {
   type InjectionConfig,
   type NormalizedInjection,
   type SelectionResult,
+  // status report — see §5 → "status"
+  buildStatusReport,  // pure: state + branch entries + opts → StatusReport
+  renderStatusReport, // StatusReport (+ durable line, picked hint) → text
+  pickHint,           // pure hint rotation (skip last shown)
+  type StatusReport,
+  type ImpactCounts,
+  type StatusHint,
 } from "pi-continual-harness";
 ```
 
