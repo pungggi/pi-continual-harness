@@ -1,6 +1,7 @@
 // /harness — durable I/O. The two-way round-trip seam with pi-reflect.
 //
 //   /harness status [path]               counts + durable layer presence/mtime
+//   /harness list [-f] [--kind] [--scope]  read items: compact rows, -f = full text
 //   /harness export [path]               layered export (or full snapshot to path)
 //   /harness import [--prune] [path]     layered import (or single file from path)
 //   /harness move <id> <global|project>  move an item between durable layers
@@ -59,6 +60,7 @@ import { buildCorpus } from "./corpus.js";
 import { buildStatusReport, renderStatusReport } from "./status.js";
 import { getInjectionStats } from "./inject.js";
 import { nextHint } from "./hints.js";
+import { preview, renderListReport, type ListScope } from "./list.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
@@ -72,6 +74,7 @@ const SUBCOMMANDS: CompletionEntry[] = [
   { name: "export", description: "Export active items to durable layers (or one file with a path)" },
   { name: "export-corpus", description: "Export calibration corpus JSONL for pi-reflex (dedupe pairs + lifecycle)" },
   { name: "status", description: "Show harness status (counts, audit-trail impact, injection stats, durable layers)" },
+  { name: "list", description: "Read items — compact rows, -f for full text (--kind/--scope filter)" },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },
   { name: "drop", description: "Lower item importance (−0.1)" },
@@ -83,6 +86,13 @@ const SUBCOMMANDS: CompletionEntry[] = [
 ];
 
 const KINDS: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
+
+/** `--scope` values /harness list offers (semantics in src/list.ts). */
+const LIST_SCOPES: Array<{ value: ListScope; description: string }> = [
+  { value: "global", description: "Global-scope items only (~/.pi/agent/harness-state.md)" },
+  { value: "project", description: "Project-scoped items (any project; rows carry the slug)" },
+  { value: "all", description: "Every item, foreign-project included" },
+];
 
 /** Flags each subcommand accepts, in menu order. */
 const FLAGS: Record<string, CompletionEntry[]> = {
@@ -97,17 +107,18 @@ const FLAGS: Record<string, CompletionEntry[]> = {
     { name: "--from", description: "Source model (provider/id) whose active items are up for adoption" },
     { name: "--all", description: "Adopt everything; skip the generalizes-vs-stays filter" },
   ],
+  list: [
+    { name: "-f", description: "Full item text + evidence instead of the compact preview rows" },
+    { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
+    { name: "--scope", description: "global | project | all (default: global + this project)" },
+  ],
   setup: [
     { name: "--preset", description: "Apply one preset: quiet | recommended | power" },
     { name: "--yes", description: "Scripted consent — skip every confirm prompt" },
   ],
 };
 
-function preview(text: string, max = 60): string {
-  // Single line + truncated so the menu row stays readable.
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-}
+// preview() lives in src/list.ts (shared with /harness list rows).
 
 /**
  * Argument autocomplete for /harness (pi calls this with the FULL text after
@@ -141,7 +152,7 @@ function completions(argumentPrefix: string) {
   const sub = before[0]!.toLowerCase();
   // Flag-value completion: the token right before the one being typed.
   const prev = before.at(-1)!;
-  if (prev === "--kind" && sub === "push-mem") {
+  if (prev === "--kind" && (sub === "push-mem" || sub === "list")) {
     return filterValues(
       KINDS.map((k) => ({ value: k, description: KIND_LABEL[k] })),
       last,
@@ -162,6 +173,9 @@ function completions(argumentPrefix: string) {
   if (prev === "--preset" && sub === "setup") {
     return filterValues(PRESET_COMPLETIONS, last, before);
   }
+  if (prev === "--scope" && sub === "list") {
+    return filterValues(LIST_SCOPES, last, before);
+  }
   // --from completes from the model keys actually present in the store (the
   // adoption source pool), with each owner's active-item count as the help
   // line — the same store-backed completion style as --model above.
@@ -175,11 +189,12 @@ function completions(argumentPrefix: string) {
     );
   }
 
-  // Flag completion ("--…" prefix, or a fresh token for flag-taking subs).
-  // A fresh --kind/--model value was already completed above (early return),
-  // so a fresh token here means "offer the remaining flags".
-  if (last.startsWith("--") || (fresh && sub in FLAGS)) {
-    const used = new Set(before.filter((t) => t.startsWith("--")));
+  // Flag completion ("-…" prefix, or a fresh token for flag-taking subs —
+  // the "-" prefix also matches short flags like list's -f). A fresh
+  // --kind/--scope/--model value was already completed above (early
+  // return), so a fresh token here means "offer the remaining flags".
+  if (last.startsWith("-") || (fresh && sub in FLAGS)) {
+    const used = new Set(before.filter((t) => t.startsWith("-")));
     const rows = (FLAGS[sub] ?? []).filter((f) => !used.has(f.name));
     const items = rows
       .filter((f) => f.name.startsWith(last))
@@ -285,6 +300,9 @@ export function registerHarness(pi: ExtensionAPI): void {
         case "setup":
           await handleSetup(ctx, rest);
           return;
+        case "list":
+          await handleList(ctx, rest);
+          return;
         case "status":
         default:
           await handleStatus(ctx);
@@ -298,6 +316,59 @@ export function registerHarness(pi: ExtensionAPI): void {
 /** Explicit path argument, if any (flags like --prune are skipped). */
 function explicitPath(rest: string[]): string | undefined {
   return rest.find((a) => !a.startsWith("-"));
+}
+
+/** `/harness list [-f] [--kind <kind>] [--scope <global|project|all>]`
+ *  (issue #31) — the read view: thin glue (flag parsing + one notify); every
+ *  selection/rendering rule lives in the pure src/list.ts. Read-only: no
+ *  store mutation, no durable writes. Invalid flag values AND unexpected
+ *  arguments warn instead of silently falling back — a filter that quietly
+ *  ignores its own argument would make the listing lie. */
+async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
+  const full = rest.includes("-f");
+  let kind: ComponentKind | undefined;
+  const kindIdx = rest.indexOf("--kind");
+  if (kindIdx >= 0) {
+    const k = kindIdx + 1 < rest.length ? rest[kindIdx + 1]! : undefined;
+    if (!k || k.startsWith("-") || !KINDS.includes(k as ComponentKind)) {
+      ctx.ui.notify(`/harness list: --kind expects one of ${KINDS.join("|")}.`, "warning");
+      return;
+    }
+    kind = k as ComponentKind;
+  }
+  let scope: ListScope | undefined;
+  const scopeIdx = rest.indexOf("--scope");
+  if (scopeIdx >= 0) {
+    const s = scopeIdx + 1 < rest.length ? rest[scopeIdx + 1]! : undefined;
+    if (s !== "global" && s !== "project" && s !== "all") {
+      ctx.ui.notify("/harness list: --scope expects global|project|all.", "warning");
+      return;
+    }
+    scope = s;
+  }
+  // Unexpected arguments (unknown flags like --full, stray positionals,
+  // repeated flags) warn too — the same no-silent-fallback rule as invalid
+  // values. Anything but -f, --kind <value>, --scope <value> is refused.
+  const consumed = new Set<number>();
+  if (kindIdx >= 0) { consumed.add(kindIdx); consumed.add(kindIdx + 1); }
+  if (scopeIdx >= 0) { consumed.add(scopeIdx); consumed.add(scopeIdx + 1); }
+  const unexpected = rest.filter((t, idx) => t !== "-f" && !consumed.has(idx));
+  if (unexpected.length > 0) {
+    ctx.ui.notify(
+      `/harness list: unexpected argument(s): ${unexpected.join(" ")} — expected -f, --kind <kind>, --scope <global|project|all>.`,
+      "warning",
+    );
+    return;
+  }
+  ctx.ui.notify(
+    renderListReport(getState().items, {
+      ...(kind ? { kind } : {}),
+      ...(scope ? { scope } : {}),
+      ...(full ? { full } : {}),
+      slug: projectSlug(ctx.cwd),
+    }),
+    "info",
+  );
 }
 
 async function handleImport(

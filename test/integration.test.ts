@@ -333,6 +333,7 @@ describe("/harness command", () => {
       "export",
       "export-corpus",
       "status",
+      "list",
       "prune",
       "keep",
       "drop",
@@ -426,6 +427,37 @@ describe("/harness command", () => {
     ]);
     expect(complete("setup --preset re")).toEqual([
       { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
+    ]);
+  });
+
+  it("completes list flags, --kind values, and --scope values (issue #31)", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    // fresh token → the list flags (-f included — short flags complete too)
+    expect(complete("list ")).toEqual([
+      { value: "list -f", label: "-f", description: expect.any(String) },
+      { value: "list --kind", label: "--kind", description: expect.any(String) },
+      { value: "list --scope", label: "--scope", description: expect.any(String) },
+    ]);
+    // short-flag prefix matches; a used -f is not re-offered
+    expect(complete("list -")).toHaveLength(3);
+    expect(complete("list -f --")).toEqual([
+      { value: "list -f --kind", label: "--kind", description: expect.any(String) },
+      { value: "list -f --scope", label: "--scope", description: expect.any(String) },
+    ]);
+    // --kind completes the four kinds (same menu as push-mem)
+    expect(complete("list --kind m")).toEqual([
+      { value: "list --kind memory", label: "memory", description: expect.any(String) },
+    ]);
+    // --scope completes its three values with full replacement text
+    expect(complete("list --scope ")).toEqual([
+      { value: "list --scope global", label: "global", description: expect.any(String) },
+      { value: "list --scope project", label: "project", description: expect.any(String) },
+      { value: "list --scope all", label: "all", description: expect.any(String) },
+    ]);
+    expect(complete("list --kind memory --scope pr")).toEqual([
+      { value: "list --kind memory --scope project", label: "project", description: expect.any(String) },
     ]);
   });
 
@@ -534,6 +566,91 @@ describe("/harness command", () => {
     expect(notifications.filter((n) => n.level === "warning").length).toBe(2);
     await commands.get("harness")!.handler("move h_missing global", ctx());
     expect(notifications.some((n) => /move failed: update: no item/.test(n.msg))).toBe(true);
+  });
+
+  it("/harness list renders compact rows and the scope views (issue #31)", async () => {
+    const { pi, commands, ctx, notifications, entries } = makeFakePi([]);
+    continualHarness(pi);
+    // Seed: global memory, this-project prompt (fake cwd /tmp → slug "tmp"),
+    // foreign-project memory — importances chosen so ranking ≠ insertion.
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "global fact", evidence: "g", importance: 0.4 },
+        { op: "create", kind: "prompt", content: "app note", evidence: "p", importance: 0.9, scope: "project", project: "tmp" },
+        { op: "create", kind: "memory", content: "foreign fact", evidence: "f", importance: 0.8, scope: "project", project: "other" },
+      ] as Delta[],
+      () => {},
+    );
+
+    // Default view = the session's layers: global + "tmp"; foreign hidden + noted.
+    await commands.get("harness")!.handler("list", ctx());
+    let msg = notifications.at(-1)!.msg;
+    expect(msg).toContain("2 item(s)");
+    expect(msg).toContain('scope global + project "tmp"');
+    expect(msg).toContain("app note");
+    expect(msg).toContain("global fact");
+    expect(msg).not.toContain("foreign fact");
+    expect(msg).toContain("1 foreign-project item(s) hidden");
+    // importance-desc rows (0.9 prompt before 0.4 memory)
+    expect(msg.indexOf("app note")).toBeLessThan(msg.indexOf("global fact"));
+    // compact by default, with the -f pointer
+    expect(msg).toContain("-f for full text");
+
+    await commands.get("harness")!.handler("list --scope all", ctx());
+    msg = notifications.at(-1)!.msg;
+    expect(msg).toContain("3 item(s)");
+    expect(msg).toContain("foreign fact");
+
+    await commands.get("harness")!.handler("list --scope global", ctx());
+    msg = notifications.at(-1)!.msg;
+    expect(msg).toContain("1 item(s)");
+    expect(msg).not.toContain("app note");
+
+    await commands.get("harness")!.handler("list --kind memory", ctx());
+    msg = notifications.at(-1)!.msg;
+    expect(msg).toContain("1 item(s)");
+    expect(msg).toContain("kind memory");
+
+    // Read-only end to end: no session entries, no store mutation.
+    expect(entries).toHaveLength(0);
+    expect(getState().items).toHaveLength(3);
+  });
+
+  it("/harness list -f renders full text + evidence; empty store and invalid flags guide", async () => {
+    const { pi, commands, ctx, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    // Empty store → zero-state guidance, not a bare zero.
+    await commands.get("harness")!.handler("list", ctx());
+    expect(notifications.at(-1)!.msg).toContain("`/refine`");
+
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "full fact", evidence: "the evidence", ownerModel: "test/main" }] as Delta[],
+      () => {},
+    );
+    await commands.get("harness")!.handler("list -f", ctx());
+    const msg = notifications.at(-1)!.msg;
+    expect(msg).toContain("(full text)");
+    expect(msg).toContain("model test/main");
+    expect(msg).toContain("full fact");
+    expect(msg).toContain("evidence: the evidence");
+
+    // Invalid flag values warn instead of silently listing unfiltered.
+    await commands.get("harness")!.handler("list --kind bogus", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    await commands.get("harness")!.handler("list --scope worldwide", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    await commands.get("harness")!.handler("list --kind", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    // Unexpected arguments warn too (unknown flags, stray positionals) —
+    // no silent fallback to the default view.
+    const listed = notifications.length;
+    await commands.get("harness")!.handler("list --full", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    expect(notifications.at(-1)!.msg).toContain("unexpected argument");
+    expect(notifications.at(-1)!.msg).toContain("--full");
+    await commands.get("harness")!.handler("list bogus", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    expect(notifications.length).toBe(listed + 2); // warnings only, no listing
   });
 
   it("/harness split steers the agent to classify scopes via harness_mutate", async () => {

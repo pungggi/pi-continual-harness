@@ -88,7 +88,7 @@ export function registerTools(pi: ExtensionAPI): void {
     name: "harness_list",
     label: "List harness state",
     description:
-      "List items in the Continual Harness state (self-improved prompt notes, memory, skill descriptions, sub-agent specs). Optionally filter by kind.",
+      "List items in the Continual Harness state (self-improved prompt notes, memory, skill descriptions, sub-agent specs). Optionally filter by kind. (/harness list is the human-facing TUI view: compact rows + durable-scope filters.)",
     promptSnippet: "Read Continual Harness self-improvement state",
     promptGuidelines: [
       "Call harness_list before proposing changes so you operate on current state.",
