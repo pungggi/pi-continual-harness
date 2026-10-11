@@ -164,3 +164,24 @@ export {
   type OmissionDraft,
   type ProjectedLike,
 } from "./auto-refine.js";
+
+// Setup wizard (issue #22): presets as pure data + expandPreset, and the one
+// reviewed write path for harness.json (backup + atomic write + reload).
+// Re-exported so tests and companion packages never reach into internal
+// paths.
+export {
+  deepMergeConfig,
+  readConfigRaw,
+  saveConfig,
+  type SaveConfigResult,
+} from "./config.js";
+export {
+  expandPreset,
+  getPath,
+  planWrite,
+  PRESETS,
+  setPath,
+  type Preset,
+  type PresetDelta,
+  type PresetName,
+} from "./setup.js";

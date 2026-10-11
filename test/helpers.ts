@@ -12,6 +12,8 @@ export interface FakeCtx {
   ui: {
     notify: (msg: string, level: string) => void;
     setStatus: (key: string, text: string | undefined) => void;
+    select: (title: string, options: string[]) => Promise<string | undefined>;
+    confirm: (title: string, message: string) => Promise<boolean>;
   };
   sessionManager: {
     getBranch: () => unknown[];
@@ -31,6 +33,11 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
   const sentMessages: string[] = [];
   const notifications: Array<{ msg: string; level: string }> = [];
   const statuses: Array<{ key: string; text: string | undefined }> = [];
+  // Scripted prompt answers (shift-ed in order). Defaults are the SAFE ones:
+  // an unanswered select cancels (undefined) and an unanswered confirm
+  // declines (false) — matching the wizard's degrade-to-no-write semantics.
+  const selects: Array<string | undefined> = [];
+  const confirms: boolean[] = [];
 
   const pi = {
     on: (ev: string, h: Handler) => {
@@ -59,6 +66,8 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
     ui: {
       notify: (msg, level) => notifications.push({ msg, level }),
       setStatus: (key, text) => statuses.push({ key, text }),
+      select: async () => selects.shift(),
+      confirm: async () => (confirms.length > 0 ? confirms.shift()! : false),
     },
     sessionManager: { getBranch: () => branch },
     cwd,
@@ -78,6 +87,8 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
     sentMessages,
     notifications,
     statuses,
+    selects,
+    confirms,
     ctx,
     fire,
   };

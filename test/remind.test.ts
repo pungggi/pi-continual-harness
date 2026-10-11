@@ -9,6 +9,7 @@ import {
   DETAIL_GUIDES,
   DETAIL_LOOP_VARIANTS,
   evaluateReminder,
+  registerReminder,
   reminderState,
   resetReminder,
   type ReminderState,
@@ -254,7 +255,6 @@ describe("registerReminder end-to-end", () => {
   it("is on by default: nudges at 25, detailed at the 4th fire (turn 100)", async () => {
     await primeConfig({}); // no remindRefine key → defaults
     const { pi, ctx, fire, notifications } = makeFakePi([]);
-    const { registerReminder } = await import("../src/remind.js");
     registerReminder(pi);
     for (let t = 0; t <= 100; t++) {
       // Synthetic events carry no outcome → treated as completed (0.14.0).
@@ -270,7 +270,6 @@ describe("registerReminder end-to-end", () => {
   it("aborted turns are inert end-to-end: they never advance the cadence", async () => {
     await primeConfig({ remindRefine: { everyTurns: 3 } });
     const { pi, ctx, fire, notifications } = makeFakePi([]);
-    const { registerReminder } = await import("../src/remind.js");
     registerReminder(pi);
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx()); // seed
     for (let t = 1; t <= 20; t++) {
@@ -282,10 +281,50 @@ describe("registerReminder end-to-end", () => {
   it("explicit enabled: false restores silence (overridable in both directions)", async () => {
     await primeConfig({ remindRefine: { enabled: false } });
     const { pi, ctx, fire, notifications } = makeFakePi([]);
-    const { registerReminder } = await import("../src/remind.js");
     registerReminder(pi);
     for (let t = 0; t <= 60; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications).toHaveLength(0);
+  });
+});
+
+describe("registerReminder (event counting, review #26)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    resetReminder();
+    dir = mkdtempSync(join(tmpdir(), "pi-ch-remind-"));
+    writeFileSync(
+      join(dir, "harness.json"),
+      JSON.stringify({ remindRefine: { enabled: true, everyTurns: 5 } }),
+      "utf8",
+    );
+    resetConfigCache();
+    return loadConfig(join(dir, "harness.json")).then(() => undefined);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("counts turn_end events, not pi's per-run turnIndex (reset to 0 each agent_start)", async () => {
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    registerReminder(pi);
+    // 6 separate prompts, each a fresh agent run → turnIndex resets to 0
+    // every time. Absolute-index math would NEVER reach a 5-turn cadence;
+    // event counting does (seed on the first, fire 5 events later).
+    for (let i = 0; i < 6; i++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
+    }
+    expect(notifications.some((n) => n.msg.includes("/refine"))).toBe(true);
+  });
+
+  it("does not fire before the cadence elapses", async () => {
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    registerReminder(pi);
+    for (let i = 0; i < 5; i++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     }
     expect(notifications).toHaveLength(0);
   });
