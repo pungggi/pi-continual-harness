@@ -110,24 +110,36 @@ function aggregateImpact(
       for (const t of classifyTransition(prev, next, citeBump)) {
         const key = t.item.ownerModel || "(orphan)";
         const o = owner(key);
-        if (t.event === "created") {
-          whole.created += 1;
-          o.created += 1;
-        } else if (t.event === "kept") {
-          whole.kept += 1;
-          o.kept += 1;
-        } else if (t.event === "dropped") {
-          whole.dropped += 1;
-          o.dropped += 1;
-        } else if (t.event === "cited") {
-          whole.cited += 1;
-          o.cited += 1;
-        } else if (t.event === "pruned") {
-          whole.pruned += 1;
-          o.pruned += 1;
-        } else {
-          whole.deleted += 1;
-          o.deleted += 1;
+        // A switch (not if/else): a future LifecycleEvent falls to default
+        // and is NOT counted as a delete — the old trailing `else` would have
+        // silently mislabeled it (review simplification #5).
+        switch (t.event) {
+          case "created":
+            whole.created += 1;
+            o.created += 1;
+            break;
+          case "kept":
+            whole.kept += 1;
+            o.kept += 1;
+            break;
+          case "dropped":
+            whole.dropped += 1;
+            o.dropped += 1;
+            break;
+          case "cited":
+            whole.cited += 1;
+            o.cited += 1;
+            break;
+          case "pruned":
+            whole.pruned += 1;
+            o.pruned += 1;
+            break;
+          case "deleted":
+            whole.deleted += 1;
+            o.deleted += 1;
+            break;
+          default:
+            break; // unknown future event: ignore, never mislabel
         }
       }
       snapshots.push(next);

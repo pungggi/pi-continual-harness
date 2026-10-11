@@ -235,9 +235,14 @@ export function reconstruct(entries: Iterable<unknown>): void {
   // the active model on first contact (see adoptOrphans); missing/corrupt
   // scope → "global" (a project item without a slug cannot be placed in a
   // layer, so it falls back to the global durable file).
-  state = last
+  state = last && Array.isArray(last.items)
     ? {
-        items: last.items.map((i): HarnessItem => {
+        // Guard both levels (review finding #5): one corrupt harness-state
+        // entry (state without an items array, or non-object items) must not
+        // crash the session_start handler — degrade to the salvageable part.
+        items: last.items
+          .filter((i): i is HarnessItem => Boolean(i) && typeof i === "object")
+          .map((i): HarnessItem => {
           const item: HarnessItem = { ...i, ownerModel: i.ownerModel ?? "", scope: "global" };
           if (i.scope === "project" && i.project) {
             item.scope = "project";
@@ -246,7 +251,7 @@ export function reconstruct(entries: Iterable<unknown>): void {
             delete item.project;
           }
           return item;
-        }),
+          }),
       }
     : { items: [] };
   version = 0;
@@ -277,9 +282,15 @@ export function decayAndPrune(
   }
   const before = state.items.length;
   state.items = state.items.filter((i) => i.importance >= IMPORTANCE_FLOOR);
-  version += 1;
-  persist(state, version);
-  return { pruned: before - state.items.length, decayed };
+  const pruned = before - state.items.length;
+  // No-op idempotency (review finding #3): like mergeParsed and adoptOrphans,
+  // a prune that changed nothing persists nothing — otherwise every no-op
+  // /harness prune appends a harness-state entry of pure /tree noise.
+  if (decayed > 0 || pruned > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  return { pruned, decayed };
 }
 
 /** Nudge an item's importance by delta (clamped to [0,1]) and touch updatedAt. */
@@ -587,6 +598,16 @@ function mergeParsed(
 ): DurableImportResult {
   const fileIds = new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id)));
   const existingById = new Map(state.items.map((i) => [i.id, i] as const));
+  // Content fallback (review finding #4): id-less bullets and foreign
+  // (non-h_) ids never hit the id map, so import→import of the same file
+  // without an export in between used to duplicate the item every time.
+  // Matching kind+content folds the re-import into the item the first import
+  // created. Keyed with \x00 so content cannot collide across kinds.
+  const existingByContent = new Map(state.items.map((i) => [`${i.kind}${i.content}`, i] as const));
+  // Store ids any parsed line resolved to (id match, content match, or
+  // create): with --prune these count as "present in the file" even when the
+  // file never named the id (an id-less bullet carries no fileIds entry).
+  const touchedIds = new Set<string>();
   const preActiveIds = new Set(state.items.filter((i) => i.active).map((i) => i.id));
   // Distinct parsed items: an explicit id folding across layers (the normal
   // global-then-project collision) is ONE item, not one per copy; bullets
@@ -609,8 +630,10 @@ function mergeParsed(
   const updatedIds: string[] = [];
   const now = Date.now();
   for (const p of parsed) {
-    const existing = p.id ? existingById.get(p.id) : undefined;
+    const existing =
+      (p.id ? existingById.get(p.id) : undefined) ?? existingByContent.get(`${p.kind}${p.content}`);
     if (existing) {
+      touchedIds.add(existing.id);
       const importance = clamp(p.importance);
       const ownerModel = p.ownerModel ?? "";
       // Durable wins; reactivate; keep createdAt. Idempotent imports skip the
@@ -639,6 +662,10 @@ function mergeParsed(
       updated += 1;
       updatedIds.push(existing.id);
       dirty = true;
+      // A content-matched line that named a foreign id: register it so a
+      // second copy of that id later in the same import id-matches instead
+      // of content-matching again (same dedupe as the create branch below).
+      if (p.id) existingById.set(p.id, existing);
     } else {
       const id = p.id && /^h_/.test(p.id) ? p.id : genId();
       state.items.push({
@@ -656,10 +683,11 @@ function mergeParsed(
       created += 1;
       createdIds.push(id);
       dirty = true;
-      // Keep the lookup current so a later layer's copy of the same id
-      // UPDATES the item we just created instead of duplicating it (the same
-      // id in both layers is the normal collision case, not an anomaly).
+      // Keep the lookups current so a later copy of the same item (another
+      // layer's id collision, or a repeated id-less bullet) UPDATES the item
+      // we just created instead of duplicating it.
       if (p.id) existingById.set(p.id, state.items[state.items.length - 1]!);
+      existingByContent.set(`${p.kind}${p.content}`, state.items[state.items.length - 1]!);
     }
   }
 
@@ -670,6 +698,7 @@ function mergeParsed(
       if (!i.active) return true; // inactive items are never touched by durable I/O
       if (!preActiveIds.has(i.id)) return true; // created during this import
       if (fileIds.has(i.id)) return true; // present in the file
+      if (touchedIds.has(i.id)) return true; // matched by content (id-less / foreign id)
       return false; // was active before, absent from the file → drop
     });
     pruned = before - state.items.length;

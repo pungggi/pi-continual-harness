@@ -189,13 +189,18 @@ function completions(argumentPrefix: string) {
     );
   }
 
-  // Flag completion ("-…" prefix, or a fresh token for flag-taking subs —
+  // Flag completion ("-" prefix, or a fresh token for flag-taking subs —
   // the "-" prefix also matches short flags like list's -f). A fresh
   // --kind/--scope/--model value was already completed above (early
   // return), so a fresh token here means "offer the remaining flags".
-  if (last.startsWith("-") || (fresh && sub in FLAGS)) {
+  // Object.hasOwn guards BOTH the condition and the lookup (review finding
+  // #2): a bogus subcommand naming an inherited Object member ("constructor",
+  // "toString", …) otherwise resolves FLAGS[sub] to Function — the `?? []`
+  // does not catch it (Function is not nullish) and .filter throws. Same
+  // class as the expandPreset fix in review #26.
+  if (last.startsWith("-") || (fresh && Object.hasOwn(FLAGS, sub))) {
     const used = new Set(before.filter((t) => t.startsWith("-")));
-    const rows = (FLAGS[sub] ?? []).filter((f) => !used.has(f.name));
+    const rows = (Object.hasOwn(FLAGS, sub) ? FLAGS[sub]! : []).filter((f) => !used.has(f.name));
     const items = rows
       .filter((f) => f.name.startsWith(last))
       .map((f) => ({ value: [...before, f.name].join(" "), label: f.name, description: f.description }));
@@ -564,6 +569,17 @@ async function handleMove(
   }
 }
 
+/** Numbered item listing shared by the split/adopt steering prompts. The
+ *  format had already drifted once (adopt carries full-precision importance
+ *  because the agent copies it verbatim into create deltas — review #25;
+ *  split rounds to 2). One renderer keeps the layout in lockstep. */
+function formatItemLines(items: HarnessItem[], importance: "raw" | "fixed"): string[] {
+  return items.flatMap((i, n) => [
+    `${n + 1}. [${i.id}] (${i.kind}, importance ${importance === "fixed" ? i.importance.toFixed(2) : i.importance}, ${i.scope === "project" ? `project "${i.project ?? ""}"` : "global"}) ${i.content}`,
+    `   evidence: ${i.evidence}`,
+  ]);
+}
+
 /** Compose the /harness split steering message: the agent classifies every
  *  active item global-vs-project and applies the classification as ONE
  *  harness_mutate batch of scope-only update deltas — visible in the
@@ -572,7 +588,7 @@ function buildSplitPrompt(items: HarnessItem[], slug: string, cwd: string): stri
   const lines = [
     `/harness split — classify ${items.length} Continual Harness item(s) into durable scopes`,
     "",
-    `Current project: ${cwd} (slug \"${slug}\").`,
+    `Current project: ${cwd} (slug "${slug}").`,
     "",
     "For EACH item below, decide its durable scope:",
     "- `project` — only useful when working in THIS project (deploy procedures, project architecture, local conventions, project-specific quirks).",
@@ -583,13 +599,8 @@ function buildSplitPrompt(items: HarnessItem[], slug: string, cwd: string): stri
     `(the "project" slug is stamped server-side to "${slug}"; content/evidence/importance stay untouched). Give every item an explicit decision — skip nothing. If an item is project-specific only in part, choose "project" and leave generalizing it for a later /refine.`,
     "",
     "Items:",
+    ...formatItemLines(items, "fixed"),
   ];
-  items.forEach((i, n) => {
-    lines.push(
-      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
-      `   evidence: ${i.evidence}`,
-    );
-  });
   return lines.join("\n");
 }
 
@@ -677,16 +688,8 @@ export function buildAdoptPrompt(
       : "- Summarize at the end: adopted N, skipped M (stays) — with one short reason per skip.",
     "",
     "Items:",
+    ...formatItemLines(items, "raw"),
   );
-  items.forEach((i, n) => {
-    // Full precision (no toFixed): the agent copies the listed importance
-    // verbatim into the create delta, and a rounded value would change the
-    // copy's ranking against existing items in injection selection (review #25).
-    lines.push(
-      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
-      `   evidence: ${i.evidence}`,
-    );
-  });
   return lines.join("\n");
 }
 

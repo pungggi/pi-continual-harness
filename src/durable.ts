@@ -28,7 +28,7 @@ import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js
 import type { LayerFile, LayerPaths } from "./store.js";
 import type { HarnessItem } from "./types.js";
 import { DEFAULT_IMPORT_REMIND_TURNS, layerFilesFor, loadConfig, projectSlug, type HarnessConfig } from "./config.js";
-import { turnEndedBadly } from "./auto-refine.js";
+import { makeTurnCadence } from "./cadence.js";
 
 /** Real (homedir-based) layer paths. Tests inject their own. */
 function layerPaths(): LayerPaths {
@@ -44,12 +44,11 @@ let lastExportedVersion = -1;
 // BEFORE any export — never clobbering the durable layers (review #26).
 let startSyncRan = false;
 
-// Completed turns observed since the last import reminder (or the seeded
-// baseline). -1 = unseen. Aborted/error turns never touch this count — the
-// cadence counts completed turns of work (mirrors remind.ts / #18), never raw
-// turn indices: pi's `turnIndex` resets to 0 on every agent_start (each user
-// prompt), so index deltas would never accumulate across prompts (review #26).
-let completedTurns = -1;
+// The import-reminder cadence counter (shared implementation — see
+// cadence.ts): completed turns of work, never raw turn indices — pi's
+// `turnIndex` resets to 0 on every agent_start (each user prompt), so index
+// deltas would never accumulate across prompts (review #26).
+const importCadence = makeTurnCadence();
 
 /** A durable-imported item the user should stay aware of (id + what it says). */
 export interface ImportedRef {
@@ -75,7 +74,7 @@ export function resetDurableSync(): void {
   lastExportedVersion = -1;
   startSyncRan = false;
   importedThisSession = [];
-  completedTurns = -1;
+  importCadence.reset();
   remindersFired = 0;
 }
 
@@ -154,20 +153,11 @@ export function evaluateImportReminder(
   if (!config.autoImport) return false;
   if (config.importRemind?.enabled === false) return false;
   if (importedCount <= 0) return false;
-  if (turnEndedBadly(outcome)) return false;
   if (remindersFired >= MAX_IMPORT_REMINDERS) return false;
   const every = config.importRemind?.everyTurns ?? DEFAULT_IMPORT_REMIND_TURNS;
-  if (completedTurns < 0) {
-    completedTurns = 0; // seed: the seed turn itself doesn't count
-    return false;
-  }
-  completedTurns += 1;
-  if (completedTurns >= every) {
-    completedTurns = 0;
-    remindersFired += 1;
-    return true;
-  }
-  return false;
+  if (!importCadence.tick(every, outcome)) return false;
+  remindersFired += 1;
+  return true;
 }
 
 /** Keep importedThisSession truthful against the live store (review #27): an
@@ -188,8 +178,9 @@ function reconcileImported(): void {
 export function registerImportReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
-    // Completed-turn counting (see `completedTurns`): aborted/error outcomes
-    // are inert and pi's per-agent-start turnIndex resets never matter.
+    // Completed-turn counting (the shared cadence — see cadence.ts):
+    // aborted/error outcomes are inert and pi's per-agent-start turnIndex
+    // resets never matter.
     reconcileImported(); // deleted/deactivated imports stop being advertised (review #27)
     const outcome = (event as { outcome?: string }).outcome;
     if (!evaluateImportReminder(config, outcome, importedThisSession.length)) {

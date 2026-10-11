@@ -20,7 +20,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
-import { getProposer, DEFAULT_DEDUPE } from "./proposer.js";
+import { getProposer, listProposers, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
 import { buildClassify } from "./classify.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
@@ -58,9 +58,12 @@ export function registerRefine(pi: ExtensionAPI): void {
     description:
       "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe] [--threshold 0.75]",
     handler: async (args, ctx) => {
-      const { lookback, commit, proposer, threshold, thresholdInvalid } = parseArgs(args);
+      const { lookback, commit, proposer, threshold, thresholdInvalid, unknownFlags } = parseArgs(args);
       if (thresholdInvalid) {
         ctx.ui.notify("Invalid --threshold ignored (expected 0 < t ≤ 1).", "warning");
+      }
+      if (unknownFlags.length > 0) {
+        ctx.ui.notify(`Unknown /refine flag(s) ignored: ${unknownFlags.join(", ")}.`, "warning");
       }
       await runRefine(pi, ctx, {
         lookback,
@@ -120,6 +123,14 @@ export async function runRefine(
   const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
   const commit = options.commit ?? false;
   const proposer = getProposer(options.proposer);
+  // An explicit but unknown --proposer must not silently run steering
+  // (review finding #7): name the fallback so a typo is visible.
+  if (options.proposer && proposer.name !== options.proposer) {
+    ctx.ui.notify(
+      `Unknown proposer "${options.proposer}" — falling back to steering. Registered: ${listProposers().join(", ")}.`,
+      "warning",
+    );
+  }
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback);
@@ -248,6 +259,7 @@ function parseArgs(args: string): {
   proposer: string | undefined;
   threshold: number | undefined;
   thresholdInvalid: boolean;
+  unknownFlags: string[];
 } {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   let lookback = DEFAULT_LOOKBACK_TURNS;
@@ -255,6 +267,7 @@ function parseArgs(args: string): {
   let proposer: string | undefined;
   let threshold: number | undefined;
   let thresholdInvalid = false;
+  const unknownFlags: string[] = [];
   const readThreshold = (raw: string): void => {
     const v = Number(raw);
     if (Number.isFinite(v) && v > 0 && v <= 1) threshold = v;
@@ -268,8 +281,11 @@ function parseArgs(args: string): {
     else if (p === "--threshold" && i + 1 < parts.length) readThreshold(parts[++i]!);
     else if (p.startsWith("--threshold=")) readThreshold(p.slice("--threshold=".length));
     else if (/^\d+$/.test(p)) lookback = Math.max(1, Math.min(200, Number(p)));
+    // Unknown --flags are collected, not silently dropped: a typo like
+    // "--comit" used to vanish and run a plain refine (review finding #7).
+    else if (p.startsWith("--")) unknownFlags.push(p);
   }
-  return { lookback, commit, proposer, threshold, thresholdInvalid };
+  return { lookback, commit, proposer, threshold, thresholdInvalid, unknownFlags };
 }
 
 export function gatherEvidence(ctx: ExtensionContext, lookback: number): string {

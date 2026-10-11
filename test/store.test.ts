@@ -162,6 +162,36 @@ describe("reconstruct", () => {
     reconstruct([]);
     expect(getState().items).toHaveLength(0);
   });
+
+  it("a corrupt harness-state entry (items not an array) degrades to empty instead of throwing (review finding #5)", () => {
+    const entries = [
+      { type: "custom", customType: "harness-state", data: { state: { items: "not-an-array" } } },
+      { type: "custom", customType: "harness-state", data: { state: {} } },
+      { type: "custom", customType: "harness-state", data: { state: null } },
+    ];
+    expect(() => reconstruct(entries)).not.toThrow();
+    expect(getState().items).toEqual([]);
+  });
+
+  it("non-object items inside a snapshot are filtered, not spread into garbage", () => {
+    const entries = [
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: {
+          state: {
+            items: [
+              null,
+              "bogus",
+              { id: "h_ok", kind: "memory", content: "fine", evidence: "e", importance: 0.5, active: true, createdAt: 1, updatedAt: 1 },
+            ],
+          },
+        },
+      },
+    ];
+    reconstruct(entries);
+    expect(getState().items.map((i) => i.id)).toEqual(["h_ok"]);
+  });
 });
 
 describe("listItems", () => {
@@ -216,6 +246,19 @@ describe("decayAndPrune", () => {
     expect(res.decayed).toBe(1);
     expect(res.pruned).toBe(1);
     expect(getState().items.map((i) => i.content)).toEqual(["fresh"]);
+  });
+
+  it("a no-op prune persists nothing (no /tree noise — review finding #3)", () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "healthy", evidence: "e", importance: 0.8 }],
+      vi.fn(),
+    );
+    const persist = vi.fn();
+    const { pruned, decayed } = decayAndPrune({}, persist);
+    expect(pruned).toBe(0);
+    expect(decayed).toBe(0);
+    expect(persist).not.toHaveBeenCalled(); // same idempotency contract as mergeParsed/adoptOrphans
+    expect(getState().items).toHaveLength(1);
   });
 });
 
@@ -342,6 +385,74 @@ describe("parseDurable + reconstructFromDurable", () => {
     expect(updated.evidence).toBe("refined offline by pi-reflect");
     expect(items).toHaveLength(2);
     expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-importing the same file twice is idempotent for foreign ids and id-less bullets (review finding #4)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-reimport-"));
+    const file = join(dir, "harness-state.md");
+    // One bullet with a NON-h_ id (a pi-reflect edit the store has never seen)
+    // and one bullet with no id at all.
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        "- **[foreign-id-1]** (importance 0.60) offline edit with a foreign id",
+        "  - evidence: pi-reflect",
+        "- id-less bullet added by hand",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const persist = vi.fn();
+    try {
+      const first = await reconstructFromDurable(file, {}, persist);
+      expect(first.created).toBe(2);
+      expect(getState().items).toHaveLength(2);
+      persist.mockClear();
+      // Second import of the UNCHANGED file: nothing new, nothing persisted.
+      const second = await reconstructFromDurable(file, {}, persist);
+      expect(second.created).toBe(0);
+      expect(second.updated).toBe(0);
+      expect(getState().items).toHaveLength(2); // no duplicates
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-import with { prune: true } keeps content-matched id-less items (no delete+recreate churn)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-reimport-prune-"));
+    const file = join(dir, "harness-state.md");
+    writeFileSync(
+      file,
+      [
+        "# Continual Harness State",
+        "",
+        "## Memory facts",
+        "",
+        "- an id-less fact that must survive re-import --prune",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      const first = await reconstructFromDurable(file, { prune: true }, vi.fn());
+      expect(first.created).toBe(1);
+      const createdId = getState().items[0]!.id;
+      // Re-import with prune: the content-matched item counts as "present in
+      // the file" — before the fix it was dropped (its id is in no fileIds
+      // set) while a fresh copy was created, churning the id every import.
+      const second = await reconstructFromDurable(file, { prune: true }, vi.fn());
+      expect(second.created).toBe(0);
+      expect(second.pruned).toBe(0);
+      expect(getState().items).toHaveLength(1);
+      expect(getState().items[0]!.id).toBe(createdId); // same item, not a recreated copy
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("{ prune: true } drops active items absent from the file, keeps inactive ones", async () => {

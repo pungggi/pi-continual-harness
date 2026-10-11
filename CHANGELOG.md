@@ -8,6 +8,72 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.16.1] — 2026-10-11
+
+Deep-review release: six correctness fixes (each found by a full code review,
+`review findings #1–#7` below) plus the simplifications that remove the drift
+surfaces the bugs grew on.
+
+### Fixed
+
+- **`/harness export-corpus` dropped the first snapshot's `created` events**
+  (review finding #1) — `buildCorpus`'s snapshot walk skipped the branch's
+  FIRST `harness-state` entry, while `/harness status` had the implicit
+  empty-baseline fix since review #27. A fresh session's entire first create
+  batch (often the auto-import) never landed in `lifecycle.jsonl`, and the
+  two reports disagreed on `created` counts for the same branch. The corpus
+  walk now diffs against `{ items: [] }` exactly like the status aggregator.
+- **Completions crashed on prototype-collision subcommands** (review finding
+  #2) — typing `/harness constructor --` (or `toString`, `valueOf`, …) hit
+  `sub in FLAGS` / `FLAGS[sub] ?? []`, which resolve `Function` through the
+  prototype chain: not nullish, so `.filter` threw. Both the condition and
+  the lookup now go through `Object.hasOwn` (same class as the review #26
+  `expandPreset` fix).
+- **No-op `/harness prune` appended a `harness-state` entry** (review finding
+  #3) — `decayAndPrune` persisted unconditionally. A prune that decayed and
+  removed nothing now persists nothing, matching the `mergeParsed` /
+  `adoptOrphans` idempotency contract (no `/tree` noise).
+- **Re-importing a durable file without an export in between duplicated
+  items** (review finding #4) — id-less bullets and foreign (non-`h_`) ids
+  never hit the id map, so every import created a fresh copy. Import now
+  falls back to a kind+content match: the re-import folds into the item the
+  first import created (and under `--prune`, content-matched items count as
+  "present in the file" — no delete+recreate id churn).
+- **One corrupt `harness-state` entry could break `session_start`** (review
+  finding #5) — `reconstruct` called `.map` on whatever `state.items`
+  happened to be. Non-array `items` and non-object entries are now filtered
+  out instead of throwing; a fully-corrupt snapshot degrades to an empty
+  store.
+- **Malformed `harness.json` silently reset every setting** (review finding
+  #6) — the loader fell back to defaults with zero feedback. `loadConfig`
+  now flags the parse failure (`configMalformed()`) and `session_start`
+  warns once per session: "not valid JSON — every setting is on its DEFAULT
+  until the file parses."
+- **Typo'd `/refine` flags and proposer names vanished silently** (review
+  finding #7) — `--comit` ran a plain no-commit refine; `--proposer dedupee`
+  silently fell back to steering. Unknown `--flags` and unknown proposer
+  names now produce a warning (the refine still runs).
+
+### Changed
+
+- **One shared turn-cadence counter** (new `src/cadence.ts`) backs
+  auto-refine, the `/refine` reminder, and the import-awareness reminder —
+  three hand-rolled copies of seed-on-first-completed-turn / count-completed
+  / reset-on-fire had already drifted once (review #26's turnIndex fix, and
+  issue #29 grew on that drift). `turnEndedBadly` moved to `cadence.ts`
+  (still re-exported from `auto-refine.ts`). Behavior is identical for every
+  consumer except one normalization: the import reminder now also treats
+  `everyTurns <= 0` as disabled (previously it fired every completed turn
+  until the reminder cap).
+- `durableLayer` is exported from `proposer.ts` and shared with `corpus.ts`
+  (the dedupe-pair layer key had to stay in sync by hand).
+- The split/adopt steering prompts render their item listings through one
+  shared `formatItemLines()` (adopt keeps full-precision importance — the
+  agent copies it verbatim; split rounds). The two formats had already
+  drifted once.
+- Status aggregation counts lifecycle events with an exhaustive `switch` —
+  a future `LifecycleEvent` falls to an explicit `default` instead of being
+  silently counted as `deleted`.
 ## [0.16.0] — 2026-10-11
 
 ### Added
@@ -38,7 +104,6 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
     selection/rendering core is pure in `src/list.ts`
     (`selectListItems`/`renderListReport`) and re-exported from the package
     entry; `preview()` consolidated there.
-
 ## [0.15.1] — 2026-10-11
 
 ### Fixed

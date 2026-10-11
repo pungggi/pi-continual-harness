@@ -12,7 +12,7 @@
 // harness_list / harness_mutate tools round-tripping through appendEntry.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -264,6 +264,24 @@ describe("/refine command", () => {
     expect(sentMessages[0]).toContain("last 50 turns");
   });
 
+  it("warns on unknown --flags instead of silently dropping them (review finding #7)", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("refine")!.handler("25 --comit", ctx()); // typo'd --commit
+    expect(notifications.some((n) => n.level === "warning" && n.msg.includes("--comit"))).toBe(true);
+    expect(sentMessages).toHaveLength(1); // the refine itself still runs
+  });
+
+  it("warns when --proposer names an unregistered proposer (falls back to steering — review finding #7)", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    await commands.get("refine")!.handler("--proposer dedupee", ctx()); // typo'd dedupe
+    expect(
+      notifications.some((n) => n.level === "warning" && /Unknown proposer "dedupee"/.test(n.msg)),
+    ).toBe(true);
+    expect(sentMessages).toHaveLength(1); // steering fallback ran
+  });
+
   it("boundary delivery: runRefine returns the steering message undelivered (auto-refine persists it as a turn_end draft)", async () => {
     const branch = [
       { type: "message", message: { role: "user", content: [{ type: "text", text: "learned: prefer pnpm" }] } },
@@ -381,6 +399,20 @@ describe("/harness command", () => {
     // subs without flags (or unknown subs) offer nothing
     expect(complete("status ")).toBeNull();
     expect(complete("whatever --")).toBeNull();
+  });
+
+  it("never throws on bogus subcommands that collide with Object.prototype members (review finding #2)", () => {
+    const { pi, commands } = makeFakePi([]);
+    continualHarness(pi);
+    const complete = commands.get("harness")!.getArgumentCompletions!;
+    // "constructor"/"toString"/"hasOwnProperty" are inherited Object members:
+    // an `in` / FLAGS[sub] lookup would resolve Function and crash on .filter.
+    for (const bogus of ["constructor", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(() => complete(`${bogus} `)).not.toThrow();
+      expect(complete(`${bogus} `)).toBeNull(); // not a flag-taking sub → no menu
+      expect(() => complete(`${bogus} --`)).not.toThrow();
+      expect(complete(`${bogus} --`)).toBeNull();
+    }
   });
 
   it("completes --kind and --model values for push-mem", () => {
@@ -714,6 +746,43 @@ describe("/harness command", () => {
       await commands.get("harness")!.handler(`import ${file}`, ctx());
       expect(getState().items.map((i) => i.content)).toContain("durable fact");
       expect(notifications.some((n) => /Imported 1 item/.test(n.msg))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("/harness export-corpus writes dedupe-pairs.jsonl + lifecycle.jsonl from the branch (review gap)", async () => {
+    const a = (imp: number) => ({
+      id: "h_a",
+      kind: "memory",
+      content: "fact a",
+      evidence: "e",
+      importance: imp,
+      active: true,
+      ownerModel: "test/main",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const branch = [
+      // The first snapshot IS the create batch (implicit empty baseline).
+      { type: "custom", customType: "harness-state", data: { state: { items: [a(0.5)] }, version: 1 } },
+      { type: "custom", customType: "harness-state", data: { state: { items: [a(0.6)] }, version: 2 } }, // kept (+0.1)
+    ];
+    const { pi, commands, ctx, notifications } = makeFakePi(branch);
+    continualHarness(pi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-corpus-"));
+    const out = join(dir, "nested", "corpus"); // exercises the recursive mkdir
+    try {
+      await commands.get("harness")!.handler(`export-corpus ${out}`, ctx());
+      expect(notifications.some((n) => /2 lifecycle event/.test(n.msg))).toBe(true);
+      const lifecycle = readFileSync(join(out, "lifecycle.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { kind: string; event: string });
+      expect(lifecycle.map((r) => r.event)).toEqual(["created", "kept"]);
+      expect(lifecycle[0]!.kind).toBe("lifecycle");
+      // No dedupe runs on the branch → the pairs file exists but is empty.
+      expect(readFileSync(join(out, "dedupe-pairs.jsonl"), "utf8")).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

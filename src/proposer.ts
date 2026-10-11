@@ -204,8 +204,10 @@ function truncate(s: string, n = 48): string {
 
 /** Durable placement of an item: "global" or "project:<slug>". Only items in
  *  the SAME layer merge — a merge must never silently move an item between
- *  durable files or projects. */
-function durableLayer(i: HarnessItem): string {
+ *  durable files or projects. Exported: the corpus builder filters dedupe
+ *  pair candidates by the same layer key (review simplification #2 — the two
+ *  copies had to stay in sync by hand). */
+export function durableLayer(i: HarnessItem): string {
   return i.scope === "project" ? `project:${i.project ?? ""}` : "global";
 }
 

@@ -178,24 +178,21 @@ export function registerTools(pi: ExtensionAPI): void {
         },
         getActiveModelKey(),
       );
-      const summary = summarize(applied);
       const created = applied.filter((a) => a.op === "create").length;
       const updated = applied.filter((a) => a.op === "update").length;
       const deleted = applied.filter((a) => a.op === "delete").length;
       return {
-        content: [{ type: "text", text: summary }],
+        content: [
+          {
+            type: "text",
+            text: `Applied ${applied.length} delta(s): ${created} created, ${updated} updated, ${deleted} deleted.`,
+          },
+        ],
         details: { applied, version: getState().items.length },
         structuredContent: { applied: applied.length, created, updated, deleted },
       };
     },
   });
-}
-
-function summarize(applied: AppliedDelta[]): string {
-  const created = applied.filter((a) => a.op === "create").length;
-  const updated = applied.filter((a) => a.op === "update").length;
-  const deleted = applied.filter((a) => a.op === "delete").length;
-  return `Applied ${applied.length} delta(s): ${created} created, ${updated} updated, ${deleted} deleted.`;
 }
 
 /** Tally `items` by a string key, rendered as "key (n), key (n)". */

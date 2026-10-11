@@ -443,7 +443,9 @@ Writes the **calibration corpora** defined by the pi-reflex consumer contract
   merge with token overlap in `[0.3, 0.6)` are `not_dup` candidates flagged
   `needs_review` (the threshold decided, not a human).
 - `lifecycle.jsonl` — one record per item event, classified from consecutive
-  `harness-state` snapshot diffs: `created` · `kept` (+0.1) · `dropped` (−0.1)
+  `harness-state` snapshot diffs (the branch's FIRST snapshot diffs against
+  an implicit empty baseline, so a fresh session's first create batch is
+  recorded): `created` · `kept` (+0.1) · `dropped` (−0.1)
   · `cited` (small positive bump — the opt-in outcome loop) · `pruned`
   (removed below the importance floor) · `deleted` (removed otherwise).
   Contents are sha256-hashed, not carried.
@@ -851,8 +853,9 @@ hand — see [§5](#setup---preset-name---yes). It shows the effective config,
 walks you through three presets, confirms each change (autonomous switches
 get their own explicit confirmation), and writes with a timestamped backup.
 
-Optional config at **`~/.pi/agent/harness.json`**. Missing or malformed →
-defaults (the loader never throws).
+Optional config at **`~/.pi/agent/harness.json`**. Missing → defaults (the
+loader never throws). Malformed → defaults plus a once-per-session warning at
+session start, so a typo can't silently reset every setting.
 
 ```jsonc
 {
@@ -955,7 +958,8 @@ per-turn injection.
 
 ### Robustness
 
-- Missing/malformed file → `DEFAULT_CONFIG` (never throws).
+- Missing file → `DEFAULT_CONFIG` (never throws). Malformed JSON →
+  `DEFAULT_CONFIG` plus a once-per-session warning (see `configMalformed()`).
 - `autoImport` other than `true` → treated as `false`.
 - `outcomeImportance.bump` is **coerced to a finite number** — a string like
   `"0.03"` would otherwise corrupt importance to `NaN` (it is an arithmetic
