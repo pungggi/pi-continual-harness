@@ -8,6 +8,37 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.16.0] — 2026-10-11
+
+### Added
+
+- **`/harness list [-f] [--kind <kind>] [--scope <global|project|all>]`**
+  (issue #31): the read view of the store in the TUI. What `/harness status`
+  counts, but with the actual item text: no agent turn and no trip to the
+  layer files required.
+  - **Compact rows by default**: id, kind, importance, scope, ~60-char
+    preview, one line per item, ranked importance-first (ties keep store
+    order, the same stable policy as injection selection). Inactive items
+    carry an `(inactive)` marker.
+  - **`-f`**: full text plus the evidence line, harness_list-style, extended
+    with owner model and scope in the parenthetical.
+  - **Scope filters mirror the durable layers**: default = global + the
+    active project; foreign-project items are hidden and counted in a
+    trailing note (empty results included) so they look hidden, never
+    missing. `--scope project` lists every project's items with the slug on
+    each row; `--scope all` lists everything.
+  - **Guidance over bare zeros**: an empty store gets zero-state first steps,
+    an empty filter result gets kind tallies of what the store holds, and
+    invalid `--kind`/`--scope` values or unexpected arguments warn instead of
+    silently listing unfiltered.
+  - **Autocomplete**: `list` in the subcommand menu, `-f`/`--kind`/`--scope`
+    flag rows (flag matching now also catches short `-` prefixes), and value
+    menus for both filters.
+  - **Read-only**: no store mutation, no durable writes, one notify. The
+    selection/rendering core is pure in `src/list.ts`
+    (`selectListItems`/`renderListReport`) and re-exported from the package
+    entry; `preview()` consolidated there.
+
 ## [0.15.1] — 2026-10-11
 
 ### Fixed
