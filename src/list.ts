@@ -1,6 +1,7 @@
 // `/harness list` (issue #31) — the read view of the store. One compact row
-// per item (id, kind, importance, scope, preview) or, with `-f`, the full
-// text + evidence rendering the harness_list tool uses. Read-only: selection
+// per item (id, kind, importance, scope, preview) or, with `-f`, a
+// harness_list-style full text + evidence rendering (extended with the
+// scope). Read-only: selection
 // and rendering are pure; harness.ts's handleList stays thin glue (flag
 // parsing + one ctx.ui.notify).
 //
@@ -115,7 +116,6 @@ function scopeDescription(opts: ListOptions): string {
  *  result (the emptyListMessage lesson: never collapse the two). Pure. */
 export function renderListReport(items: HarnessItem[], opts: ListOptions): string {
   const shown = selectListItems(items, opts);
-  const filters = [`--scope ${opts.scope ?? "global+project"}`, ...(opts.kind ? [`--kind ${opts.kind}`] : [])];
   const header =
     `Harness list: ${shown.length} item(s) — ${scopeDescription(opts)}` +
     (opts.kind ? `, kind ${opts.kind}` : "") +
@@ -143,9 +143,11 @@ export function renderListReport(items: HarnessItem[], opts: ListOptions): strin
     // A store whose matching items are ALL foreign must not collapse into
     // generic filter guidance: the hidden note explains where they went
     // (review #32) — the default view hides them, no filter removed them.
+    // (No flag echo here: the header already names scope+kind, and a
+    // pseudo-flag like `--scope global+project` would not even parse.)
     return [
       header,
-      `Nothing matches ${filters.join(" ")}. The store holds ${items.length} item(s): ${tally(items, (i) => i.kind)}. Widen --scope or drop --kind.`,
+      `Nothing matches the current filters. The store holds ${items.length} item(s): ${tally(items, (i) => i.kind)}. Widen --scope or drop --kind.`,
       ...(foreignNote ? [foreignNote] : []),
     ].join("\n");
   }

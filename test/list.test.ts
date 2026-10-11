@@ -122,7 +122,9 @@ describe("renderListReport", () => {
 
   it("empty filter result: explains what the store holds instead", () => {
     const out = renderListReport(fixture(), opts({ kind: "subagent" }));
-    expect(out).toContain("Nothing matches --scope global+project --kind subagent");
+    expect(out).toContain("Nothing matches the current filters.");
+    // No pseudo-flag echo: `--scope global+project` would not even parse.
+    expect(out).not.toContain("--scope global+project");
     expect(out).toContain("5 item(s)");
     expect(out).toContain("memory (3)");
   });

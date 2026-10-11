@@ -641,6 +641,16 @@ describe("/harness command", () => {
     expect(notifications.at(-1)!.level).toBe("warning");
     await commands.get("harness")!.handler("list --kind", ctx());
     expect(notifications.at(-1)!.level).toBe("warning");
+    // Unexpected arguments warn too (unknown flags, stray positionals) —
+    // no silent fallback to the default view.
+    const listed = notifications.length;
+    await commands.get("harness")!.handler("list --full", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    expect(notifications.at(-1)!.msg).toContain("unexpected argument");
+    expect(notifications.at(-1)!.msg).toContain("--full");
+    await commands.get("harness")!.handler("list bogus", ctx());
+    expect(notifications.at(-1)!.level).toBe("warning");
+    expect(notifications.length).toBe(listed + 2); // warnings only, no listing
   });
 
   it("/harness split steers the agent to classify scopes via harness_mutate", async () => {

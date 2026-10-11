@@ -386,9 +386,9 @@ notify.
 Default output is one compact row per item — id, kind, importance, scope,
 a ~60-char preview — ranked importance-first (ties keep store order, the
 same stable policy as injection selection). Inactive items are marked
-`(inactive)`. `-f` switches to the full rendering the `harness_list` tool
-uses: complete text plus the evidence line, with owner model and scope in
-the parenthetical.
+`(inactive)`. `-f` switches to the `harness_list`-style full rendering,
+extended with the scope: complete text plus the evidence line, with owner
+model and `global` / `project "slug"` in the parenthetical.
 
 Scope semantics mirror the durable layers:
 
@@ -407,9 +407,9 @@ Scope semantics mirror the durable layers:
 
 An empty store gets zero-state guidance (first steps), an empty *filter*
 result explains what the store holds instead (kind tallies), and invalid
-`--kind`/`--scope` values warn rather than silently listing unfiltered. The
-selection/rendering core is pure and exported
-(`selectListItems`/`renderListReport` from `src/list.ts`).
+`--kind`/`--scope` values — like any unexpected argument — warn rather than
+silently listing unfiltered. The selection/rendering core is pure and
+exported (`selectListItems`/`renderListReport` from `src/list.ts`).
 
 #### `export [path]`
 

@@ -321,9 +321,9 @@ function explicitPath(rest: string[]): string | undefined {
 /** `/harness list [-f] [--kind <kind>] [--scope <global|project|all>]`
  *  (issue #31) — the read view: thin glue (flag parsing + one notify); every
  *  selection/rendering rule lives in the pure src/list.ts. Read-only: no
- *  store mutation, no durable writes. Invalid flag values warn instead of
- *  silently falling back — a filter that quietly ignores its own argument
- *  would make the listing lie. */
+ *  store mutation, no durable writes. Invalid flag values AND unexpected
+ *  arguments warn instead of silently falling back — a filter that quietly
+ *  ignores its own argument would make the listing lie. */
 async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise<void> {
   const full = rest.includes("-f");
   let kind: ComponentKind | undefined;
@@ -345,6 +345,20 @@ async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise
       return;
     }
     scope = s;
+  }
+  // Unexpected arguments (unknown flags like --full, stray positionals,
+  // repeated flags) warn too — the same no-silent-fallback rule as invalid
+  // values. Anything but -f, --kind <value>, --scope <value> is refused.
+  const consumed = new Set<number>();
+  if (kindIdx >= 0) { consumed.add(kindIdx); consumed.add(kindIdx + 1); }
+  if (scopeIdx >= 0) { consumed.add(scopeIdx); consumed.add(scopeIdx + 1); }
+  const unexpected = rest.filter((t, idx) => t !== "-f" && !consumed.has(idx));
+  if (unexpected.length > 0) {
+    ctx.ui.notify(
+      `/harness list: unexpected argument(s): ${unexpected.join(" ")} — expected -f, --kind <kind>, --scope <global|project|all>.`,
+      "warning",
+    );
+    return;
   }
   ctx.ui.notify(
     renderListReport(getState().items, {
