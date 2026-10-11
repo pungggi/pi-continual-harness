@@ -8,6 +8,40 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.17.0] — 2026-10-11
+
+### Fixed
+
+- **Companion proposer registrations were silently invisible under pi's
+  extension loader** — pi gives every extension a fresh, module-cache-disabled
+  jiti instance, so a companion package's
+  `import { registerProposer } from "pi-continual-harness"` resolved to a
+  DIFFERENT copy of the module than the one whose `/refine` reads the
+  registry. `registerProposer` wrote to a private map, `getProposer` never saw
+  it, and `/refine --proposer <name>` silently fell back to `steering`.
+  Verified against the real loader (pi 1.1.0): after running the companion's
+  factory, `listProposers()` on the harness copy still showed only the
+  built-ins.
+- The registry is now backed by a **process-wide global**
+  (`Symbol.for("pi-continual-harness.proposers")`), which is shared across all
+  of pi's isolated module instances. `registerProposer` writes to it;
+  `getProposer` reads it first and falls back to the module-local built-ins
+  (`steering`, `dedupe`), so two harness copies never hand each other's
+  closures to `/refine`. Foreign entries without a `propose` function are
+  ignored defensively.
+- **No API change**: same `registerProposer` / `getProposer` / `listProposers`
+  signatures. Upgrading the harness alone also fixes companion packages that
+  were built against older versions (their private copy of
+  `registerProposer` now writes to the same shared registry).
+
+### Notes for companion authors
+
+- Companions that want a zero-import startup entry can skip importing this
+  package entirely and push a `DeltaProposer` (typically a lazy delegate that
+  dynamic-imports its implementation on first `propose()`) straight into
+  `globalThis[Symbol.for("pi-continual-harness.proposers")]`. The string key
+  `"pi-continual-harness.proposers"` is the stable public contract.
+
 ## [0.16.1] — 2026-10-11
 
 Deep-review release: six correctness fixes (each found by a full code review,
