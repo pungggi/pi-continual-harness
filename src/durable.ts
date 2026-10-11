@@ -21,7 +21,11 @@
 // Both paths are visible (one notify line) and use the same persisted
 // harness-state entries as every other mutation (/tree rollback covers them).
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  TurnEndEvent,
+} from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState } from "./store.js";
 import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js";
@@ -174,28 +178,35 @@ function reconcileImported(): void {
     .filter((r): r is ImportedRef => Boolean(r));
 }
 
+/** turn_end handler behind registerImportReminder — exported for the thin
+ *  entry's dynamic delegation (issue #36). */
+export async function handleImportReminderTurnEnd(
+  event: TurnEndEvent,
+  ctx: ExtensionContext,
+): Promise<void> {
+  const config = await loadConfig();
+  // Completed-turn counting (the shared cadence — see cadence.ts):
+  // aborted/error outcomes are inert and pi's per-agent-start turnIndex
+  // resets never matter.
+  reconcileImported(); // deleted/deactivated imports stop being advertised (review #27)
+  const outcome = (event as { outcome?: string }).outcome;
+  if (!evaluateImportReminder(config, outcome, importedThisSession.length)) {
+    return;
+  }
+  const examples = importedThisSession
+    .slice(0, 2)
+    .map((i) => `[${i.id}] ${i.kind}`)
+    .join(", ");
+  ctx.ui.notify(
+    `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
+      `Review via the agent's harness_list tool; disable reminders via "importRemind": { "enabled": false } in harness.json.`,
+    "info",
+  );
+}
+
 /** Subscribe to turn_end and re-surface imported items on the cadence. */
 export function registerImportReminder(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (event, ctx) => {
-    const config = await loadConfig();
-    // Completed-turn counting (the shared cadence — see cadence.ts):
-    // aborted/error outcomes are inert and pi's per-agent-start turnIndex
-    // resets never matter.
-    reconcileImported(); // deleted/deactivated imports stop being advertised (review #27)
-    const outcome = (event as { outcome?: string }).outcome;
-    if (!evaluateImportReminder(config, outcome, importedThisSession.length)) {
-      return;
-    }
-    const examples = importedThisSession
-      .slice(0, 2)
-      .map((i) => `[${i.id}] ${i.kind}`)
-      .join(", ");
-    ctx.ui.notify(
-      `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
-        `Review via the agent's harness_list tool; disable reminders via "importRemind": { "enabled": false } in harness.json.`,
-      "info",
-    );
-  });
+  pi.on("turn_end", (event, ctx) => handleImportReminderTurnEnd(event, ctx));
 }
 
 /** Layer files matching the (possibly injected) export paths — same shape
@@ -210,44 +221,52 @@ function startFilesFor(cwd: string, injected?: LayerPaths): LayerFile[] | undefi
   ];
 }
 
+/** turn_end handler behind registerAutoExport — exported for the thin
+ *  entry's dynamic delegation (issue #36). */
+export async function handleAutoExportTurnEnd(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  paths?: LayerPaths,
+): Promise<void> {
+  const config = await loadConfig();
+  if (!config.autoImport) return;
+  if (!startSyncRan) {
+    // autoImport was enabled AFTER session_start (wizard or hand-edit):
+    // this session's layered import never ran. Import BEFORE any export —
+    // otherwise the first auto-export would overwrite the durable layers
+    // with the never-imported live store (data loss, review #26).
+    try {
+      await syncDurableOnStart(pi, ctx, startFilesFor(ctx.cwd, paths));
+    } catch (err) {
+      ctx.ui.notify(
+        `Durable catch-up import failed (no export this turn; retried next turn): ${(err as Error).message}`,
+        "warning",
+      );
+      return; // export only once the layers are safely in the store
+    }
+  }
+  if (getVersion() === lastExportedVersion) return;
+  try {
+    const written = await exportDurableLayers(
+      paths ?? layerPaths(),
+      projectSlug(ctx.cwd),
+    );
+    lastExportedVersion = getVersion();
+    ctx.ui.notify(
+      `Continual Harness: durable state exported (${written.length} file(s)).`,
+      "info",
+    );
+  } catch (err) {
+    // Soft-fail but leave lastExportedVersion stale → retried next turn.
+    ctx.ui.notify(`Durable auto-export failed: ${(err as Error).message}`, "warning");
+  }
+}
+
 /**
  * turn_end half of the durable sync: layered export when the live store
  * changed since the last export (opt-in, bundled with autoImport). `paths`
  * defaults to the real layer dirs; tests inject temp dirs.
  */
 export function registerAutoExport(pi: ExtensionAPI, paths?: LayerPaths): void {
-  pi.on("turn_end", async (_event, ctx) => {
-    const config = await loadConfig();
-    if (!config.autoImport) return;
-    if (!startSyncRan) {
-      // autoImport was enabled AFTER session_start (wizard or hand-edit):
-      // this session's layered import never ran. Import BEFORE any export —
-      // otherwise the first auto-export would overwrite the durable layers
-      // with the never-imported live store (data loss, review #26).
-      try {
-        await syncDurableOnStart(pi, ctx, startFilesFor(ctx.cwd, paths));
-      } catch (err) {
-        ctx.ui.notify(
-          `Durable catch-up import failed (no export this turn; retried next turn): ${(err as Error).message}`,
-          "warning",
-        );
-        return; // export only once the layers are safely in the store
-      }
-    }
-    if (getVersion() === lastExportedVersion) return;
-    try {
-      const written = await exportDurableLayers(
-        paths ?? layerPaths(),
-        projectSlug(ctx.cwd),
-      );
-      lastExportedVersion = getVersion();
-      ctx.ui.notify(
-        `Continual Harness: durable state exported (${written.length} file(s)).`,
-        "info",
-      );
-    } catch (err) {
-      // Soft-fail but leave lastExportedVersion stale → retried next turn.
-      ctx.ui.notify(`Durable auto-export failed: ${(err as Error).message}`, "warning");
-    }
-  });
+  pi.on("turn_end", (_event, ctx) => handleAutoExportTurnEnd(pi, ctx, paths));
 }

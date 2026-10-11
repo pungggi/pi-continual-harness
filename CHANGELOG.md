@@ -8,6 +8,44 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.18.0] — 2026-10-11
+
+### Changed
+
+- **Near-zero startup cost: thin entry + precompiled dist** (issue #36). Pi
+  loads extension entries sequentially and awaits every factory before
+  startup continues, so the old all-static TypeScript entry paid its whole
+  import graph (~230KB, jiti-transpiled) on every launch: **~0.8s marginal**
+  in the 2026-10-11 measurement (9.4s total with all 16 packages installed).
+  Measured now: **~30ms marginal** (bogus-provider fast-fail, issue's
+  acceptance target was ≤150ms).
+- **`pi.extensions` now points at `./dist/entry.js`** — a thin factory that
+  only registers hooks, commands, and tool schemas. Every feature module is
+  dynamic-imported inside its own handler (`session_start`, `turn_end`,
+  `before_agent_start`, `context_with_system`, command handlers, tool
+  `execute`), so nothing heavy evaluates until the relevant event fires.
+- **The package ships precompiled `dist/`** (`main: dist/index.js`, types
+  included): no per-startup jiti transpile, and companion packages get real
+  JavaScript + `.d.ts` instead of raw TS via `main`. `src/` is no longer part
+  of the npm tarball; `prepack` builds `dist/` and CI verifies it exists.
+- **Tool schemas are hand-written plain JSON Schema objects** (module
+  `src/schemas.ts`) instead of TypeBox builders: pi does not preload `typebox`
+  or `pi-ai` before extensions in the one-shot path, and importing either
+  costs ~0.4–1.0s cold. `test/schemas.test.ts` guards that the emitted JSON
+  is identical to the historical TypeBox output.
+- **No behavior change**: commands, tools, hooks, registration order, and the
+  public API are identical. The feature modules' `register*` functions remain
+  (tests use them); they now delegate to the same extracted handlers the thin
+  entry calls.
+
+### Notes for companion authors
+
+- `getArgumentCompletions` for `/harness` may now return a Promise (pi's API
+  allows `AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>`);
+  sync values still work. Only relevant if you wrap the command.
+- Importing `pi-continual-harness` from a companion is now cheaper too: the
+  package root is precompiled JS, not jiti-transpiled TS.
+
 ## [0.17.0] — 2026-10-11
 
 ### Fixed

@@ -422,21 +422,23 @@ describe("/harness adopt — binding-aware self-adopt guard (review #25)", () =>
 describe("/harness adopt completions", () => {
   beforeEach(reset);
 
-  it("offers --from/--all flags", () => {
+  it("offers --from/--all flags", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    expect(complete("adopt ")).toEqual([
+    // Completions are async since the thin-entry refactor (issue #36): pi's
+    // API allows a Promise here, and the store-backed menus lazy-load.
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    expect(await complete("adopt ")).toEqual([
       { value: "adopt --from", label: "--from", description: expect.any(String) },
       { value: "adopt --all", label: "--all", description: expect.any(String) },
     ]);
     // used flags are not re-offered
-    expect(complete("adopt --all --")).toEqual([
+    expect(await complete("adopt --all --")).toEqual([
       { value: "adopt --all --from", label: "--from", description: expect.any(String) },
     ]);
   });
 
-  it("completes --from values from the model keys present in the store", () => {
+  it("completes --from values from the model keys present in the store", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
     applyDeltas(
@@ -453,15 +455,15 @@ describe("/harness adopt completions", () => {
     // ...and neither are inactive items
     const inactiveId = getState().items.find((i) => i.content === "d")!.id;
     applyDeltas([{ op: "update", id: inactiveId, active: false }] as Delta[], () => {});
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    expect(complete("adopt --from ")).toEqual([
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    expect(await complete("adopt --from ")).toEqual([
       { value: "adopt --from anthropic/sonnet", label: "anthropic/sonnet", description: "1 active item(s) owned by this model" },
       { value: "adopt --from google/gemini", label: "google/gemini", description: "2 active item(s) owned by this model" },
     ]);
     // prefix filtering, replacing the whole argument text
-    expect(complete("adopt --from go")).toEqual([
+    expect(await complete("adopt --from go")).toEqual([
       { value: "adopt --from google/gemini", label: "google/gemini", description: expect.any(String) },
     ]);
-    expect(complete("adopt --from nope")).toBeNull();
+    expect(await complete("adopt --from nope")).toBeNull();
   });
 });

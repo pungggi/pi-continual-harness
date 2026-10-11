@@ -22,7 +22,7 @@
 // rollback); visible (notify per turn). Pure reference extraction is factored
 // into findReferences() so it is unit-testable without a live pi runtime.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
 import { turnEndedBadly } from "./auto-refine.js";
 import { bumpImportance, getState, modelKey } from "./store.js";
@@ -64,58 +64,67 @@ export function resetOutcome(): void {
   scannedMessages = -1;
 }
 
+/** turn_end handler — promote importance of referenced items (opt-in).
+ *  Exported so the thin entry (entry.ts) can delegate via dynamic import
+ *  (issue #36). */
+export async function handleOutcomeTurnEnd(
+  pi: ExtensionAPI,
+  event: TurnEndEvent,
+  ctx: ExtensionContext,
+): Promise<void> {
+  const config = await loadConfig();
+  if (!config.outcomeImportance?.enabled) return;
+  const bump = config.outcomeImportance.bump ?? DEFAULT_REF_BUMP;
+  if (bump <= 0) return;
+
+  const entries = ctx.sessionManager.getBranch() as AnyEntry[];
+  const asst = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
+  if (scannedMessages < 0) {
+    // Seed on the FIRST observed turn_end regardless of outcome: enabling
+    // mid-session never bumps retroactively, and the seed turn's own text
+    // (partial or not) is never scanned — the same swallow as a normal
+    // seed. Seeding here is what keeps a later completed turn's own
+    // citations scannable after an aborted first observation.
+    scannedMessages = asst.length;
+    return;
+  }
+  // Aborted/error turns end mid-work: their partial assistant text is not a
+  // final outcome. The cursor holds; the next completed turn scans that text
+  // together with its own.
+  if (turnEndedBadly(event.outcome)) return;
+  const fresh = asst.slice(scannedMessages);
+  scannedMessages = asst.length;
+
+  const text = fresh.map((e) => messageText(e.message?.content)).join("\n");
+  if (!text.trim()) return;
+
+  // Only the active model's items are injected, so only those can be cited.
+  // Filter accordingly; an unknown model → no candidates → no bumps.
+  const key = modelKey(ctx.model);
+  const activeIds = new Set(
+    key === undefined
+      ? []
+      : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
+  );
+  const refs = findReferences(text, activeIds);
+  if (refs.length === 0) return;
+
+  let bumped = 0;
+  for (const id of refs) {
+    const item = bumpImportance(id, bump, (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    });
+    if (item) bumped += 1;
+  }
+  if (bumped > 0) {
+    ctx.ui.notify(
+      `Outcome: +${bump} importance for ${bumped} referenced item(s): ${refs.join(", ")}`,
+      "info",
+    );
+  }
+}
+
 /** Subscribe to turn_end and promote importance of referenced items (opt-in). */
 export function registerOutcome(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (event, ctx) => {
-    const config = await loadConfig();
-    if (!config.outcomeImportance?.enabled) return;
-    const bump = config.outcomeImportance.bump ?? DEFAULT_REF_BUMP;
-    if (bump <= 0) return;
-
-    const entries = ctx.sessionManager.getBranch() as AnyEntry[];
-    const asst = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
-    if (scannedMessages < 0) {
-      // Seed on the FIRST observed turn_end regardless of outcome: enabling
-      // mid-session never bumps retroactively, and the seed turn's own text
-      // (partial or not) is never scanned — the same swallow as a normal
-      // seed. Seeding here is what keeps a later completed turn's own
-      // citations scannable after an aborted first observation.
-      scannedMessages = asst.length;
-      return;
-    }
-    // Aborted/error turns end mid-work: their partial assistant text is not a
-    // final outcome. The cursor holds; the next completed turn scans that text
-    // together with its own.
-    if (turnEndedBadly(event.outcome)) return;
-    const fresh = asst.slice(scannedMessages);
-    scannedMessages = asst.length;
-
-    const text = fresh.map((e) => messageText(e.message?.content)).join("\n");
-    if (!text.trim()) return;
-
-    // Only the active model's items are injected, so only those can be cited.
-    // Filter accordingly; an unknown model → no candidates → no bumps.
-    const key = modelKey(ctx.model);
-    const activeIds = new Set(
-      key === undefined
-        ? []
-        : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
-    );
-    const refs = findReferences(text, activeIds);
-    if (refs.length === 0) return;
-
-    let bumped = 0;
-    for (const id of refs) {
-      const item = bumpImportance(id, bump, (snapshot, ver) => {
-        pi.appendEntry("harness-state", { state: snapshot, version: ver });
-      });
-      if (item) bumped += 1;
-    }
-    if (bumped > 0) {
-      ctx.ui.notify(
-        `Outcome: +${bump} importance for ${bumped} referenced item(s): ${refs.join(", ")}`,
-        "info",
-      );
-    }
-  });
+  pi.on("turn_end", (event, ctx) => handleOutcomeTurnEnd(pi, event, ctx));
 }

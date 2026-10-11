@@ -21,7 +21,7 @@
 // inert (they neither seed nor advance the window), a missing outcome
 // (synthetic events, earliest 0.99.x) counts as completed.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_DETAIL_EVERY,
   DEFAULT_EVERY_TURNS,
@@ -252,16 +252,23 @@ export function buildDetailGuide(ordinal: number, state: ReminderState): string 
   return `${body}${footer}`;
 }
 
+/** turn_end handler — notify on the configured cadence. Exported so the
+ *  thin entry (entry.ts) can delegate via dynamic import (issue #36). */
+export async function handleRemindTurnEnd(
+  event: TurnEndEvent,
+  ctx: ExtensionContext,
+): Promise<void> {
+  const config = await loadConfig();
+  const decision = evaluateReminder(config, event.outcome);
+  if (!decision.fire) return;
+  const state = reminderState(config);
+  ctx.ui.notify(
+    decision.detail ? buildDetailGuide(decision.detailOrdinal, state) : buildNudge(state),
+    "info",
+  );
+}
+
 /** Subscribe to turn_end and notify on the configured cadence. */
 export function registerReminder(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (event, ctx) => {
-    const config = await loadConfig();
-    const decision = evaluateReminder(config, event.outcome);
-    if (!decision.fire) return;
-    const state = reminderState(config);
-    ctx.ui.notify(
-      decision.detail ? buildDetailGuide(decision.detailOrdinal, state) : buildNudge(state),
-      "info",
-    );
-  });
+  pi.on("turn_end", (event, ctx) => handleRemindTurnEnd(event, ctx));
 }

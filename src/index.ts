@@ -5,77 +5,17 @@
 // reinvent either. Manual /refine only — no autonomous mutation.
 //
 // See README for design rationale and the research it is grounded in.
+//
+// LAYOUT NOTE (issue #36): this module is the PACKAGE API (main), NOT the pi
+// extension entry. pi loads ./entry.js (see package.json pi.extensions), a
+// thin factory that registers hooks/commands/tools and dynamic-imports every
+// feature implementation — so importing THIS file (companion packages, tests)
+// still pulls the full graph, but pi startup does not.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerHarness } from "./harness.js";
-import { registerInjection, resetInjectionStats } from "./inject.js";
-import { registerRefine } from "./refine.js";
-import { registerTools } from "./tools.js";
-import { registerReminder, resetReminder } from "./remind.js";
-import { registerAutoRefine, resetAutoRefine } from "./auto-refine.js";
-import { registerOutcome, resetOutcome } from "./outcome.js";
-import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart } from "./durable.js";
-import { getState, reconstruct, setActiveModelKey, setSessionProject, STATE_ENTRY } from "./store.js";
-import { resetHints } from "./hints.js";
-import { CONFIG_PATH, configMalformed, loadConfig, projectSlug } from "./config.js";
+// The extension factory (thin entry; see entry.ts).
+export { default } from "./entry.js";
 
-export default function continualHarness(pi: ExtensionAPI): void {
-  // Rebuild in-memory state from the current branch on every session start /
-  // reload / resume / fork. This is what makes refinements branch-local and
-  // rollback-able via /tree.
-  pi.on("session_start", async (_event, ctx) => {
-    // A new/resumed/forked session starts from a fresh cadence baseline: reset
-    // the turn_end counters so a fork does not inherit the parent's window.
-    resetAutoRefine();
-    resetReminder();
-    resetOutcome();
-    resetDurableSync();
-    // Session-scoped telemetry for /harness status: fresh session → fresh
-    // injection stats and hint rotation.
-    resetInjectionStats();
-    resetHints();
-    // Drop any stale active-model key from the previous session: the next
-    // before_agent_start re-caches it before any tool can run.
-    setActiveModelKey(undefined);
-    // Cache the session's project slug BEFORE any tool delta can arrive: it is
-    // the server-side stamp for scope:"project" (harness_mutate has no ctx).
-    setSessionProject(projectSlug(ctx.cwd));
-    // Surface a malformed harness.json ONCE per session start: loadConfig
-    // falls back to defaults for it, so without this warning every configured
-    // setting would silently stop applying (review finding #6).
-    await loadConfig();
-    if (configMalformed()) {
-      ctx.ui.notify(
-        `Continual Harness: ${CONFIG_PATH} is not valid JSON — every setting is on its DEFAULT until the file parses.`,
-        "warning",
-      );
-    }
-    reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
-    const n = getState().items.length;
-    if (n > 0) {
-      ctx.ui.notify(`Continual Harness: ${n} item(s) restored`, "info");
-    }
-    // Opt-in durable sync (issue #7): layered auto-import on top of the
-    // branch-restored state, so refinements made in OTHER sessions reach this
-    // one. No-op (and quiet) when autoImport is off or nothing changed.
-    await syncDurableOnStart(pi, ctx);
-  });
-
-  registerInjection(pi);
-  registerTools(pi);
-  registerRefine(pi);
-  registerHarness(pi);
-  registerReminder(pi);
-  // Durable sync's turn_end export (opt-in via autoImport) registers before
-  // outcome/auto-refine; in production pi every turn_end handler runs.
-  registerAutoExport(pi);
-  // Import-awareness reminders (autoImport bundles them; bounded cadence).
-  registerImportReminder(pi);
-  registerOutcome(pi);
-  registerAutoRefine(pi);
-}
-
-export { STATE_ENTRY };
+export { STATE_ENTRY } from "./store.js";
 
 // Core domain types (re-exported so companion packages — e.g. a dedicated-model
 // proposer — can build and validate deltas without reaching into internal paths).
