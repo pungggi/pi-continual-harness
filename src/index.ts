@@ -17,7 +17,7 @@ import { registerOutcome, resetOutcome } from "./outcome.js";
 import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart } from "./durable.js";
 import { getState, reconstruct, setActiveModelKey, setSessionProject, STATE_ENTRY } from "./store.js";
 import { resetHints } from "./hints.js";
-import { projectSlug } from "./config.js";
+import { CONFIG_PATH, configMalformed, loadConfig, projectSlug } from "./config.js";
 
 export default function continualHarness(pi: ExtensionAPI): void {
   // Rebuild in-memory state from the current branch on every session start /
@@ -40,6 +40,16 @@ export default function continualHarness(pi: ExtensionAPI): void {
     // Cache the session's project slug BEFORE any tool delta can arrive: it is
     // the server-side stamp for scope:"project" (harness_mutate has no ctx).
     setSessionProject(projectSlug(ctx.cwd));
+    // Surface a malformed harness.json ONCE per session start: loadConfig
+    // falls back to defaults for it, so without this warning every configured
+    // setting would silently stop applying (review finding #6).
+    await loadConfig();
+    if (configMalformed()) {
+      ctx.ui.notify(
+        `Continual Harness: ${CONFIG_PATH} is not valid JSON — every setting is on its DEFAULT until the file parses.`,
+        "warning",
+      );
+    }
     reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
     const n = getState().items.length;
     if (n > 0) {

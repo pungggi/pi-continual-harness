@@ -164,7 +164,7 @@ preset menu, or a declined final write; declining an individual feature only
 skips that feature (the accepted deltas still apply). The wizard never
 touches harness state, only the config file.
 
-Optional config at `~/.pi/agent/harness.json` (missing or malformed → defaults):
+Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed → defaults plus a once-per-session warning, so a typo can't silently reset your settings):
 
 ```json
 {

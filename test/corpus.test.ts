@@ -47,6 +47,16 @@ describe("parseDedupeDelete", () => {
 });
 
 describe("buildCorpus — lifecycle", () => {
+  it("the branch's FIRST snapshot diffs against an implicit empty baseline (review finding #1)", () => {
+    const a = item({ id: "h_a", kind: "memory", content: "born in the first snapshot", importance: 0.5 });
+    const { lifecycle } = buildCorpus([stateEntry([a])]);
+    // A fresh session persists no empty harness-state entry, so the first
+    // create batch IS the first snapshot — its created events were silently
+    // dropped from lifecycle.jsonl until the status.ts fix (review #27) was
+    // ported here.
+    expect(lifecycle.map((r) => r.event)).toEqual(["created"]);
+  });
+
   it("classifies created/kept/cited/dropped/pruned from snapshot diffs", () => {
     const a = (imp: number) => item({ id: "h_a", kind: "prompt", content: "note a", importance: imp });
     const b = (imp: number) => item({ id: "h_b", kind: "memory", content: "fact b", importance: imp });
@@ -61,16 +71,17 @@ describe("buildCorpus — lifecycle", () => {
     const { lifecycle, pairs } = buildCorpus(entries);
     expect(pairs).toHaveLength(0);
     const events = lifecycle.map((r) => `${r.event}:${r.item_kind}`);
-    expect(events).toEqual(["created:memory", "kept:prompt", "cited:prompt", "dropped:prompt", "pruned:memory"]);
+    // The first snapshot's own created event leads (implicit empty baseline).
+    expect(events).toEqual(["created:prompt", "created:memory", "kept:prompt", "cited:prompt", "dropped:prompt", "pruned:memory"]);
     // hashes, not contents, in lifecycle records
     expect(lifecycle[0]!.content_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
-    expect(lifecycle[2]!.importance).toBeCloseTo(0.63);
+    expect(lifecycle[3]!.importance).toBeCloseTo(0.63);
   });
 
   it("removal above the floor is 'deleted', not 'pruned'", () => {
     const x = (imp: number) => item({ id: "h_x", kind: "skill", content: "s", importance: imp });
     const { lifecycle } = buildCorpus([stateEntry([x(0.8)]), stateEntry([])]);
-    expect(lifecycle.map((r) => r.event)).toEqual(["deleted"]);
+    expect(lifecycle.map((r) => r.event)).toEqual(["created", "deleted"]);
   });
 });
 
@@ -82,7 +93,8 @@ describe("buildCorpus — review fixes (PR #14)", () => {
     const { pairs, lifecycle } = buildCorpus([stateEntry([k, o]), legacyRefineEntry(1)]);
     expect(pairs).toHaveLength(1); // no dup (reasons unavailable), candidates still emit
     expect(pairs[0]).toMatchObject({ label: "not_dup", needs_review: true, similarity: 0.5 });
-    expect(lifecycle).toHaveLength(0);
+    // Only the first-snapshot created events — no diff noise from the audit entry.
+    expect(lifecycle.map((r) => r.event)).toEqual(["created", "created"]);
   });
 
   it("a no-merge run writes no snapshot: candidates come from the current state", () => {
@@ -98,10 +110,10 @@ describe("buildCorpus — review fixes (PR #14)", () => {
     const a = (imp: number) => item({ id: "h_a", kind: "prompt", content: "n", importance: imp });
     const run = (from: number, to: number, citeBump?: number) =>
       buildCorpus([stateEntry([a(from)]), stateEntry([a(to)])], citeBump !== undefined ? { citeBump } : {});
-    expect(run(0.5, 0.55, 0.05).lifecycle.map((r) => r.event)).toEqual(["cited"]); // configured bump
-    expect(run(0.5, 0.6, 0.1).lifecycle.map((r) => r.event)).toEqual(["kept"]); // collision: keep wins
-    expect(run(0.5, 0.53).lifecycle.map((r) => r.event)).toEqual(["cited"]); // default 0.03
-    expect(run(0.5, 0.58, 0.03).lifecycle.map((r) => r.event)).toEqual([]); // unclassified explicit set
+    expect(run(0.5, 0.55, 0.05).lifecycle.map((r) => r.event)).toEqual(["created", "cited"]); // configured bump
+    expect(run(0.5, 0.6, 0.1).lifecycle.map((r) => r.event)).toEqual(["created", "kept"]); // collision: keep wins
+    expect(run(0.5, 0.53).lifecycle.map((r) => r.event)).toEqual(["created", "cited"]); // default 0.03
+    expect(run(0.5, 0.58, 0.03).lifecycle.map((r) => r.event)).toEqual(["created"]); // unclassified explicit set
   });
 
   it("reconstructs dup pairs from the enriched audit entry (appliedDeltas with reasons)", () => {
@@ -143,8 +155,9 @@ describe("buildCorpus — dedupe pairs", () => {
     });
     expect(p.meta).toEqual({ kinds: ["prompt"], owners: ["", ""] });
     expect(p.needs_review).toBeUndefined();
-    // the delete also shows up as a lifecycle event (honest, by design)
-    expect(lifecycle.map((r) => r.event)).toEqual(["deleted"]);
+    // the delete also shows up as a lifecycle event (honest, by design);
+    // the leading created pair is the first snapshot's implicit-empty diff.
+    expect(lifecycle.map((r) => r.event)).toEqual(["created", "created", "deleted"]);
   });
 
   it("emits not_dup candidates from a no-merge run, needs_review set, deduped across runs", () => {

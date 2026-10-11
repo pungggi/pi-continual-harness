@@ -39,25 +39,18 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { runRefine, gatherEvidence, DEFAULT_LOOKBACK_TURNS } from "./refine.js";
 import { buildClassify, buildGateRequest, gateDecision } from "./classify.js";
+import { makeTurnCadence } from "./cadence.js";
 
-// Completed turns observed since the last fire (or the seeded baseline).
-// -1 = unseen. Aborted/error turns never touch this count — the window is
-// completed turns of work, not raw turn indices.
-let completedTurns = -1;
+// turnEndedBadly's canonical home is cadence.ts (shared completed-turn
+// semantics); re-exported here so existing imports keep working.
+export { turnEndedBadly } from "./cadence.js";
+
+// The auto-refine cadence counter (shared implementation — see cadence.ts).
+const cadence = makeTurnCadence();
 
 /** Test hook: reset internal counter. */
 export function resetAutoRefine(): void {
-  completedTurns = -1;
-}
-
-/**
- * True when a turn_end's outcome marks a turn that ended badly (pi's
- * BoundaryState.outcome: "aborted" | "error"). Undefined is treated as
- * completed — current pi always reports the field, but synthetic events and
- * the earliest 0.99.x may omit it.
- */
-export function turnEndedBadly(outcome?: string): boolean {
-  return outcome === "aborted" || outcome === "error";
+  cadence.reset();
 }
 
 /**
@@ -71,19 +64,8 @@ export function turnEndedBadly(outcome?: string): boolean {
  */
 export function evaluateAutoRefine(config: HarnessConfig, outcome?: string): boolean {
   if (!config.autoRefine?.enabled) return false;
-  if (turnEndedBadly(outcome)) return false;
   const every = config.autoRefine.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
-  if (every <= 0) return false;
-  if (completedTurns < 0) {
-    completedTurns = 0; // seed: the seed turn itself doesn't count
-    return false;
-  }
-  completedTurns += 1;
-  if (completedTurns >= every) {
-    completedTurns = 0;
-    return true;
-  }
-  return false;
+  return cadence.tick(every, outcome);
 }
 
 /** The boundary draft custom type for auto-refine steering messages. */

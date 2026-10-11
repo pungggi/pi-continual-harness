@@ -163,6 +163,11 @@ export function selectForInjection(
     }
   }
 
+  // FOOTER_TOKENS is reserved unconditionally: the footer renders whenever
+  // ANY pass omits an item (the token pass below can be the first to omit),
+  // and a test pins "rendered block never exceeds the budget". Paying 18
+  // tokens always keeps that guarantee exact (review simplification —
+  // reverted: the conditional reserve broke the budget invariant).
   const overhead = INTRO_TOKENS + presentKinds.length * SECTION_HEADER_TOKENS + FOOTER_TOKENS;
   let remaining = Math.max(0, n.maxTokens - overhead);
   const taken: Ranked[] = [];

@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  configMalformed,
   DEFAULT_CONFIG,
   DEFAULT_REF_BUMP,
   defaultScopeForPath,
@@ -54,6 +55,24 @@ describe("config", () => {
         await writeFile(file, "{not valid json", "utf8");
         const cfg = await loadConfig(file);
         expect(cfg).toEqual(DEFAULT_CONFIG);
+      });
+    });
+
+    it("flags malformed JSON via configMalformed (missing files are NOT malformed — review finding #6)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, "{not valid json", "utf8");
+        await loadConfig(file);
+        expect(configMalformed(file)).toBe(true);
+      });
+      await withTempDir(async (file) => {
+        // never written → missing → defaults silently, no flag
+        await loadConfig(file);
+        expect(configMalformed(file)).toBe(false);
+      });
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ autoImport: true }), "utf8");
+        await loadConfig(file);
+        expect(configMalformed(file)).toBe(false); // a good parse clears the flag
       });
     });
 

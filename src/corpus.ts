@@ -31,7 +31,7 @@
 
 import { createHash } from "node:crypto";
 import { IMPORTANCE_FLOOR, REFINE_ENTRY, STATE_ENTRY } from "./store.js";
-import { DEDUPE_THRESHOLD, tokenOverlap } from "./proposer.js";
+import { DEDUPE_THRESHOLD, durableLayer, tokenOverlap } from "./proposer.js";
 import { DEFAULT_REF_BUMP } from "./config.js";
 import type { ComponentKind, HarnessItem, HarnessState } from "./types.js";
 
@@ -125,12 +125,6 @@ function round4(x: number): number {
 
 function hash(content: string): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
-
-/** Durable placement, mirroring planDedupe's private key: only items in the
- *  same layer were ever compared by the planner. */
-function durableLayer(i: HarnessItem): string {
-  return i.scope === "project" ? `project:${i.project ?? ""}` : "global";
 }
 
 // ---- lifecycle ---------------------------------------------------------------
@@ -309,8 +303,14 @@ export function buildCorpus(entries: Iterable<unknown>, opts: CorpusOptions = {}
     const entry = raw as AnyEntry;
     if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
       const next = entry.data.state;
-      const prev = snapshots.at(-1);
-      if (prev) diffSnapshots(prev, next, citeBump, lifecycle);
+      // Implicit EMPTY baseline before the branch's first snapshot (review
+      // #27 fixed this in status.ts; the corpus walk was missed — review
+      // finding #1): a fresh session persists no empty harness-state entry,
+      // so the first create batch / auto-import IS the first snapshot —
+      // without this its `created` events were silently dropped from
+      // lifecycle.jsonl.
+      const prev = snapshots.at(-1) ?? { items: [] };
+      diffSnapshots(prev, next, citeBump, lifecycle);
       snapshots.push(next);
       continue;
     }

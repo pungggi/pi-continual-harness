@@ -131,7 +131,12 @@ export const DEFAULT_CONFIG: HarnessConfig = {
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
 
+// Single process-lifetime cache (config is read once per session; tests warm
+// it with an injected path and every later caller shares it — by contract).
 let cached: HarnessConfig | undefined;
+// Path whose JSON existed but failed to parse on the last load — the
+// effective config silently fell back to defaults there (review finding #6).
+let malformedPath: string | undefined;
 
 /** Merge a (possibly partial) parsed file over the defaults. */
 function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
@@ -313,22 +318,44 @@ export async function saveConfig(
   return { written: path, backup, merged, effective };
 }
 
-/** Load the config, merged over defaults. Tolerant: missing/malformed → defaults.
- *  Cached for the process lifetime (config is read once per session). */
+/** Load the config, merged over defaults. Tolerant: a missing file → defaults
+ *  silently (expected for a fresh setup); a MALFORMED file → defaults too, but
+ *  flagged via configMalformed() so the session can warn instead of every
+ *  setting silently stopping (review finding #6). Cached for the process
+ *  lifetime (config is read once per session). */
 export async function loadConfig(path: string = CONFIG_PATH): Promise<HarnessConfig> {
   if (cached) return cached;
+  let raw: string | undefined;
   try {
-    const raw = await readFile(path, "utf8");
-    cached = mergeConfig(JSON.parse(raw) as Partial<HarnessConfig>);
+    raw = await readFile(path, "utf8");
   } catch {
+    // Missing/unreadable file → defaults, by design.
+  }
+  if (raw === undefined) {
+    cached = { ...DEFAULT_CONFIG };
+    return cached;
+  }
+  try {
+    cached = mergeConfig(JSON.parse(raw) as Partial<HarnessConfig>);
+    // Parse succeeded — clear the flag (a previous load may have failed).
+    malformedPath = undefined;
+  } catch {
+    malformedPath = path;
     cached = { ...DEFAULT_CONFIG };
   }
   return cached;
 }
 
+/** True when the file at `path` existed but failed to parse on the last
+ *  loadConfig — the effective config silently fell back to defaults. */
+export function configMalformed(path: string = CONFIG_PATH): boolean {
+  return malformedPath === path;
+}
+
 /** Test hook: drop the in-process cache. */
 export function resetConfigCache(): void {
   cached = undefined;
+  malformedPath = undefined;
 }
 
 /** Path of a project's durable layer file: <projectDir>/<slug>.md. */

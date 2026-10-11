@@ -28,18 +28,17 @@ import {
   type HarnessConfig,
   loadConfig,
 } from "./config.js";
-import { turnEndedBadly } from "./auto-refine.js";
+import { makeTurnCadence } from "./cadence.js";
 import { getState } from "./store.js";
 
-// Completed turns observed since the last reminder (or the seeded baseline).
-// -1 = unseen. Aborted/error turns never touch this count.
-let completedTurns = -1;
+// The reminder cadence counter (shared implementation — see cadence.ts).
+const cadence = makeTurnCadence();
 // Fired reminders this session — the rotation seed for the detailed tier.
 let fires = 0;
 
 /** Test hook: reset cadence baseline and rotation state. */
 export function resetReminder(): void {
-  completedTurns = -1;
+  cadence.reset();
   fires = 0;
 }
 
@@ -89,16 +88,8 @@ export interface ReminderDecision {
 export function evaluateReminder(config: HarnessConfig, outcome?: string): ReminderDecision {
   const idle: ReminderDecision = { fire: false, detail: false, fires, detailOrdinal: 0 };
   if (!config.remindRefine?.enabled) return idle;
-  if (turnEndedBadly(outcome)) return idle;
   const every = config.remindRefine.everyTurns ?? DEFAULT_EVERY_TURNS;
-  if (every <= 0) return idle;
-  if (completedTurns < 0) {
-    completedTurns = 0; // seed: the seed turn itself doesn't count
-    return idle;
-  }
-  completedTurns += 1;
-  if (completedTurns < every) return idle;
-  completedTurns = 0;
+  if (!cadence.tick(every, outcome)) return idle;
   fires += 1;
   const detailEvery = config.remindRefine.detailEvery ?? DEFAULT_DETAIL_EVERY;
   const detail = detailEvery > 0 && fires % detailEvery === 0;
