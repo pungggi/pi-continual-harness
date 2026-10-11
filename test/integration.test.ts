@@ -338,6 +338,7 @@ describe("/harness command", () => {
       "drop",
       "move",
       "split",
+      "adopt",
       "push-mem",
       "setup",
     ]);
