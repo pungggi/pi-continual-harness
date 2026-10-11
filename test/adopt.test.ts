@@ -8,6 +8,7 @@
 //     untouched (adopt is copy, not move).
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import continualHarness, { ADOPT_BATCH_CAP, buildAdoptPrompt, selectAdoptSource } from "../src/index.js";
@@ -111,6 +112,13 @@ describe("buildAdoptPrompt — pure steering builder", () => {
     // the copy discipline is identical without the filter
     expect(msg).toContain("COPY, not move");
     expect(msg).toContain("(adopted from anthropic/claude)");
+  });
+
+  it("lists importance at FULL precision so the copy keeps its exact ranking (review #25)", () => {
+    const msg = buildAdoptPrompt([item({ content: "p", importance: 0.624 })], "anthropic/claude");
+    expect(msg).toContain("importance 0.624");
+    expect(msg).not.toContain("importance 0.62,"); // rounded display would be copied verbatim
+    expect(msg).toContain("<exact source importance>");
   });
 });
 
@@ -270,6 +278,144 @@ describe("/harness adopt — store-level: copy, not move; stamped to the ACTIVE 
     expect(all.find((i) => i.content === "sonnet over-explains JSON")!.ownerModel).toBe("anthropic/sonnet");
     // audited as harness-state snapshots (→ /tree rollback covers adoption)
     expect(entries.some((e) => e.customType === "harness-state")).toBe(true);
+  });
+});
+
+describe("/harness adopt handler — project + ownership filters (review #25)", () => {
+  beforeEach(reset);
+
+  it("skips foreign-project items instead of re-stamping them into this project", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "global fact", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "this-project fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "tmp" },
+        { op: "create", kind: "memory", content: "alpha-project fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "alpha" },
+      ] as Delta[],
+      () => {},
+    );
+    // fake ctx cwd is /tmp → slug "tmp": global + tmp are adoptable, alpha is foreign
+    await commands.get("harness")!.handler("adopt --from anthropic/sonnet", ctx());
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("global fact");
+    expect(sentMessages[0]).toContain("this-project fact");
+    expect(sentMessages[0]).not.toContain("alpha-project fact");
+    expect(notifications.some((n) => /review for adoption 2 item\(s\) from anthropic\/sonnet \(1 foreign-project skipped\)\./.test(n.msg))).toBe(true);
+  });
+
+  it("nothing left after the filters → warning attributing every skip", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "mine already", evidence: "e", ownerModel: "test/main" },
+        { op: "create", kind: "memory", content: "mine already", evidence: "e", ownerModel: "anthropic/sonnet" },
+        { op: "create", kind: "memory", content: "alpha fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "alpha" },
+      ] as Delta[],
+      () => {},
+    );
+    await commands.get("harness")!.handler("adopt --from anthropic/sonnet", ctx());
+    expect(sentMessages).toHaveLength(0);
+    expect(
+      notifications.some((n) =>
+        n.level === "warning" &&
+        /Nothing to adopt from anthropic\/sonnet: of 2 active item\(s\), 1 already owned \(identical content\), 1 scoped to another project\./.test(n.msg),
+      ),
+    ).toBe(true);
+  });
+
+  it("already-owned content is skipped BEFORE the cap, so capped re-runs progress", async () => {
+    const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    // 25 source items; the adopter (test/main, the fake ctx model) already owns
+    // the highest-importance one's content — it must not consume a cap slot.
+    const ownedContent = "src 24";
+    const srcDeltas: Delta[] = Array.from({ length: 25 }, (_, n) => ({
+      op: "create" as const,
+      kind: "memory" as const,
+      content: `src ${n}`,
+      evidence: "e",
+      ownerModel: "anthropic/sonnet",
+      importance: n / 100,
+    }));
+    srcDeltas.push({ op: "create", kind: "memory", content: ownedContent, evidence: "e", ownerModel: "test/main" });
+    applyDeltas(srcDeltas, () => {});
+    await commands.get("harness")!.handler("adopt --from anthropic/sonnet --all", ctx());
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).not.toContain("src 24");
+    // pool = 24 unowned → capped to 20, owned skip surfaced
+    expect(notifications.some((n) => /adopt 20 item\(s\) from anthropic\/sonnet \(capped to the 20 highest-importance of 24; 1 already owned\)\./.test(n.msg))).toBe(true);
+    const numbered = sentMessages[0]!.match(/^\d+\. \[/gm) ?? [];
+    expect(numbered).toHaveLength(20);
+  });
+});
+
+describe("/harness adopt — binding-aware self-adopt guard (review #25)", () => {
+  beforeEach(reset);
+
+  /** Router-selection ctx (virtual model) whose branch routed to anthropic/claude-x. */
+  const routerCtx = (notifications: Array<{ msg: string; level: string }>) =>
+    ({
+      ui: {
+        notify: (msg: string, level: string) => notifications.push({ msg, level }),
+        setStatus: () => {},
+      },
+      sessionManager: {
+        getBranch: () => [
+          { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [] } },
+        ],
+      },
+      cwd: "/tmp",
+      model: { provider: "openai-codex", id: "auto", api: "pi-virtual" },
+    }) as unknown as ReturnType<ReturnType<typeof makeFakePi>["ctx"]>;
+
+  it("physical binding: rejects adopting from the routed physical model through a router", async () => {
+    const { pi, commands, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-adopt-vm-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ virtualBinding: "physical" }));
+    resetConfigCache();
+    await loadConfig(cfgFile);
+    try {
+      applyDeltas(
+        [{ op: "create", kind: "memory", content: "claude note", evidence: "e", ownerModel: "anthropic/claude-x" }] as Delta[],
+        () => {},
+      );
+      // the raw ctx key is openai-codex/auto (not the source); the RESOLVED key
+      // is anthropic/claude-x — the guard must compare against the latter
+      await commands.get("harness")!.handler("adopt --from anthropic/claude-x", routerCtx(notifications));
+      expect(sentMessages).toHaveLength(0);
+      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
+  });
+
+  it("physical binding: --from <router id> is no longer mis-rejected", async () => {
+    const { pi, commands, sentMessages, notifications } = makeFakePi([]);
+    continualHarness(pi);
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-adopt-vm-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ virtualBinding: "physical" }));
+    resetConfigCache();
+    await loadConfig(cfgFile);
+    try {
+      applyDeltas(
+        [{ op: "create", kind: "memory", content: "router-era note", evidence: "e", ownerModel: "openai-codex/auto" }] as Delta[],
+        () => {},
+      );
+      // resolved key = anthropic/claude-x ≠ openai-codex/auto → valid adoption
+      await commands.get("harness")!.handler("adopt --from openai-codex/auto", routerCtx(notifications));
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toContain("router-era note");
+      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetConfigCache();
+    }
   });
 });
 

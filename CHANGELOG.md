@@ -57,7 +57,16 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   lists the owners present, with counts), self-adopt. `--from` values
   complete from the model keys in the store. Overlaps afterwards are the
   dedupe proposer's job: `/refine --proposer dedupe`. No automatic adoption
-  exists — explicit, manual, reviewable only. `buildAdoptPrompt`,
+  exists — explicit, manual, reviewable only. Review #25 hardening: the
+  self-adopt guard compares against the **resolved binding key**
+  (`virtualBinding`-aware, the same key create-stamping uses — a router
+  selection under `physical` adopts as the routed model); foreign-project
+  source items are skipped rather than re-stamped into the current
+  session's project layer (adopt them from a session in that project);
+  content the adopter already owns is skipped **before** the cap so repeated
+  adoption of a >20-item source progresses instead of re-selecting the same
+  top items; and importance is listed at **full precision** so an adopted
+  copy keeps its exact ranking. `buildAdoptPrompt`,
   `selectAdoptSource`, and `ADOPT_BATCH_CAP` re-exported from the package
   entry.
 

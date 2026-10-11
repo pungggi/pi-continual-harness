@@ -455,8 +455,30 @@ The filter decides *whether* an item transfers, never rewrites it.
 The whole path is visible end-to-end: steering message in the transcript,
 audited `harness-state` entry, `/tree` rollback. Guards: missing `--from`,
 empty store, unknown model (the warning lists the models actually present,
-with counts), and adopting from the active model itself all warn and do
-nothing. `--from` values complete from the model keys in the store. Overlaps
+with counts), and adopting from the active model itself — compared against
+the **resolved binding key** (`virtualBinding`-aware: under `physical` a
+router selection adopts as the routed model, so the guard sees the same key
+create-stamping uses) — all warn and do nothing.
+
+Two store-level filters run before the batch cap (review #25):
+
+- **Foreign-project items are skipped, not re-stamped.** Adopting an item
+  scoped to project A from a session in project B would stamp the copy with
+  B's slug, silently moving A's project facts into B's durable layer —
+  adopt them from a session in that project instead. The notification
+  reports the skip count.
+- **Already-owned content is skipped.** An exact-content item owned by the
+  adopter never consumes a cap slot, so re-running `/harness adopt` against
+  a source larger than the cap reaches NEW items instead of re-selecting
+  the same highest-importance ones forever.
+
+Importance is listed per item at **full precision** (no rounding) — the
+agent copies it verbatim, so an adopted copy keeps its exact ranking
+against existing items in injection selection. When every candidate is
+filtered out, the warning attributes each skip ("N already owned, M scoped
+to another project").
+
+`--from` values complete from the model keys in the store. Overlaps
 between the two models' items afterwards are the dedupe proposer's job:
 `/refine --proposer dedupe`. No automatic adoption exists — explicit,
 manual, reviewable only.

@@ -38,6 +38,7 @@ import {
   DEFAULT_DURABLE_PATH,
   exportDurable,
   exportDurableLayers,
+  getActiveModelKey,
   getState,
   importDurableLayers,
   modelKey,
@@ -53,6 +54,7 @@ import {
 } from "./config.js";
 import { KIND_LABEL } from "./types.js";
 import type { ComponentKind, Delta, HarnessItem } from "./types.js";
+import { branchEntries, resolveBindingKey } from "./vmodel.js";
 import { buildCorpus } from "./corpus.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
@@ -590,11 +592,11 @@ export function buildAdoptPrompt(
   }
   lines.push(
     "Apply the adoption in ONE harness_mutate call of create deltas ONLY (a create per adopted item), e.g.",
-    `{ "op": "create", "kind": "memory", "content": "<source content, copied verbatim>", "evidence": "<source evidence> (adopted from ${fromKey})", "importance": 0.62 }`,
+    `{ "op": "create", "kind": "memory", "content": "<source content, copied verbatim>", "evidence": "<source evidence> (adopted from ${fromKey})", "importance": <exact source importance> }`,
     "Rules:",
     "- This is COPY, not move — never update or delete the source items (they belong to " + fromKey + ").",
     "- Never set ownerModel — creates stamp to the active model automatically.",
-    "- Copy content VERBATIM and carry over kind, importance, and durable scope (a project item keeps { \"scope\": \"project\" }, stamped to THIS session's slug).",
+    "- Copy content VERBATIM and carry over kind, importance (full precision, exactly as listed per item), and durable scope (a project item keeps { \"scope\": \"project\" }, stamped to THIS session's slug).",
     "- Skip an item whose content you already own; overlaps clean up later with `/refine --proposer dedupe`.",
     opts.all
       ? "- Summarize at the end: adopted N item(s), skipped any you already owned."
@@ -603,8 +605,11 @@ export function buildAdoptPrompt(
     "Items:",
   );
   items.forEach((i, n) => {
+    // Full precision (no toFixed): the agent copies the listed importance
+    // verbatim into the create delta, and a rounded value would change the
+    // copy's ranking against existing items in injection selection (review #25).
     lines.push(
-      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
+      `${n + 1}. [${i.id}] (${i.kind}, importance ${i.importance}, ${i.scope === "project" ? `project \"${i.project ?? ""}\"` : "global"}) ${i.content}`,
       `   evidence: ${i.evidence}`,
     );
   });
@@ -634,9 +639,13 @@ async function handleAdopt(
     );
     return;
   }
-  // Adopting from the active model could only duplicate items it already
-  // owns — point the user at another model instead.
-  const active = modelKey(ctx.model);
+  // The adopter is the key creates will be stamped with: the RESOLVED binding
+  // key (virtualBinding-aware), not the raw selection. Under "physical" a
+  // router selection adopts as the routed model, so both the self-adopt guard
+  // and the already-owned filter below must see the same key as
+  // create-stamping (review #25).
+  const { virtualBinding } = await loadConfig();
+  const active = resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ?? getActiveModelKey();
   if (from === active) {
     ctx.ui.notify(
       `${from} is already the active model's harness — adopt copies from ANOTHER model (see /harness status for the models in the store).`,
@@ -644,8 +653,8 @@ async function handleAdopt(
     );
     return;
   }
-  const pool = getState().items.filter((i) => i.active && i.ownerModel === from);
-  if (pool.length === 0) {
+  const source = getState().items.filter((i) => i.active && i.ownerModel === from);
+  if (source.length === 0) {
     const owners = activeOwnerCounts();
     ctx.ui.notify(
       owners.size === 0
@@ -655,11 +664,41 @@ async function handleAdopt(
     );
     return;
   }
+  // Foreign-project items are SKIPPED, not re-stamped: adopting an item
+  // scoped to project A from a session in project B would stamp the copy with
+  // B's slug, silently moving A's project facts into B's durable layer. Adopt
+  // them from a session in that project instead (review #25).
+  const slug = projectSlug(ctx.cwd);
+  const adoptable = source.filter((i) => i.scope !== "project" || i.project === slug);
+  const foreign = source.length - adoptable.length;
+  // Content the adopter already owns (exact match, any active state) is
+  // skipped BEFORE the cap — otherwise a >cap source re-selects the same
+  // highest-ranked items forever and the prompt's "skip what you own" never
+  // gets past them, stranding the rest of the source (review #25).
+  const owned = new Set(
+    getState().items.filter((i) => i.ownerModel === active).map((i) => i.content),
+  );
+  const pool = adoptable.filter((i) => !owned.has(i.content));
+  const ownedSkipped = adoptable.length - pool.length;
+  if (pool.length === 0) {
+    const reasons: string[] = [];
+    if (ownedSkipped > 0) reasons.push(`${ownedSkipped} already owned (identical content)`);
+    if (foreign > 0) reasons.push(`${foreign} scoped to another project`);
+    ctx.ui.notify(
+      `Nothing to adopt from ${from}: of ${source.length} active item(s), ${reasons.join(", ")}.`,
+      "warning",
+    );
+    return;
+  }
   const items = selectAdoptSource(pool);
-  const capped = items.length < pool.length ? ` (capped to the ${items.length} highest-importance of ${pool.length})` : "";
+  const bits: string[] = [];
+  if (items.length < pool.length) bits.push(`capped to the ${items.length} highest-importance of ${pool.length}`);
+  if (ownedSkipped > 0) bits.push(`${ownedSkipped} already owned`);
+  if (foreign > 0) bits.push(`${foreign} foreign-project skipped`);
+  const suffix = bits.length > 0 ? ` (${bits.join("; ")})` : "";
   pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }));
   ctx.ui.notify(
-    `Steering agent to ${rest.includes("--all") ? "adopt" : "review for adoption"} ${items.length} item(s) from ${from}${capped}.`,
+    `Steering agent to ${rest.includes("--all") ? "adopt" : "review for adoption"} ${items.length} item(s) from ${from}${suffix}.`,
     "info",
   );
 }

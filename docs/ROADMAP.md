@@ -154,13 +154,21 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
     whole adoption fits ONE audited, `/tree`-rollback-able batch); keeps the
     highest-importance items first and says so when it truncates.
   - Guards: missing `--from`, empty store, unknown model (warning lists the
-    owners actually present), self-adopt. `--from` completes from the store's
-    owner keys. Composes with `/refine --proposer dedupe` as the overlap
-    cleanup. No automatic adoption — explicit, manual, reviewable only.
+    owners actually present), self-adopt — compared against the **resolved
+    binding key** (`virtualBinding`-aware, the same key create-stamping
+    uses). `--from` completes from the store's owner keys. Composes with
+    `/refine --proposer dedupe` as the overlap cleanup. No automatic
+    adoption — explicit, manual, reviewable only.
+  - Review #25 hardening: foreign-project source items are skipped, not
+    re-stamped into the current session's project layer (adopt them from a
+    session in that project); content the adopter already owns is skipped
+    BEFORE the cap, so repeated adoption of a >20-item source progresses
+    instead of re-selecting the same top items; importance is listed at
+    full precision so the copy keeps its exact ranking.
   - Public API: `buildAdoptPrompt` / `selectAdoptSource` /
     `ADOPT_BATCH_CAP` re-exported from the package entry.
 
-**Effort:** ~150 lines + 15 tests. **Risk:** low-medium — the mutation is
+**Effort:** ~150 lines + 21 tests. **Risk:** low-medium — the mutation is
 agent-applied, but inside the same audited, rollback-able envelope as
 `split`, and the source model's harness is structurally out of reach (create
 deltas only).

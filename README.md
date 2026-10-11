@@ -336,12 +336,22 @@ How the binding is set and respected:
   preferences, project facts) vs **stays** (that model's quirks, formatting
   preferences, failure modes), then apply the adoption as ONE `harness_mutate`
   batch of create deltas. It is **copy, not move**: the source model's harness
-  stays untouched, content is copied verbatim, and evidence is annotated
+  stays untouched, content is copied verbatim (importance is listed at full
+  precision so the copy keeps its exact ranking), and evidence is annotated
   `adopted from <provider/id>`. Because `ownerModel` is never model-settable,
   the creates stamp to the **active** model via the normal create-stamping
   path — audited and `/tree`-rollback-able like every mutation. `--all` skips
   the filter; overlaps afterwards clean up with `/refine --proposer dedupe`.
-  Explicit and manual only — there is no automatic cross-model adoption.
+  Two store-level filters keep the copy honest (review #25): items scoped to
+  a **different project** are skipped (a copy would re-stamp them into this
+  session's project — adopt them from a session in that project instead),
+  and content the adopter already owns is skipped **before** the batch cap,
+  so re-running against a >20-item source reaches new items instead of
+  re-selecting the same top ones. The self-adopt guard compares against the
+  **resolved binding key** (`virtualBinding`-aware — under `physical` a
+  router selection adopts as the routed model), the same key
+  create-stamping uses. Explicit and manual only — there is no automatic
+  cross-model adoption.
 
 Manual commands (`export`, `import`, `move`, `split`, `keep`, `drop`, `prune`,
 `push-mem`, `status`) operate on the **whole store** by design — they are
