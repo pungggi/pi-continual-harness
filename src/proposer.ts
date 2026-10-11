@@ -434,21 +434,55 @@ export const dedupeProposer: DeltaProposer = {
 
 // ---- registry -------------------------------------------------------------
 
-const registry = new Map<string, DeltaProposer>([
+// Cross-instance registry key (0.17.0). pi's extension loader isolates module
+// instances between extensions (a fresh jiti per extension load, module cache
+// off), so a companion package's `import { registerProposer } from
+// "pi-continual-harness"` resolves to a DIFFERENT copy of this module than the
+// one whose /refine reads the registry — a module-level Map made companion
+// registrations silently invisible. Backing the registry with a process-wide
+// global makes registration work no matter which copy each side holds.
+//
+// The string is the public contract: companions that avoid importing this
+// package at all (thin startup entries) can push a DeltaProposer straight into
+// `globalThis[Symbol.for("pi-continual-harness.proposers")]`.
+const REGISTRY_KEY = Symbol.for("pi-continual-harness.proposers");
+type ProposerRegistry = Map<string, DeltaProposer>;
+
+function globalRegistry(): ProposerRegistry {
+  const g = globalThis as Record<symbol, unknown>;
+  let r = g[REGISTRY_KEY] as ProposerRegistry | undefined;
+  if (!(r instanceof Map)) {
+    r = new Map<string, DeltaProposer>();
+    g[REGISTRY_KEY] = r;
+  }
+  return r;
+}
+
+// Built-ins stay module-local: they are pure functions of their input, and
+// keeping them off the shared map means two isolated harness copies never hand
+// each other's closures to /refine. External registrations live ONLY in the
+// shared map, so every copy can see them.
+const builtins = new Map<string, DeltaProposer>([
   ["steering", steeringProposer],
   ["dedupe", dedupeProposer],
 ]);
 
-/** Register (or replace) a named proposer. For external extensions. */
+/** Register (or replace) a named proposer. For external extensions. Writes to
+ *  the process-wide registry (Symbol.for("pi-continual-harness.proposers")),
+ *  so it takes effect across pi's per-extension module isolation. */
 export function registerProposer(p: DeltaProposer): void {
-  registry.set(p.name, p);
+  globalRegistry().set(p.name, p);
 }
 
 /** Look up a proposer by name; falls back to the steering default. */
 export function getProposer(name: string | undefined): DeltaProposer {
-  return registry.get(name ?? "steering") ?? steeringProposer;
+  const key = name ?? "steering";
+  const custom = globalRegistry().get(key);
+  // Defensive: the shared map can be written by anyone in the process.
+  if (custom && typeof custom.propose === "function") return custom;
+  return builtins.get(key) ?? steeringProposer;
 }
 
 export function listProposers(): string[] {
-  return [...registry.keys()];
+  return [...new Set([...builtins.keys(), ...globalRegistry().keys()])];
 }

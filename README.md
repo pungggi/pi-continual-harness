@@ -473,6 +473,17 @@ registerProposer({
 Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
 `"proposer": "my-proposer"` in the config.
 
+**Cross-instance registry (0.17+).** pi's extension loader isolates module
+instances between extensions, so before 0.17.0 a companion's `registerProposer`
+call wrote to a private module copy that `/refine` never read — the
+registration was silently invisible. The registry is now backed by a
+process-wide global (`Symbol.for("pi-continual-harness.proposers")`), so any
+copy's registrations are visible to every copy. Companions that want a
+zero-import startup entry can skip importing this package at runtime entirely
+and push a `DeltaProposer` (typically a lazy delegate that dynamic-imports its
+implementation on first `propose()`) directly into
+`globalThis[Symbol.for("pi-continual-harness.proposers")]`.
+
 ## Scope and non-goals
 
 - **In scope:** unified state store, online `/refine`, structured deltas,

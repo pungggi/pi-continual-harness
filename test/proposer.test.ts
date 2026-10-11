@@ -255,6 +255,52 @@ describe("registry", () => {
     expect(getProposer("noop")).toBe(custom);
     expect(listProposers()).toContain("noop");
   });
+
+  // 0.17.0: pi's extension loader isolates module instances between
+  // extensions, so the registry is backed by a process-wide global
+  // (Symbol.for("pi-continual-harness.proposers")). These tests simulate a
+  // companion extension in ANOTHER module copy by writing the global directly.
+  const key = Symbol.for("pi-continual-harness.proposers");
+  const shared = (): Map<string, unknown> => {
+    const g = globalThis as Record<symbol, Map<string, unknown> | undefined>;
+    return (g[key] ??= new Map());
+  };
+
+  it("sees foreign registrations pushed straight into the shared global", () => {
+    const foreign = { name: "foreign", async propose() { return {}; } };
+    shared().set("foreign", foreign);
+    try {
+      expect(getProposer("foreign")).toBe(foreign);
+      expect(listProposers()).toContain("foreign");
+    } finally {
+      shared().delete("foreign");
+    }
+  });
+
+  it("registerProposer writes to the shared global registry", () => {
+    const custom = { name: "shared", async propose() { return {}; } };
+    registerProposer(custom);
+    expect(shared().get("shared")).toBe(custom);
+  });
+
+  it("ignores malformed foreign entries and falls back to steering", () => {
+    shared().set("bogus", { name: "bogus" }); // no propose()
+    try {
+      expect(getProposer("bogus")).toBe(steeringProposer);
+    } finally {
+      shared().delete("bogus");
+    }
+  });
+
+  it("lets a registration override a built-in by name", () => {
+    const override = { name: "steering", async propose() { return {}; } };
+    registerProposer(override);
+    try {
+      expect(getProposer("steering")).toBe(override);
+    } finally {
+      shared().delete("steering");
+    }
+  });
 });
 
 describe("DEDUPE_THRESHOLD", () => {
