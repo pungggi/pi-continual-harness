@@ -8,7 +8,15 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
-## [Unreleased]
+## [0.15.0] — 2026-10-11
+
+The activation, visibility, and onboarding release: issues **#19–#22**
+(activation nudges, rich status, cross-model adoption, setup wizard) plus
+the pending 0.14.0 outcome-guard work.
+
+> **Fold note:** releases 0.11.0–0.14.0 shipped from this same accumulated
+> section without header cuts (see git tags / npm history), so their entries
+> are retained below verbatim. Per-release headers resume here.
 
 ### Changed
 
@@ -465,6 +473,7 @@ output survive into new sessions without export/import ceremony.
 - Layered import handles the same id in **both** layers (project copy wins,
   no duplicate items).
 
+[0.15.0]: https://github.com/pungggi/pi-continual-harness/compare/v0.13.0...v0.15.0
 [0.9.0]: https://github.com/pungggi/pi-continual-harness/compare/v0.8.1...v0.9.0
 
 ## [0.8.1] — 2026-09-13
