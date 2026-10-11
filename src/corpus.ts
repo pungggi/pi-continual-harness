@@ -135,38 +135,58 @@ function durableLayer(i: HarnessItem): string {
 
 // ---- lifecycle ---------------------------------------------------------------
 
-/** Classify one snapshot → next-snapshot transition into lifecycle records.
+/** One classified lifecycle transition, with the item it happened to.
+ *  Exported so the status report (src/status.ts) can aggregate events with
+ *  owner-model attribution; `buildCorpus` maps these onto contract records. */
+export interface LifecycleTransition {
+  event: LifecycleEvent;
+  /** Post-transition item (for removals: the removed item as last seen). */
+  item: HarnessItem;
+}
+
+/** Classify one snapshot → next-snapshot transition into lifecycle events.
  *  `citeBump` is the CONFIGURED outcome-loop bump (see CorpusOptions). */
-function diffSnapshots(
+export function classifyTransition(
   prev: HarnessState,
   next: HarnessState,
   citeBump: number,
-  out: LifecycleRecord[],
-): void {
+): LifecycleTransition[] {
+  const out: LifecycleTransition[] = [];
   const prevById = new Map(prev.items.map((i) => [i.id, i]));
   const nextById = new Map(next.items.map((i) => [i.id, i]));
 
   for (const item of next.items) {
     const before = prevById.get(item.id);
     if (!before) {
-      out.push(lifecycle(item, "created", item.importance));
+      out.push({ event: "created", item });
       continue;
     }
     const d = item.importance - before.importance;
     if (Math.abs(d) < EPSILON) continue;
     // keep/drop FIRST: a configured citation bump of exactly ±0.1 collides and
     // keep/drop win (documented in CorpusOptions).
-    if (Math.abs(d - KEEP_DROP_BUMP) <= BUMP_TOL) out.push(lifecycle(item, "kept", item.importance));
-    else if (Math.abs(d + KEEP_DROP_BUMP) <= BUMP_TOL)
-      out.push(lifecycle(item, "dropped", item.importance));
+    if (Math.abs(d - KEEP_DROP_BUMP) <= BUMP_TOL) out.push({ event: "kept", item });
+    else if (Math.abs(d + KEEP_DROP_BUMP) <= BUMP_TOL) out.push({ event: "dropped", item });
     else if (citeBump > 0 && Math.abs(d - citeBump) <= BUMP_TOL)
-      out.push(lifecycle(item, "cited", item.importance));
+      out.push({ event: "cited", item });
     // else: explicit harness_mutate importance set — not a lifecycle signal.
   }
   for (const item of prev.items) {
     if (nextById.has(item.id)) continue;
     const event = item.importance < IMPORTANCE_FLOOR ? "pruned" : "deleted";
-    out.push(lifecycle(item, event, item.importance));
+    out.push({ event, item });
+  }
+  return out;
+}
+
+function diffSnapshots(
+  prev: HarnessState,
+  next: HarnessState,
+  citeBump: number,
+  out: LifecycleRecord[],
+): void {
+  for (const t of classifyTransition(prev, next, citeBump)) {
+    out.push(lifecycle(t.item, t.event, t.item.importance));
   }
 }
 

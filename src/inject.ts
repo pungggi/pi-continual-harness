@@ -22,7 +22,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { adoptOrphans, getActiveModelKey, getState, setActiveModelKey } from "./store.js";
-import { KIND_ORDER, selectForInjection, type InjectionConfig } from "./select.js";
+import { KIND_ORDER, normalizeInjection, selectForInjection, estimateTokens, type InjectionConfig } from "./select.js";
 import { loadConfig } from "./config.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { ComponentKind } from "./types.js";
@@ -34,12 +34,49 @@ const TITLES: Record<ComponentKind, string> = {
   subagent: "Reusable sub-agent specs",
 };
 
+// ---- session injection stats (issue #20) -------------------------------------
+//
+// What the harness actually DELIVERED this session: how many provider-request
+// renders surfaced items, how many items, and how much of the token budget the
+// last block used. In-memory and session-scoped (reset on session_start) —
+// surfaced read-only by /harness status; no persistence, no mutation.
+
+/** Injection telemetry for the current session (see renderHarnessBlock). */
+export interface InjectionStats {
+  /** Renders whose block actually carried items ("injections served"). */
+  renders: number;
+  /** Items surfaced across those renders (sum of the selection's `selected`). */
+  surfaced: number;
+  /** Items the selection policy dropped across those renders. */
+  omitted: number;
+  /** Estimated tokens of the LAST injected block (intro + headers + items). */
+  lastTokens: number;
+  /** The configured total budget for the block (maxTokens). */
+  maxTokens: number;
+}
+
+let stats: InjectionStats | undefined;
+
+/** Session injection stats so far; undefined before the first served render. */
+export function getInjectionStats(): InjectionStats | undefined {
+  return stats ? { ...stats } : undefined;
+}
+
+/** Test/session hook: forget the session's injection stats. */
+export function resetInjectionStats(): void {
+  stats = undefined;
+}
+
 /**
  * Render the harness block for a single model. Selection (`cfg`) defaults to the
  * shipped policy when omitted — importance-ordered, capped per kind and by a
  * total token budget (see select.ts). Only active items whose ownerModel ===
  * ownerKey are ever considered. An undefined ownerKey (no active model) renders
  * nothing — isolation is strict: unknown model → inject nothing.
+ *
+ * Note: every non-empty render folds into the session injection stats
+ * (InjectionStats above; /harness status surfaces them). Tests that render
+ * directly reset with resetInjectionStats().
  */
 export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): string {
   if (ownerKey === undefined) return "";
@@ -74,7 +111,26 @@ export function renderHarnessBlock(ownerKey?: string, cfg?: InjectionConfig): st
       `_(${omitted} item(s) not shown — below the injection budget. Raise \`injection.maxTokens\`/\`maxPerKind\` in harness.json or run \`/harness prune\`.)_`,
     );
   }
-  return lines.join("\n");
+  const block = lines.join("\n");
+  recordInjectionStats(block, selected.length, omitted, cfg);
+  return block;
+}
+
+/** Fold one served render into the session stats (see InjectionStats). */
+function recordInjectionStats(
+  block: string,
+  surfaced: number,
+  omitted: number,
+  cfg?: InjectionConfig,
+): void {
+  const n = normalizeInjection(cfg);
+  stats = {
+    renders: (stats?.renders ?? 0) + 1,
+    surfaced: (stats?.surfaced ?? 0) + surfaced,
+    omitted: (stats?.omitted ?? 0) + omitted,
+    lastTokens: estimateTokens(block, n.charsPerToken),
+    maxTokens: n.maxTokens,
+  };
 }
 
 /** Append text to a system message's content (string or text blocks). */

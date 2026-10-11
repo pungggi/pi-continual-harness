@@ -83,6 +83,15 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 ### Fixed
 
+- **Review #27 fixes (all unreleased features, amended in place)** — impact's
+  implicit empty baseline (first-snapshot `created 0`), per-model
+  update/merge attribution, status keying under `virtualBinding: "physical"`,
+  honest classifier-gate hint (names `classifier.model` AND `autoRefine.gate`),
+  and imported refs reconciled against the live store every `turn_end` (an
+  item deleted or deactivated after the import drops out of the reminders;
+  review pointers now target `harness_list`, which lists ids/content — status
+  intentionally stays aggregate-only).
+
 - **`harness_list` empty results are now diagnostic** — the bare
   `"Harness state is empty."` collapsed three very different situations into
   one opaque line, which users read as "the feature is broken": (1) a
@@ -99,6 +108,61 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   the model-facing text changed.
 
 ### Added
+
+- **Rich `/harness status` (issue #20)** — the status report is now a
+  three-band, still read-only notify. **Impact**: derived from the session
+  branch's audit trail by reusing the corpus lifecycle classification
+  (`classifyTransition` now exported with item attribution): refine runs
+  (manual vs auto), items created / updated (direct-apply, a lower bound) /
+  kept / cited (config-aware bump) / dropped / pruned / deleted / merged
+  (dedupe merges), whole-store plus a per-active-model line (lifecycle events
+  AND direct-apply update/merge ops are owner-attributed; the key follows the
+  configured `virtualBinding` policy). The branch's first snapshot diffs
+  against an implicit empty baseline, so a fresh session's first create batch
+  counts its items. **Injection
+  stats**: renders that served items, items surfaced, last block's estimated
+  tokens vs `injection.maxTokens`, and selection-omitted counts
+  (`InjectionStats`, recorded at render time in `inject.ts`, reset on
+  `session_start`). **Zero-state guidance**: 0 active items → actionable
+  first steps (`/refine`, MANUAL Quick start) instead of bare zeros. **Hint**:
+  one rotating contextual one-liner per call (classifier gate, outcome loop,
+  `push-mem`, `remindRefine`, `split`), never repeating the previous call's
+  hint (`src/hints.ts`, shared copy source for #19's content library). The
+  report builder is pure and exported — `buildStatusReport` /
+  `renderStatusReport` — and `handleStatus` stays thin glue. No new persisted
+  state; no mutation.
+
+- **Cross-model adoption: `/harness adopt --from <provider/id> [--all]`**
+  (issue #21) — the audited, agent-filtered path for carrying **owned** items
+  across models (per-model isolation starts every new model id on a blank
+  harness; orphan adoption only covered *unowned* items). Steers the agent to
+  classify the source model's active items **generalizes** (model-agnostic:
+  engineering practices, user preferences, project facts) vs **stays** (that
+  model's quirks, formatting preferences, failure modes), then apply ONE
+  `harness_mutate` batch of create deltas — **copy, not move**: the source
+  harness is never touched, content is copied verbatim, evidence is annotated
+  `adopted from <provider/id>`, and because `ownerModel` is never
+  model-settable the creates stamp to the **active** model via the existing
+  create-stamping path (audited, `/tree`-rollback-able). `--all` adopts
+  everything without the filter. The batch is capped at 20 items (matching
+  `harness_mutate`'s per-call delta limit so the whole adoption fits one
+  batch), keeping the highest-importance items first and announcing any
+  truncation. Guards: missing `--from`, empty store, unknown model (warning
+  lists the owners present, with counts), self-adopt. `--from` values
+  complete from the model keys in the store. Overlaps afterwards are the
+  dedupe proposer's job: `/refine --proposer dedupe`. No automatic adoption
+  exists — explicit, manual, reviewable only. Review #25 hardening: the
+  self-adopt guard compares against the **resolved binding key**
+  (`virtualBinding`-aware, the same key create-stamping uses — a router
+  selection under `physical` adopts as the routed model); foreign-project
+  source items are skipped rather than re-stamped into the current
+  session's project layer (adopt them from a session in that project);
+  content the adopter already owns is skipped **before** the cap so repeated
+  adoption of a >20-item source progresses instead of re-selecting the same
+  top items; and importance is listed at **full precision** so an adopted
+  copy keeps its exact ranking. `buildAdoptPrompt`,
+  `selectAdoptSource`, and `ADOPT_BATCH_CAP` re-exported from the package
+  entry.
 
 - **`/harness setup` — guided configuration wizard (presets, reviewed
   harness.json write)** — every opt-in feature used to require hand-editing

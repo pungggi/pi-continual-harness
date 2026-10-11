@@ -158,6 +158,7 @@ The package ships raw TypeScript; no compilation is needed.
 
 ```
 /harness status        # should report 0 active / 0 total, durable: none
+                       # (plus zero-state first-steps guidance)
 ```
 
 Then optionally run `/harness setup` (see
@@ -309,10 +310,10 @@ proposes evidence-backed CRUD deltas.
 Durable I/O and importance hygiene. The command registers argument
 autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
 menu of subcommands with a one-line help each; one level deeper it completes
-flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--preset`,
-`--yes`), `--kind` / `--model` / `--preset` values, and `keep`/`drop` item
-ids straight from the live store. Path arguments intentionally get no menu
-(use editor path completion).
+flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--from`,
+`--preset`, `--yes`), `--kind` / `--model` / `--from` / `--preset` values,
+and `keep`/`drop` item ids straight from the live store. Path arguments
+intentionally get no menu (use editor path completion).
 
 Subcommands:
 
@@ -322,10 +323,49 @@ Subcommands:
 /harness status
 ```
 
-Reports whole-store active/total counts broken down by kind (status is a
-whole-store command), annotated with the active model's share, the scope split
-(`X global / Y project`), and **both durable layers**' presence and
-last-modified time (the global file + the current project's file).
+A read-only, single-notify report in three bands on top of the classic
+counts. **Counts** come first: whole-store active/total broken down by kind
+(status is a whole-store command), annotated with the active model's share,
+the scope split (`X global / Y project`), and **both durable layers**'
+presence and last-modified time (the global file + the current project's
+file).
+
+**Impact** is derived on the fly from this session branch's audit trail
+(`harness-state` snapshots + `harness-refinement` entries) by reusing the
+corpus lifecycle classification — no new persisted state, nothing mutated:
+
+- **Runs**: how many `/refine` runs the branch records, split manual vs
+  auto-refine.
+- **Items**: `created` (appeared in a snapshot — `/refine`, `harness_mutate`,
+  or import alike), `updated` (direct-apply proposer batches; a lower bound —
+  steering-path content edits don't change importance, so snapshot diffs
+  can't see them), `kept`/`dropped` (the ±0.1 bumps), `cited` (outcome-loop
+  promotions, classified with the *configured* bump), `pruned` (removed
+  below the importance floor), `deleted` (removed at/above it), and `merged`
+  (dedupe merges, from the "merged into h_…" delete reasons).
+
+The whole-store line is followed by a `For [provider/id]: …` line attributed to
+the active model's items — lifecycle events **and** direct-apply update/merge
+ops (mirroring the per-model annotation in the counts band). The key follows
+the configured `virtualBinding` policy, so under `"physical"` with a virtual
+selection the bands report the routed physical model, not the router id.
+The branch's first snapshot diffs against an implicit **empty baseline**, so
+a fresh session's first create batch (or auto-import) counts its items as
+created.
+
+**Injection** summarizes what the harness delivered this session (in-memory,
+reset on `session_start`): renders that served items, items surfaced, the
+last block's estimated-token usage vs `injection.maxTokens`, and how many
+items the selection policy dropped.
+
+When the store has **0 active items**, the counts are followed by zero-state
+guidance (run `/refine` after a working session; MANUAL §3's Quick start)
+instead of bare zeros. Finally, one rotating **hint** line cross-promotes an
+under-discovered feature that applies right now (classifier gate, outcome
+loop, `push-mem`, `remindRefine`, `split`) — never the hint shown on the
+previous call. The report builder is pure and exported
+(`buildStatusReport`/`renderStatusReport`, plus the hint library in
+`src/hints.ts`) so companions reuse the same copy source.
 
 #### `export [path]`
 
@@ -421,6 +461,67 @@ vs `project` for each, applying the result as ONE `harness_mutate` batch of
 scope-only update deltas. The model's `harness_mutate` call is visible,
 audited, and `/tree`-rollback-able; the command itself mutates nothing.
 Everything with an empty store → warning.
+
+#### `adopt --from <provider/id> [--all]`
+
+```
+/harness adopt --from anthropic/claude-4.5            # agent filters, then copies
+/harness adopt --from anthropic/claude-4.5 --all      # copy everything, no filter
+```
+
+The reviewable path for carrying **owned** items across models (per-model
+isolation means a new model id starts from a blank harness; orphan adoption
+only covers *unowned* items). Collects the source model's **active** items
+(importance-ordered, capped to the **20** best — matching `harness_mutate`'s
+per-call delta limit so the whole adoption fits ONE audited batch) and sends
+a steering message asking the agent to classify each item:
+
+- **generalizes** — model-agnostic knowledge (engineering practices, user
+  preferences, project facts) → adopted;
+- **stays** — specific to the source model (its quirks, formatting
+  preferences, failure modes) → skipped.
+
+`--all` skips the filter and adopts everything. The agent then applies ONE
+`harness_mutate` batch of **create** deltas:
+
+- **Copy, not move** — the source model's harness is never touched (no
+  cross-model data loss); adopted copies get fresh ids.
+- **Stamped to the active model** — `ownerModel` is not model-settable, so
+  creates bind to the model driving the turn (the adopter) automatically.
+- **Verbatim + annotated** — content, kind, importance, and durable scope are
+carried over unchanged; the evidence gains `(adopted from <provider/id>)`.
+The filter decides *whether* an item transfers, never rewrites it.
+
+The whole path is visible end-to-end: steering message in the transcript,
+audited `harness-state` entry, `/tree` rollback. Guards: missing `--from`,
+empty store, unknown model (the warning lists the models actually present,
+with counts), and adopting from the active model itself — compared against
+the **resolved binding key** (`virtualBinding`-aware: under `physical` a
+router selection adopts as the routed model, so the guard sees the same key
+create-stamping uses) — all warn and do nothing.
+
+Two store-level filters run before the batch cap (review #25):
+
+- **Foreign-project items are skipped, not re-stamped.** Adopting an item
+  scoped to project A from a session in project B would stamp the copy with
+  B's slug, silently moving A's project facts into B's durable layer —
+  adopt them from a session in that project instead. The notification
+  reports the skip count.
+- **Already-owned content is skipped.** An exact-content item owned by the
+  adopter never consumes a cap slot, so re-running `/harness adopt` against
+  a source larger than the cap reaches NEW items instead of re-selecting
+  the same highest-importance ones forever.
+
+Importance is listed per item at **full precision** (no rounding) — the
+agent copies it verbatim, so an adopted copy keeps its exact ranking
+against existing items in injection selection. When every candidate is
+filtered out, the warning attributes each skip ("N already owned, M scoped
+to another project").
+
+`--from` values complete from the model keys in the store. Overlaps
+between the two models' items afterwards are the dedupe proposer's job:
+`/refine --proposer dedupe`. No automatic adoption exists — explicit,
+manual, reviewable only.
 
 #### `prune [--decay <days>]`
 
@@ -689,8 +790,13 @@ back online. With `"autoImport": true` the loop runs itself: layers in on
 **You always know what the sync brought in.** The session-start import lists
 every created/updated item (id, kind, first words of content), and — unless
 `importRemind` is disabled — a one-line reminder re-surfaces the imported
-items every 25 turns (max 3 per batch) so silently-injected instructions
-never go unnoticed.
+items every 25 completed turns (max 3 per batch; items deleted or
+ deactivated after the import drop out of the reminders) so
+silently-injected instructions never go unnoticed. Turns are counted as
+completed `turn_end` events across the whole session (aborted/error turns
+are skipped) — pi's `turnIndex` resets to 0 on every `agent_start`, so
+counting run-local index deltas would never cross the cadence for short
+runs.
 
 ---
 
@@ -725,7 +831,7 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. Enabling it **mid-session** is safe: the first `turn_end` imports the layers *before* any export, so a late enable can never overwrite the durable files with a never-imported store. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, counted in completed `turn_end` **events** (pi's per-run `turnIndex` resets on every prompt, so events — not indices — are counted). Aborted/error `turn_end`s are skipped. At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, in completed `turn_end` events counted session-wide (pi's `turnIndex` resets per `agent_start`, so run-local indices never gate it). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |
@@ -1211,6 +1317,13 @@ import {
   type InjectionConfig,
   type NormalizedInjection,
   type SelectionResult,
+  // status report — see §5 → "status"
+  buildStatusReport,  // pure: state + branch entries + opts → StatusReport
+  renderStatusReport, // StatusReport (+ durable line, picked hint) → text
+  pickHint,           // pure hint rotation (skip last shown)
+  type StatusReport,
+  type ImpactCounts,
+  type StatusHint,
 } from "pi-continual-harness";
 ```
 
@@ -1261,6 +1374,7 @@ to the current turn) on top (see [§8 → Injection selection](#injection-select
 | Injection chars/token | `4` | `select.ts` `DEFAULT_INJECTION.charsPerToken` |
 | Dedupe threshold | `0.6` Jaccard | `proposer.ts` `DEDUPE_THRESHOLD` |
 | `harness_mutate` batch size | `1`–`20` deltas | `tools.ts` |
+| `adopt` batch cap | `20` items (matches the mutate batch size) | `harness.ts` `ADOPT_BATCH_CAP` |
 | Default create importance | `0.5` | `store.ts` `applyOne` |
 | Default item scope | `"global"` | `store.ts` `applyOne` |
 | Durable sync (autoImport) | `false` (off; opt-in) | `config.ts` `DEFAULT_CONFIG` |

@@ -251,7 +251,6 @@ describe("registerAutoExport (turn_end layered export)", () => {
     expect(step("aborted")).toBe(false); // inert either way now
     expect(MAX_IMPORT_REMINDERS).toBe(3);
   });
-
   it("counts completed turn_end events, not pi's per-run turnIndex (reset to 0 each agent_start, review #26)", async () => {
     await primeConfig({ autoImport: true });
     writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
@@ -367,7 +366,34 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(() => JSON.parse(snippet)).not.toThrow();
     expect(JSON.parse(snippet)).toEqual({ enabled: false });
   });
+});
 
+describe("import awareness — reconciliation (review #27)", () => {
+  it("reminders stop advertising items deleted or deactivated after the import (review #27)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, [
+      "- **[h_g]** (importance 0.50) keep", "  - evidence: e",
+      "- **[h_h]** (importance 0.50) gone", "  - evidence: e",
+    ]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    // delete h_g, deactivate h_h — neither may be advertised as active
+    applyDeltas(
+      [
+        { op: "delete", id: "h_g", reason: "stale" },
+        { op: "update", id: "h_h", active: false },
+      ],
+      () => {},
+    );
+    for (let t = 0; t <= 30; t++) {
+      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    expect(getImportedThisSession()).toHaveLength(0);
+  });
 });
 
 describe("exportDurableLayers slug handling", () => {

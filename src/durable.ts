@@ -170,12 +170,27 @@ export function evaluateImportReminder(
   return false;
 }
 
+/** Keep importedThisSession truthful against the live store (review #27): an
+ *  item deleted or deactivated after the import must stop being advertised as
+ *  an active instruction, and content drifts should reflect post-merge truth. */
+function reconcileImported(): void {
+  importedThisSession = importedThisSession
+    .map((ref): ImportedRef | undefined => {
+      const live = getState().items.find((i) => i.id === ref.id);
+      return live && live.active
+        ? { id: live.id, kind: live.kind, content: live.content }
+        : undefined;
+    })
+    .filter((r): r is ImportedRef => Boolean(r));
+}
+
 /** Subscribe to turn_end and re-surface imported items on the cadence. */
 export function registerImportReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (event, ctx) => {
     const config = await loadConfig();
     // Completed-turn counting (see `completedTurns`): aborted/error outcomes
     // are inert and pi's per-agent-start turnIndex resets never matter.
+    reconcileImported(); // deleted/deactivated imports stop being advertised (review #27)
     const outcome = (event as { outcome?: string }).outcome;
     if (!evaluateImportReminder(config, outcome, importedThisSession.length)) {
       return;

@@ -70,12 +70,13 @@ Durable I/O (round-trip with pi-reflect):
 /harness drop <id>               # nudge importance down (−0.1)
 /harness move <id> global|project  # move an item between durable layers
 /harness split                   # steer the agent to classify every item's scope
+/harness adopt --from <provider/id> [--all]  # steer the agent to copy another model's items here
 /harness push-mem [--all|--kind <kind>|--model <provider/id|active>]  # persist active items to pi-mem (save_memory)
 /harness setup [--preset <quiet|recommended|power>] [--yes]  # guided config wizard
 ```
 
-Subcommands, flags, `--kind`/`--model` values, `move` scopes, and `keep`/
-`drop`/`move` item ids all autocomplete in the TUI as you type after
+Subcommands, flags, `--kind`/`--model`/`--from` values, `move` scopes, and
+`keep`/`drop`/`move` item ids all autocomplete in the TUI as you type after
 `/harness `.
 
 **Durable layers.** Every item carries its own durable scope: `global`
@@ -340,6 +341,29 @@ How the binding is set and respected:
 - **Durable round-trip preserves owner.** `/harness export` tags each item with
   `model: provider/id`; `/harness import` restores it. An item whose tag
   pi-reflect stripped becomes an orphan and is adopted by the active model.
+- **Carrying owned items across models: `/harness adopt`.** Orphan adoption
+  only covers *unowned* items. `/harness adopt --from <provider/id>` is the
+  reviewable path for owned ones: it steers the agent to classify the source
+  model's active items **generalizes** (engineering practices, user
+  preferences, project facts) vs **stays** (that model's quirks, formatting
+  preferences, failure modes), then apply the adoption as ONE `harness_mutate`
+  batch of create deltas. It is **copy, not move**: the source model's harness
+  stays untouched, content is copied verbatim (importance is listed at full
+  precision so the copy keeps its exact ranking), and evidence is annotated
+  `adopted from <provider/id>`. Because `ownerModel` is never model-settable,
+  the creates stamp to the **active** model via the normal create-stamping
+  path — audited and `/tree`-rollback-able like every mutation. `--all` skips
+  the filter; overlaps afterwards clean up with `/refine --proposer dedupe`.
+  Two store-level filters keep the copy honest (review #25): items scoped to
+  a **different project** are skipped (a copy would re-stamp them into this
+  session's project — adopt them from a session in that project instead),
+  and content the adopter already owns is skipped **before** the batch cap,
+  so re-running against a >20-item source reaches new items instead of
+  re-selecting the same top ones. The self-adopt guard compares against the
+  **resolved binding key** (`virtualBinding`-aware — under `physical` a
+  router selection adopts as the routed model), the same key
+  create-stamping uses. Explicit and manual only — there is no automatic
+  cross-model adoption.
 
 Manual commands (`export`, `import`, `move`, `split`, `keep`, `drop`, `prune`,
 `push-mem`, `status`) operate on the **whole store** by design — they are
@@ -486,7 +510,9 @@ Then `"my-proposer"` is selectable via `/refine --proposer my-proposer` or
   round-trip preserves the owner tag. With pi virtual models (routers), the
   `"virtualBinding": "physical"` policy keys items by the routed physical
   model instead of the router id, so a router selection does not silently
-  reset the harness.
+  reset the harness. Owned items can be carried across models explicitly with
+  `/harness adopt --from <provider/id> [--all]` (agent-filtered copy; see
+  [Model binding](#model-binding-per-model-isolation)).
 - **Bounded injection (on by default)**: the supplemental block is
   importance-ordered and capped per kind + by a total token budget, so a growing
   harness never balloons the system prompt. Tunable / opt-out via the `injection`
