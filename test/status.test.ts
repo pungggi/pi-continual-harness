@@ -52,7 +52,7 @@ describe("buildStatusReport — impact from the audit trail", () => {
     const b = (imp: number) => item({ id: "h_b", kind: "memory", content: "fact b", importance: imp, ownerModel: "test/main" });
     const entries = [
       refineEntry(), // manual run, steering, nothing applied
-      stateEntry([a(0.5)]), // baseline (first snapshot: no diff)
+      stateEntry([a(0.5)]), // implicit empty baseline → a created (review #27)
       refineEntry({ source: "auto", proposer: "dedupe", applied: 1, appliedDeltas: [{ op: "update", id: "h_a", importance: 0.7 }] }),
       stateEntry([a(0.5), b(0.4)]), // created b
       stateEntry([a(0.6), b(0.4)]), // kept a
@@ -73,7 +73,7 @@ describe("buildStatusReport — impact from the audit trail", () => {
     expect(r.impact).toEqual({
       manualRuns: 2,
       autoRuns: 1,
-      created: 1,
+      created: 2, // a (first snapshot vs implicit empty baseline) + b
       updated: 1,
       deleted: 1,
       pruned: 1,
@@ -84,31 +84,48 @@ describe("buildStatusReport — impact from the audit trail", () => {
     });
   });
 
+  it("a fresh session's first snapshot IS the create batch: implicit empty baseline (review #27)", () => {
+    const a = item({ id: "h_a", kind: "prompt", content: "first lesson", importance: 0.5, ownerModel: "test/main" });
+    const r = buildStatusReport({ items: [] }, [stateEntry([a])], { config: cfg(), modelKey: "test/main" });
+    expect(r.impact.created).toBe(1); // was 0 when the first snapshot was skipped
+    expect(r.modelImpact?.created).toBe(1);
+  });
+
   it("attributes lifecycle events per owner for the active-model annotation", () => {
     const mine = item({ id: "h_m", kind: "skill", content: "s", ownerModel: "test/main" });
     const other = item({ id: "h_o", kind: "skill", content: "t", ownerModel: "other/model" });
+    const dup = item({ id: "h_d", kind: "skill", content: "s (dup)", ownerModel: "test/main" });
     const entries = [
       stateEntry([]),
       stateEntry([mine]), // created (mine)
-      stateEntry([mine, other]), // created (other)
-      stateEntry([{ ...mine, importance: 0.53 }, other]), // cited (mine)
+      stateEntry([mine, other, dup]), // created (other) + created (dup, mine)
+      stateEntry([{ ...mine, importance: 0.53 }, other, dup]), // cited (mine)
+      refineEntry({
+        proposer: "dedupe",
+        appliedDeltas: [
+          { op: "update", id: "h_m", importance: 0.8 }, // direct-apply update (mine)
+          { op: "delete", id: "h_d", reason: "merged into h_m (overlap 1.00)" }, // merge (mine)
+        ],
+      }),
     ];
     const r = buildStatusReport({ items: [] }, entries, { config: cfg(), modelKey: "test/main" });
     expect(r.modelImpact).toEqual({
-      manualRuns: 0,
+      manualRuns: 0, // run counts are whole-store only
       autoRuns: 0,
-      created: 1,
-      updated: 0,
+      created: 2, // h_m + h_d
+      updated: 1, // attributed to the update target's owner (review #27)
       deleted: 0,
       pruned: 0,
       kept: 0,
       dropped: 0,
       cited: 1,
-      merged: 0,
+      merged: 1, // attributed to the merged duplicate's owner (review #27)
     });
     // whole store sees both models' events
-    expect(r.impact.created).toBe(2);
+    expect(r.impact.created).toBe(3);
     expect(r.impact.cited).toBe(1);
+    expect(r.impact.updated).toBe(1);
+    expect(r.impact.merged).toBe(1);
   });
 
   it("orphan-owned events attribute to (orphan), not the active model", () => {
@@ -184,10 +201,26 @@ describe("buildStatusReport — contextual hints", () => {
     expect(r.hints.map((h) => h.id)).toEqual(["classifier-gate", "outcome-loop", "remind-refine"]);
   });
 
+  it("the classifier hint stays until the gate is fully configured (review #27)", () => {
+    const memoryGlobal = item({ id: "1", kind: "memory", content: "m", ownerModel: "t/m" });
+    const withModelOnly = cfg({ classifier: { model: "typesafe/jev" } });
+    // classifier.model alone changes nothing gating-wise — the gate is off
+    expect(buildStatusReport({ items: [memoryGlobal] }, [], { config: withModelOnly }).hints.map((h) => h.id)).toContain("classifier-gate");
+    const withGate = cfg({
+      classifier: { model: "typesafe/jev" },
+      autoRefine: { enabled: true, everyTurns: 100, commit: false, gate: true, omitStaleDrafts: true },
+    });
+    expect(buildStatusReport({ items: [memoryGlobal] }, [], { config: withGate }).hints.map((h) => h.id)).not.toContain("classifier-gate");
+  });
+
   it("each driver appears only while its condition holds", () => {
     const memoryGlobal = item({ id: "1", kind: "memory", content: "m", ownerModel: "t/m" });
     const promptProject = item({ id: "2", kind: "prompt", content: "p", ownerModel: "t/m", scope: "project", project: "p" });
-    const base = cfg({ classifier: { model: "typesafe/jev" }, remindRefine: { enabled: true, everyTurns: 50 } });
+    const base = cfg({
+      classifier: { model: "typesafe/jev" },
+      autoRefine: { enabled: true, everyTurns: 100, commit: false, gate: true, omitStaleDrafts: true },
+      remindRefine: { enabled: true, everyTurns: 50 },
+    });
     const r = buildStatusReport({ items: [memoryGlobal, promptProject] }, [], { config: base });
     // zero citations + loop off still applies here
     expect(r.hints.map((h) => h.id)).toEqual(["outcome-loop", "push-mem", "split-scopes"]);

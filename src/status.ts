@@ -19,9 +19,11 @@ import type { InjectionStats } from "./inject.js";
 import type { StatusHint } from "./hints.js";
 import type { ComponentKind, HarnessState } from "./types.js";
 
-/** Impact of the audit trail, whole-store. Lifecycle counters come from
- *  consecutive `harness-state` snapshot diffs (classifyTransition); run/merge/
- *  update counters from `harness-refinement` entries. */
+/** Impact of the audit trail. Lifecycle counters come from consecutive
+ *  `harness-state` snapshot diffs (classifyTransition); run/merge/update
+ *  counters from `harness-refinement` entries. Lifecycle events and
+ *  direct-apply update/merge ops are owner-attributed (the per-model view);
+ *  run counts are whole-store only (a run is not model-attributed). */
 export interface ImpactCounts {
   /** /refine runs by source (manual vs the opt-in turn_end auto-refine). */
   manualRuns: number;
@@ -100,32 +102,32 @@ function aggregateImpact(
     const entry = raw as AnyEntry;
     if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
       const next = entry.data.state;
-      const prev = snapshots.at(-1);
-      if (prev) {
-        for (const t of classifyTransition(prev, next, citeBump)) {
-          const key = t.item.ownerModel || "(orphan)";
-          const o = owner(key);
-          // Run/merge/update counters are whole-store only (no per-item
-          // attribution); lifecycle events carry the item.
-          if (t.event === "created") {
-            whole.created += 1;
-            o.created += 1;
-          } else if (t.event === "kept") {
-            whole.kept += 1;
-            o.kept += 1;
-          } else if (t.event === "dropped") {
-            whole.dropped += 1;
-            o.dropped += 1;
-          } else if (t.event === "cited") {
-            whole.cited += 1;
-            o.cited += 1;
-          } else if (t.event === "pruned") {
-            whole.pruned += 1;
-            o.pruned += 1;
-          } else {
-            whole.deleted += 1;
-            o.deleted += 1;
-          }
+      // Implicit EMPTY baseline before the branch's first snapshot (review
+      // #27): a fresh session persists no empty harness-state entry, so the
+      // first create batch / auto-import IS the first snapshot — without this
+      // it was skipped entirely and reported `created 0`.
+      const prev = snapshots.at(-1) ?? { items: [] };
+      for (const t of classifyTransition(prev, next, citeBump)) {
+        const key = t.item.ownerModel || "(orphan)";
+        const o = owner(key);
+        if (t.event === "created") {
+          whole.created += 1;
+          o.created += 1;
+        } else if (t.event === "kept") {
+          whole.kept += 1;
+          o.kept += 1;
+        } else if (t.event === "dropped") {
+          whole.dropped += 1;
+          o.dropped += 1;
+        } else if (t.event === "cited") {
+          whole.cited += 1;
+          o.cited += 1;
+        } else if (t.event === "pruned") {
+          whole.pruned += 1;
+          o.pruned += 1;
+        } else {
+          whole.deleted += 1;
+          o.deleted += 1;
         }
       }
       snapshots.push(next);
@@ -135,14 +137,33 @@ function aggregateImpact(
       if (entry.data.source === "auto") whole.autoRuns += 1;
       else whole.manualRuns += 1; // manual by default (legacy entries predate `source`)
       const deltas = Array.isArray(entry.data.appliedDeltas) ? entry.data.appliedDeltas : [];
-      for (const d of deltas as Array<{ op?: string; reason?: string }>) {
+      // Owner attribution for direct-apply ops (review #27): at an audit entry
+      // the last snapshot is the post-run state and the one before it is
+      // pre-run — an update target lives post-run; a merged duplicate only
+      // pre-run. Dedupe plans same-owner pairs, so either lookup attributes
+      // the same model.
+      const current = snapshots.at(-1);
+      const pre = snapshots.at(-2);
+      const ownerOf = (id: string): string | undefined => {
+        const item = current?.items.find((i) => i.id === id) ?? pre?.items.find((i) => i.id === id);
+        return item ? item.ownerModel || "(orphan)" : undefined;
+      };
+      for (const d of deltas as Array<{ op?: string; id?: string; reason?: string }>) {
         if (!d || typeof d !== "object") continue;
-        if (d.op === "update") whole.updated += 1;
+        if (d.op === "update") {
+          whole.updated += 1;
+          const key = d.id ? ownerOf(d.id) : undefined;
+          if (key !== undefined) owner(key).updated += 1;
+        }
         if (d.op === "delete" && typeof d.reason === "string") {
           const parsed = parseDedupeDelete(d.reason);
           // "merged into h_…" = the keeper's evidence was unioned; the bare
           // "near-duplicate of" delete is a plain delete, not a merge.
-          if (parsed && d.reason.startsWith("merged into")) whole.merged += 1;
+          if (parsed && d.reason.startsWith("merged into")) {
+            whole.merged += 1;
+            const key = (d.id ? ownerOf(d.id) : undefined) ?? ownerOf(parsed.keeperId);
+            if (key !== undefined) owner(key).merged += 1;
+          }
         }
       }
     }
@@ -172,7 +193,8 @@ export interface StatusReport {
   model: { mine: number; models: number; key?: string };
   /** Whole-store audit-trail impact (band 1). */
   impact: ImpactCounts;
-  /** Lifecycle events attributed to the active model's items, when known. */
+  /** Events and direct-apply ops attributed to the active model's items,
+   *  when a model key is known. */
   modelImpact?: ImpactCounts;
   /** Injection stats for this session (band 2), when a render happened. */
   injection?: InjectionStats;
@@ -191,12 +213,14 @@ function applicableHints(
 ): StatusHint[] {
   const hints: StatusHint[] = [];
   const active = state.items.filter((i) => i.active);
-  // Classifier unset → the cheapest activation lever (the auto-refine gate)
-  // is invisible to the user.
-  if (!config.classifier?.model) {
+  // Classifier/gate not fully configured → the cheapest activation lever is
+  // invisible to the user. `classifier.model` ALONE changes nothing gating-wise
+  // (the gate needs `autoRefine.gate: true` too — review #27), so the hint
+  // stays until both are set and the copy names both keys.
+  if (!config.classifier?.model || config.autoRefine?.gate !== true) {
     hints.push({
       id: "classifier-gate",
-      text: "the auto-refine gate is available: set `classifier.model` in harness.json so cadenced refines skip when nothing durable happened",
+      text: "the auto-refine gate is available: set `classifier.model` and `autoRefine: { \"gate\": true }` in harness.json so cadenced refines skip when nothing durable happened",
     });
   }
   // Zero citations ever and the loop is off → the outcome half of the fitness

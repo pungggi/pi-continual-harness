@@ -339,9 +339,14 @@ corpus lifecycle classification — no new persisted state, nothing mutated:
   below the importance floor), `deleted` (removed at/above it), and `merged`
   (dedupe merges, from the "merged into h_…" delete reasons).
 
-The whole-store line is followed by a `For [provider/id]: …` line with the
-same lifecycle counters attributed to the active model's items (mirroring the
-per-model annotation in the counts band).
+The whole-store line is followed by a `For [provider/id]: …` line attributed to
+the active model's items — lifecycle events **and** direct-apply update/merge
+ops (mirroring the per-model annotation in the counts band). The key follows
+the configured `virtualBinding` policy, so under `"physical"` with a virtual
+selection the bands report the routed physical model, not the router id.
+The branch's first snapshot diffs against an implicit **empty baseline**, so
+a fresh session's first create batch (or auto-import) counts its items as
+created.
 
 **Injection** summarizes what the harness delivered this session (in-memory,
 reset on `session_start`): renders that served items, items surfaced, the
@@ -672,8 +677,12 @@ back online. With `"autoImport": true` the loop runs itself: layers in on
 **You always know what the sync brought in.** The session-start import lists
 every created/updated item (id, kind, first words of content), and — unless
 `importRemind` is disabled — a one-line reminder re-surfaces the imported
-items every 25 turns (max 3 per batch) so silently-injected instructions
-never go unnoticed.
+items every 25 completed turns (max 3 per batch; items deleted or
+deactivated after the import drop out of the reminders) so
+silently-injected instructions never go unnoticed. Turns are counted as
+completed `turn_end` events across the whole session — pi's `turnIndex`
+resets to 0 on every `agent_start`, so counting run-local index deltas would
+never cross the cadence for short runs.
 
 ---
 
@@ -703,7 +712,7 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence (completed turns). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence, in completed `turn_end` events counted session-wide (pi's `turnIndex` resets per `agent_start`, so run-local indices never gate it). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |

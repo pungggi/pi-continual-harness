@@ -18,7 +18,11 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   (`classifyTransition` now exported with item attribution): refine runs
   (manual vs auto), items created / updated (direct-apply, a lower bound) /
   kept / cited (config-aware bump) / dropped / pruned / deleted / merged
-  (dedupe merges), whole-store plus a per-active-model line. **Injection
+  (dedupe merges), whole-store plus a per-active-model line (lifecycle events
+  AND direct-apply update/merge ops are owner-attributed; the key follows the
+  configured `virtualBinding` policy). The branch's first snapshot diffs
+  against an implicit empty baseline, so a fresh session's first create batch
+  counts its items. **Injection
   stats**: renders that served items, items surfaced, last block's estimated
   tokens vs `injection.maxTokens`, and selection-omitted counts
   (`InjectionStats`, recorded at render time in `inject.ts`, reset on
@@ -34,10 +38,14 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce
   themselves. The session-start import lists **what arrived** (item id, kind,
-  first words of content — bounded to 5 lines), and a one-line `turn_end`
-  reminder re-surfaces the imported batch every `importRemind.everyTurns`
-  turns (default 25). Bounded by design: at most 3 reminders per imported
-  batch, then quiet until the next session — awareness without nagging.
+  first words of content — bounded to 5 lines; layered id collisions list
+  once), and a one-line `turn_end` reminder re-surfaces the imported batch
+  every `importRemind.everyTurns` completed `turn_end` events (default 25,
+  counted session-wide — pi's `turnIndex` resets per `agent_start`, so
+  run-local index deltas never gate it). Bounded by design: at most 3
+  reminders per imported batch, then quiet until the next session — and
+  items deleted or deactivated after the import drop out of the reminders —
+  awareness without nagging and without stale ids.
   Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
   (effective only with `autoImport`; kill-switch `enabled: false` keeps the
   start-of-session listing). `DurableImportResult` now carries
@@ -56,6 +64,15 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `/harness import` + `/harness move`/`split`.
 
 ### Fixed
+
+- **Review #27 fixes (all unreleased features, amended in place)** — impact's
+  implicit empty baseline (first-snapshot `created 0`), per-model
+  update/merge attribution, status keying under `virtualBinding: "physical"`,
+  honest classifier-gate hint (names `classifier.model` AND
+  `autoRefine.gate`), session-wide completed-turn counting for import
+  reminders, layered-id-collision double listing, reconciliation of imported
+  refs against the live store, and reminder copy (points to `harness_list`;
+  the disable snippet is now valid JSON).
 
 - **`harness_list` empty results are now diagnostic** — the bare
   `"Harness state is empty."` collapsed three very different situations into

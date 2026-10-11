@@ -42,10 +42,17 @@ export interface ImportedRef {
 
 // Items created/updated by THIS session's start auto-import — the "new
 // instructions" the awareness reminder re-surfaces. Re-seeded on every
-// session_start (resetDurableSync clears, syncDurableOnStart fills).
+// session_start (resetDurableSync clears, syncDurableOnStart fills), and
+// reconciled against the live store on every reminder turn (see
+// reconcileImported — review #27).
 let importedThisSession: ImportedRef[] = [];
-// turnIndex of the last import reminder (or the seed). -1 = unseen.
-let lastRemindTurn = -1;
+// Completed turn_end events observed this session (monotonic). pi's turnIndex
+// resets to 0 on every agent_start (it is per-RUN, not per-session), so
+// delta-counting against it never crosses the cadence when individual runs
+// stay short — we count completed turns ourselves instead (review #27).
+let turnsSeen = 0;
+// Completed-turn count at the last import reminder (or the seed). -1 = unseen.
+let lastRemindTurns = -1;
 // Reminders fired for the current import batch (bounded — see MAX_IMPORT_REMINDERS).
 let remindersFired = 0;
 
@@ -58,7 +65,8 @@ export const MAX_IMPORT_REMINDERS = 3;
 export function resetDurableSync(): void {
   lastExportedVersion = -1;
   importedThisSession = [];
-  lastRemindTurn = -1;
+  turnsSeen = 0;
+  lastRemindTurns = -1;
   remindersFired = 0;
 }
 
@@ -73,7 +81,7 @@ export function summarizeImported(items: ImportedRef[], max = 5): string[] {
     const c = i.content.length > 70 ? `${i.content.slice(0, 69)}…` : i.content;
     return `• [${i.id}] (${i.kind}) ${c}`;
   });
-  if (items.length > max) lines.push(`(+${items.length - max} more — /harness status)`);
+  if (items.length > max) lines.push(`(+${items.length - max} more — see harness_list)`);
   return lines;
 }
 
@@ -95,7 +103,10 @@ export async function syncDurableOnStart(
   if (res.missingFile) return; // nothing durable yet — stay quiet
   // Capture WHAT arrived (created or updated) for the awareness reminders.
   // Look the ids up in the live store: content/scope there is post-merge truth.
-  importedThisSession = [...res.createdIds, ...res.updatedIds]
+  // A layered ID collision (created by the global file, then updated by the
+  // project file) appears in BOTH id arrays — dedupe so the item is listed
+  // and counted once (review #27).
+  importedThisSession = [...new Set([...res.createdIds, ...res.updatedIds])]
     .map((id) => getState().items.find((i) => i.id === id))
     .filter((i): i is HarnessItem => Boolean(i))
     .map((i) => ({ id: i.id, kind: i.kind, content: i.content }));
@@ -113,14 +124,16 @@ export async function syncDurableOnStart(
 }
 
 /**
- * Pure decision for the import-awareness reminder (mirrors evaluateReminder's
- * delta-counting semantics). Side-effectful: seeds on the first observed turn,
- * advances on every fire. `importedCount` is the batch size to remind about.
- * Fires at most MAX_IMPORT_REMINDERS times per batch.
+ * Pure decision for the import-awareness reminder. Side-effectful: remembers
+ * the seed/fire points. `completedTurns` is the session-wide count of
+ * COMPLETED turn_end events (monotonic — NOT pi's turnIndex, which resets per
+ * agent_start; the caller maintains it by counting events). `importedCount`
+ * is the batch size to remind about. Fires at most MAX_IMPORT_REMINDERS times
+ * per batch.
  */
 export function evaluateImportReminder(
   config: HarnessConfig,
-  turnIndex: number,
+  completedTurns: number,
   importedCount: number,
 ): boolean {
   // Only meaningful with autoImport on: no silent imports → nothing to flag.
@@ -129,23 +142,41 @@ export function evaluateImportReminder(
   if (importedCount <= 0) return false;
   if (remindersFired >= MAX_IMPORT_REMINDERS) return false;
   const every = config.importRemind?.everyTurns ?? DEFAULT_IMPORT_REMIND_TURNS;
-  if (lastRemindTurn < 0) {
-    lastRemindTurn = turnIndex;
+  if (lastRemindTurns < 0) {
+    lastRemindTurns = completedTurns;
     return false;
   }
-  if (turnIndex - lastRemindTurn >= every) {
-    lastRemindTurn = turnIndex;
+  if (completedTurns - lastRemindTurns >= every) {
+    lastRemindTurns = completedTurns;
     remindersFired += 1;
     return true;
   }
   return false;
 }
 
+/** Keep importedThisSession truthful against the live store (review #27): an
+ *  item deleted or deactivated after the import must stop being advertised as
+ *  an active instruction, and content drifts should reflect post-merge truth. */
+function reconcileImported(): void {
+  importedThisSession = importedThisSession
+    .map((ref): ImportedRef | undefined => {
+      const live = getState().items.find((i) => i.id === ref.id);
+      return live && live.active
+        ? { id: live.id, kind: live.kind, content: live.content }
+        : undefined;
+    })
+    .filter((r): r is ImportedRef => Boolean(r));
+}
+
 /** Subscribe to turn_end and re-surface imported items on the cadence. */
 export function registerImportReminder(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
     const config = await loadConfig();
-    if (!evaluateImportReminder(config, (_event as { turnIndex?: number }).turnIndex ?? 0, importedThisSession.length)) {
+    // Count COMPLETED turns session-wide: pi's turnIndex resets per
+    // agent_start, so short runs never cross a turnIndex delta (review #27).
+    turnsSeen += 1;
+    reconcileImported();
+    if (!evaluateImportReminder(config, turnsSeen, importedThisSession.length)) {
       return;
     }
     const examples = importedThisSession
@@ -154,7 +185,7 @@ export function registerImportReminder(pi: ExtensionAPI): void {
       .join(", ");
     ctx.ui.notify(
       `Continual Harness: ${importedThisSession.length} imported item(s) are active this session (e.g. ${examples}). ` +
-        `Review with /harness status; disable reminders via \'importRemind\': { \'enabled\': false } in harness.json.`,
+        `Review with the harness_list tool; disable via "importRemind": { "enabled": false } in harness.json.`,
       "info",
     );
   });

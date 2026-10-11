@@ -53,6 +53,7 @@ import { buildCorpus } from "./corpus.js";
 import { buildStatusReport, renderStatusReport } from "./status.js";
 import { getInjectionStats } from "./inject.js";
 import { nextHint } from "./hints.js";
+import { branchEntries, resolveBindingKey } from "./vmodel.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
 interface CompletionEntry {
@@ -565,6 +566,11 @@ async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
   // Thin glue (issue #20): config + durable-layer stat() I/O here; every
   // derived band lives in the pure buildStatusReport (src/status.ts).
   const config = await loadConfig();
+  // Key the per-model bands by the CONFIGURED binding policy (review #27):
+  // under "physical" with a virtual selection, items are owned by the routed
+  // physical model — modelKey(ctx.model) would look up the router id and
+  // report zero for the active owner's events.
+  const key = resolveBindingKey(ctx.model, branchEntries(ctx), config.virtualBinding);
   async function layerState(path: string): Promise<string> {
     try {
       const st = await stat(path);
@@ -576,7 +582,6 @@ async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
   const durable =
     ` Durable: global ${await layerState(DEFAULT_DURABLE_PATH)};` +
     ` project ${await layerState(projectDurablePath(ctx.cwd))}.`;
-  const key = modelKey(ctx.model);
   const injection = getInjectionStats();
   const report = buildStatusReport(getState(), ctx.sessionManager.getBranch() as Iterable<unknown>, {
     config,
