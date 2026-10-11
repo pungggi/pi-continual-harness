@@ -46,7 +46,18 @@ leaving offline and storage to the packages that already do them well.
 pi install npm:pi-continual-harness
 ```
 
-Or drop `src/index.ts` into `~/.pi/agent/extensions/`.
+The npm package ships **precompiled** (`dist/`): pi loads a thin entry
+(`dist/entry.js`) that registers hooks, commands, and tool schemas in
+milliseconds, then dynamic-imports each feature module only when its event
+first fires. Measured marginal startup cost: **~30ms** (was ~0.8s when pi
+had to jiti-transpile the whole TypeScript graph every launch — issue #36).
+
+From a source checkout instead:
+
+```
+npm run build
+pi -e ./dist/entry.js
+```
 
 ## Usage
 

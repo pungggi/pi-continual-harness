@@ -29,6 +29,7 @@
 // harness.json { "autoImport": true } (see durable.ts).
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { HARNESS_COMMAND_DESCRIPTION } from "./command-meta.js";
 import { stat } from "node:fs/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -132,6 +133,7 @@ const FLAGS: Record<string, CompletionEntry[]> = {
  * numeric flag values, unknown subcommands) so the editor falls back to its
  * own behavior.
  */
+/** /harness completions — see the block comment above `completions()`. */
 function completions(argumentPrefix: string) {
   // Level 1 — still typing the first token: the subcommand menu.
   if (!/\s/.test(argumentPrefix)) {
@@ -261,59 +263,70 @@ function filterValues(
   return items.length > 0 ? items : null;
 }
 
+/** /harness command body — subcommand dispatch. Exported so the thin entry
+ *  (entry.ts) can delegate here via dynamic import without paying this
+ *  module's static graph at pi startup (issue #36). */
+export async function runHarnessCommand(
+  pi: ExtensionAPI,
+  args: string,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  const sub = (parts[0] ?? "status").toLowerCase();
+  const rest = parts.slice(1);
+  switch (sub) {
+    case "import":
+      await handleImport(pi, ctx, rest);
+      return;
+    case "export":
+      await handleExport(ctx, rest);
+      return;
+    case "export-corpus":
+      await handleExportCorpus(ctx, rest);
+      return;
+    case "prune":
+      await handlePrune(pi, ctx, rest);
+      return;
+    case "keep":
+      await handleBump(pi, ctx, rest, 0.1, "keep");
+      return;
+    case "drop":
+      await handleBump(pi, ctx, rest, -0.1, "drop");
+      return;
+    case "move":
+      await handleMove(pi, ctx, rest);
+      return;
+    case "split":
+      await handleSplit(pi, ctx);
+      return;
+    case "adopt":
+      await handleAdopt(pi, ctx, rest);
+      return;
+    case "push-mem":
+      await handlePushMem(pi, ctx, rest);
+      return;
+    case "setup":
+      await handleSetup(ctx, rest);
+      return;
+    case "list":
+      await handleList(ctx, rest);
+      return;
+    case "status":
+    default:
+      await handleStatus(ctx);
+      return;
+  }
+}
+
+/** /harness argument completions — exported for entry.ts's lazy delegation. */
+export function harnessCompletions(argumentPrefix: string) {
+  return completions(argumentPrefix);
+}
+
 export function registerHarness(pi: ExtensionAPI): void {
   pi.registerCommand("harness", {
-    description:
-      "Durable harness-state I/O + importance hygiene " +
-      "(import · export · status · adopt · prune · keep · drop · push-mem — " +
-      "subcommands autocomplete as you type)",
-    handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/).filter(Boolean);
-      const sub = (parts[0] ?? "status").toLowerCase();
-      const rest = parts.slice(1);
-      switch (sub) {
-        case "import":
-          await handleImport(pi, ctx, rest);
-          return;
-        case "export":
-          await handleExport(ctx, rest);
-          return;
-        case "export-corpus":
-          await handleExportCorpus(ctx, rest);
-          return;
-        case "prune":
-          await handlePrune(pi, ctx, rest);
-          return;
-        case "keep":
-          await handleBump(pi, ctx, rest, 0.1, "keep");
-          return;
-        case "drop":
-          await handleBump(pi, ctx, rest, -0.1, "drop");
-          return;
-        case "move":
-          await handleMove(pi, ctx, rest);
-          return;
-        case "split":
-          await handleSplit(pi, ctx);
-          return;
-        case "adopt":
-          await handleAdopt(pi, ctx, rest);
-          return;
-        case "push-mem":
-          await handlePushMem(pi, ctx, rest);
-          return;
-        case "setup":
-          await handleSetup(ctx, rest);
-          return;
-        case "list":
-          await handleList(ctx, rest);
-          return;
-        case "status":
-        default:
-          await handleStatus(ctx);
-          return;
-      }
-    },
+    description: HARNESS_COMMAND_DESCRIPTION,
+    handler: (args, ctx) => runHarnessCommand(pi, args, ctx),
     getArgumentCompletions: (argumentPrefix) => completions(argumentPrefix),
   });
 }

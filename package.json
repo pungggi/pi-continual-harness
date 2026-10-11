@@ -1,6 +1,6 @@
 {
   "name": "pi-continual-harness",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Online self-improvement layer for pi. A unified, in-trajectory harness-state store (prompt notes, memory, skill descriptions, sub-agent specs) with a manual /refine that proposes evidence-backed structured CRUD deltas. Composes with pi-reflect (offline) and pi-mem (storage); owns only the online optimizer layer. Inspired by Continual Harness (arXiv 2605.09998) and ACE (arXiv 2510.04618).",
   "keywords": [
     "pi-package",
@@ -17,9 +17,10 @@
   "license": "MIT",
   "author": "alessandro@pungitore.ch",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "files": [
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -53,13 +54,15 @@
   },
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./dist/entry.js"
     ]
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run test",
+    "prepack": "npm run build",
     "prepublishOnly": "node -e \"if(!process.env.CI)throw new Error('publish via release.yml CI: push a v* tag. Manual npm publish is blocked to guarantee provenance + version sync.')\""
   }
 }

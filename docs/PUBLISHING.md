@@ -1,8 +1,12 @@
 # Publishing `pi-continual-harness` to npm
 
-`pi-continual-harness` (repo `pi-continual-harness`) ships **raw TypeScript
-source** (pi loads `.ts` extensions at runtime — no build step). Releases are
-**CI-driven**: push a `v*.*.*` git tag and GitHub Actions publishes to npm with
+`pi-continual-harness` (repo `pi-continual-harness`) ships **precompiled
+JavaScript** (`dist/`, built by `npm run build` / the `prepack` hook — issue
+#36: pi awaits every extension factory at startup, and jiti-transpiling the
+raw TypeScript graph cost ~0.8s per launch). The pi entry is the thin
+`dist/entry.js`; `main` points at `dist/index.js` (full public API for
+companion packages). Releases are **CI-driven**: push a `v*.*.*` git tag and
+GitHub Actions publishes to npm with
 [provenance](https://docs.npmjs.com/generating-provenance-statements) (SLSA).
 
 Manual `npm publish` is intentionally blocked by the `prepublishOnly` guard in
@@ -10,12 +14,12 @@ Manual `npm publish` is intentionally blocked by the `prepublishOnly` guard in
 provenance + a clean test run).
 
 ```
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.18.0 && git push origin v0.18.0
         │
         ▼
-release.yml  ──►  npm ci → typecheck → test → version-sync check → npm publish --provenance
-                                                                      │
-                                                                      ▼
+release.yml  ──►  npm ci → typecheck → test → build → verify dist → version-sync check → npm publish --provenance
+                                                                                  │
+                                                                                  ▼
                                                             npmjs.com/package/pi-continual-harness
 ```
 

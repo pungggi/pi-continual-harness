@@ -22,6 +22,7 @@ import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
 import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
 import { getProposer, listProposers, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import { REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
 import { buildClassify } from "./classify.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { AppliedDelta } from "./types.js";
@@ -53,25 +54,33 @@ export function messageText(content: string | Array<{ type?: string; text?: stri
   return content.map((c) => c?.text ?? "").join(" ");
 }
 
+/** /refine command body — parse flags, warn on typos, run the refine.
+ *  Exported so the thin entry (entry.ts) can delegate here via dynamic import
+ *  without paying this module's static graph at pi startup (issue #36). */
+export async function runRefineCommand(
+  pi: ExtensionAPI,
+  args: string,
+  ctx: ExtensionCommandContext,
+): Promise<void> {
+  const { lookback, commit, proposer, threshold, thresholdInvalid, unknownFlags } = parseArgs(args);
+  if (thresholdInvalid) {
+    ctx.ui.notify("Invalid --threshold ignored (expected 0 < t ≤ 1).", "warning");
+  }
+  if (unknownFlags.length > 0) {
+    ctx.ui.notify(`Unknown /refine flag(s) ignored: ${unknownFlags.join(", ")}.`, "warning");
+  }
+  await runRefine(pi, ctx, {
+    lookback,
+    commit,
+    ...(proposer ? { proposer } : {}),
+    ...(threshold !== undefined ? { threshold } : {}),
+  });
+}
+
 export function registerRefine(pi: ExtensionAPI): void {
   pi.registerCommand("refine", {
-    description:
-      "Online self-improvement: review recent trajectory and propose evidence-backed CRUD deltas to the harness state. Usage: /refine [lookback-turns] [--commit] [--proposer steering|dedupe] [--threshold 0.75]",
-    handler: async (args, ctx) => {
-      const { lookback, commit, proposer, threshold, thresholdInvalid, unknownFlags } = parseArgs(args);
-      if (thresholdInvalid) {
-        ctx.ui.notify("Invalid --threshold ignored (expected 0 < t ≤ 1).", "warning");
-      }
-      if (unknownFlags.length > 0) {
-        ctx.ui.notify(`Unknown /refine flag(s) ignored: ${unknownFlags.join(", ")}.`, "warning");
-      }
-      await runRefine(pi, ctx, {
-        lookback,
-        commit,
-        ...(proposer ? { proposer } : {}),
-        ...(threshold !== undefined ? { threshold } : {}),
-      });
-    },
+    description: REFINE_COMMAND_DESCRIPTION,
+    handler: (args, ctx) => runRefineCommand(pi, args, ctx),
   });
 }
 

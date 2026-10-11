@@ -341,11 +341,13 @@ describe("/harness command", () => {
     expect(commands.has("harness")).toBe(true);
   });
 
-  it("registers argument completions and lists all subcommands on empty prefix", () => {
+  it("registers argument completions and lists all subcommands on empty prefix", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    const items = complete("") as Array<{ value: string; label: string; description?: string }>;
+    // Completions are async since the thin-entry refactor (issue #36): pi's
+    // API allows a Promise here, and the store-backed menus lazy-load.
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    const items = (await complete("")) as Array<{ value: string; label: string; description?: string }>;
     expect(items.map((i) => i.value)).toEqual([
       "import",
       "export",
@@ -367,59 +369,59 @@ describe("/harness command", () => {
     }
   });
 
-  it("filters subcommands case-insensitively as you type", () => {
+  it("filters subcommands case-insensitively as you type", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    expect((complete("imp") as Array<{ value: string }>).map((i) => i.value)).toEqual(["import"]);
-    expect((complete("P") as Array<{ value: string }>).map((i) => i.value)).toEqual([
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    expect(((await complete("imp")) as Array<{ value: string }>).map((i) => i.value)).toEqual(["import"]);
+    expect(((await complete("P")) as Array<{ value: string }>).map((i) => i.value)).toEqual([
       "prune",
       "push-mem",
     ]);
-    expect(complete("nope")).toBeNull();
+    expect(await complete("nope")).toBeNull();
   });
 
-  it("completes subcommand flags with the full replacement value", () => {
+  it("completes subcommand flags with the full replacement value", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
     // trailing space → fresh-token menu of the sub's unused flags
-    expect(complete("import ")).toEqual([
+    expect(await complete("import ")).toEqual([
       { value: "import --prune", label: "--prune", description: expect.any(String) },
     ]);
     // partial flag → filtered, value replaces the WHOLE argument text
-    expect(complete("import --p")).toEqual([
+    expect(await complete("import --p")).toEqual([
       { value: "import --prune", label: "--prune", description: expect.any(String) },
     ]);
     // already-used flags are not re-offered; the remaining ones are
-    expect(complete("push-mem --all --")).toEqual([
+    expect(await complete("push-mem --all --")).toEqual([
       { value: "push-mem --all --kind", label: "--kind", description: expect.any(String) },
       { value: "push-mem --all --model", label: "--model", description: expect.any(String) },
     ]);
     // subs without flags (or unknown subs) offer nothing
-    expect(complete("status ")).toBeNull();
-    expect(complete("whatever --")).toBeNull();
+    expect(await complete("status ")).toBeNull();
+    expect(await complete("whatever --")).toBeNull();
   });
 
-  it("never throws on bogus subcommands that collide with Object.prototype members (review finding #2)", () => {
+  it("never throws on bogus subcommands that collide with Object.prototype members (review finding #2)", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
     // "constructor"/"toString"/"hasOwnProperty" are inherited Object members:
     // an `in` / FLAGS[sub] lookup would resolve Function and crash on .filter.
     for (const bogus of ["constructor", "toString", "hasOwnProperty", "valueOf"]) {
       expect(() => complete(`${bogus} `)).not.toThrow();
-      expect(complete(`${bogus} `)).toBeNull(); // not a flag-taking sub → no menu
+      expect(await complete(`${bogus} `)).toBeNull(); // not a flag-taking sub → no menu
       expect(() => complete(`${bogus} --`)).not.toThrow();
-      expect(complete(`${bogus} --`)).toBeNull();
+      expect(await complete(`${bogus} --`)).toBeNull();
     }
   });
 
-  it("completes --kind and --model values for push-mem", () => {
+  it("completes --kind and --model values for push-mem", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    expect(complete("push-mem --kind m")).toEqual([
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    expect(await complete("push-mem --kind m")).toEqual([
       { value: "push-mem --kind memory", label: "memory", description: expect.any(String) },
     ]);
     // --model offers `active` plus the distinct owner models in the store
@@ -430,7 +432,7 @@ describe("/harness command", () => {
       ] as Delta[],
       () => {},
     );
-    const models = complete("push-mem --model ") as Array<{ value: string }>;
+    const models = (await complete("push-mem --model ")) as Array<{ value: string }>;
     expect(models.map((m) => m.value)).toEqual([
       "push-mem --model active",
       "push-mem --model anthropic/sonnet",
@@ -438,57 +440,57 @@ describe("/harness command", () => {
     ]);
   });
 
-  it("completes setup flags and --preset values (issue #22)", () => {
+  it("completes setup flags and --preset values (issue #22)", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
     // fresh token → the setup flags
-    expect(complete("setup ")).toEqual([
+    expect(await complete("setup ")).toEqual([
       { value: "setup --preset", label: "--preset", description: expect.any(String) },
       { value: "setup --yes", label: "--yes", description: expect.any(String) },
     ]);
     // used flags are not re-offered
-    expect(complete("setup --yes --")).toEqual([
+    expect(await complete("setup --yes --")).toEqual([
       { value: "setup --yes --preset", label: "--preset", description: expect.any(String) },
     ]);
     // --preset completes the three preset names as full replacement values
-    expect(complete("setup --preset ")).toEqual([
+    expect(await complete("setup --preset ")).toEqual([
       { value: "setup --preset quiet", label: "quiet", description: expect.any(String) },
       { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
       { value: "setup --preset power", label: "power", description: expect.any(String) },
     ]);
-    expect(complete("setup --preset re")).toEqual([
+    expect(await complete("setup --preset re")).toEqual([
       { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
     ]);
   });
 
-  it("completes list flags, --kind values, and --scope values (issue #31)", () => {
+  it("completes list flags, --kind values, and --scope values (issue #31)", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
     // fresh token → the list flags (-f included — short flags complete too)
-    expect(complete("list ")).toEqual([
+    expect(await complete("list ")).toEqual([
       { value: "list -f", label: "-f", description: expect.any(String) },
       { value: "list --kind", label: "--kind", description: expect.any(String) },
       { value: "list --scope", label: "--scope", description: expect.any(String) },
     ]);
     // short-flag prefix matches; a used -f is not re-offered
-    expect(complete("list -")).toHaveLength(3);
-    expect(complete("list -f --")).toEqual([
+    expect(await complete("list -")).toHaveLength(3);
+    expect(await complete("list -f --")).toEqual([
       { value: "list -f --kind", label: "--kind", description: expect.any(String) },
       { value: "list -f --scope", label: "--scope", description: expect.any(String) },
     ]);
     // --kind completes the four kinds (same menu as push-mem)
-    expect(complete("list --kind m")).toEqual([
+    expect(await complete("list --kind m")).toEqual([
       { value: "list --kind memory", label: "memory", description: expect.any(String) },
     ]);
     // --scope completes its three values with full replacement text
-    expect(complete("list --scope ")).toEqual([
+    expect(await complete("list --scope ")).toEqual([
       { value: "list --scope global", label: "global", description: expect.any(String) },
       { value: "list --scope project", label: "project", description: expect.any(String) },
       { value: "list --scope all", label: "all", description: expect.any(String) },
     ]);
-    expect(complete("list --kind memory --scope pr")).toEqual([
+    expect(await complete("list --kind memory --scope pr")).toEqual([
       { value: "list --kind memory --scope project", label: "project", description: expect.any(String) },
     ]);
   });
@@ -505,9 +507,9 @@ describe("/harness command", () => {
       ctx(),
     );
     const id = getState().items[0]!.id;
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
 
-    const items = complete("keep ") as Array<{ value: string; label: string; description?: string }>;
+    const items = (await complete("keep ")) as Array<{ value: string; label: string; description?: string }>;
     expect(items).toHaveLength(1);
     expect(items[0]!.value).toBe(`keep ${id}`);
     expect(items[0]!.label).toBe(id);
@@ -515,12 +517,12 @@ describe("/harness command", () => {
     expect(items[0]!.description).toContain("use PostgreSQL");
 
     // prefix filtering on the id, and drop works the same way
-    expect(complete(`drop ${id}`)).toEqual([
+    expect(await complete(`drop ${id}`)).toEqual([
       { value: `drop ${id}`, label: id, description: expect.any(String) },
     ]);
     // once the id is committed (trailing space), nothing more to complete
-    expect(complete(`keep ${id} `)).toBeNull();
-    expect(complete("keep h_zzz")).toBeNull();
+    expect(await complete(`keep ${id} `)).toBeNull();
+    expect(await complete("keep h_zzz")).toBeNull();
   });
 
   it("completes move with item ids then global|project values", async () => {
@@ -535,33 +537,33 @@ describe("/harness command", () => {
       ctx(),
     );
     const id = getState().items[0]!.id;
-    const complete = commands.get("harness")!.getArgumentCompletions!;
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
 
     // first positional: the item id (same menu as keep/drop)
-    const ids = complete("move ") as Array<{ value: string; label: string }>;
+    const ids = (await complete("move ")) as Array<{ value: string; label: string }>;
     expect(ids).toHaveLength(1);
     expect(ids[0]!.value).toBe(`move ${id}`);
 
     // second positional: the target scope
-    expect(complete(`move ${id} `)).toEqual([
+    expect(await complete(`move ${id} `)).toEqual([
       { value: `move ${id} global`, label: "global", description: expect.any(String) },
       { value: `move ${id} project`, label: "project", description: expect.any(String) },
     ]);
     // filtered by prefix, replacing the whole argument text
-    expect(complete(`move ${id} pr`)).toEqual([
+    expect(await complete(`move ${id} pr`)).toEqual([
       { value: `move ${id} project`, label: "project", description: expect.any(String) },
     ]);
     // id + scope chosen → nothing left to complete
-    expect(complete(`move ${id} project `)).toBeNull();
+    expect(await complete(`move ${id} project `)).toBeNull();
   });
 
-  it("returns null for path-ish and number arguments (leaves them to the editor)", () => {
+  it("returns null for path-ish and number arguments (leaves them to the editor)", async () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
-    const complete = commands.get("harness")!.getArgumentCompletions!;
-    expect(complete("export ./src")).toBeNull();
-    expect(complete("import /home")).toBeNull();
-    expect(complete("prune --decay ")).toBeNull();
+    const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
+    expect(await complete("export ./src")).toBeNull();
+    expect(await complete("import /home")).toBeNull();
+    expect(await complete("prune --decay ")).toBeNull();
   });
 
   it("/harness move re-scopes an item (project stamps the session slug)", async () => {

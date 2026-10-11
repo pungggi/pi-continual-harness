@@ -35,7 +35,7 @@
 // gate decision) appear in the transcript. The decision logic is factored into
 // evaluateAutoRefine() so it is unit-testable without a live pi runtime.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
 import { runRefine, gatherEvidence, DEFAULT_LOOKBACK_TURNS } from "./refine.js";
 import { buildClassify, buildGateRequest, gateDecision } from "./classify.js";
@@ -114,65 +114,74 @@ export function buildOmissionDrafts(projected: Iterable<ProjectedLike>): Omissio
   return drafts;
 }
 
+/** turn_end handler — run /refine on the configured cadence. Returns the
+ *  boundary continuation when a steering draft lands (pi ≥ 0.87). Exported
+ *  so the thin entry (entry.ts) can delegate via dynamic import (issue #36). */
+export async function handleAutoRefineTurnEnd(
+  pi: ExtensionAPI,
+  event: TurnEndEvent,
+  ctx: ExtensionContext,
+): Promise<TurnEndEventResult | void> {
+  const config = await loadConfig();
+  if (!evaluateAutoRefine(config, event.outcome)) return;
+  const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
+
+  // Opt-in classifier gate: cheap yes/no before spending the refine.
+  if (config.autoRefine?.gate) {
+    const classify = buildClassify(ctx, config.classifier?.model);
+    if (classify) {
+      const evidence = gatherEvidence(ctx, DEFAULT_LOOKBACK_TURNS);
+      const res = await classify(buildGateRequest(evidence));
+      const decision = gateDecision(res);
+      if (!decision.proceed) {
+        ctx.ui.notify(`Auto-refine: skipped — ${decision.because}.`, "info");
+        return;
+      }
+      ctx.ui.notify(`Auto-refine: gate passed (${decision.because}).`, "info");
+    }
+    // No resolvable classifier → plain cadence behavior (documented soft-fail).
+  }
+
+  ctx.ui.notify(`Auto-refine: running /refine (every ${every} turns, opt-in).`, "info");
+  try {
+    const result = await runRefine(
+      pi,
+      ctx,
+      {
+        commit: config.autoRefine?.commit ?? false,
+        ...(config.proposer ? { proposer: config.proposer } : {}),
+        delivery: "boundary",
+      },
+      "auto",
+    );
+    // Boundary delivery: persist the steering message as a structural entry
+    // and guarantee one next provider request. Only when the boundary CAN
+    // continue — otherwise fall back to the legacy steering send.
+    if (result.steeringMessage) {
+      if (event.context?.canContinue === false) {
+        pi.sendUserMessage(result.steeringMessage);
+        return;
+      }
+      // Hygiene (pi ≥ 0.87 context edits): omit every LIVE prior auto-refine
+      // request from future provider context, so at most one draft (the new
+      // one) is ever model-visible. Already-omitted drafts are skipped by
+      // buildOmissionDrafts; raw history and /tree rollback are untouched.
+      // Kill-switch: autoRefine.omitStaleDrafts: false.
+      const omissions =
+        config.autoRefine?.omitStaleDrafts === false
+          ? []
+          : buildOmissionDrafts(event.context?.contextEntries ?? []);
+      return {
+        entries: [...event.entries, ...omissions, buildRefineDraft(result.steeringMessage)],
+        continue: true,
+      };
+    }
+  } catch (err) {
+    ctx.ui.notify(`Auto-refine failed: ${(err as Error).message}`, "error");
+  }
+}
+
 /** Subscribe to turn_end and run /refine on the configured cadence. */
 export function registerAutoRefine(pi: ExtensionAPI): void {
-  pi.on("turn_end", async (event, ctx) => {
-    const config = await loadConfig();
-    if (!evaluateAutoRefine(config, event.outcome)) return;
-    const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
-
-    // Opt-in classifier gate: cheap yes/no before spending the refine.
-    if (config.autoRefine?.gate) {
-      const classify = buildClassify(ctx, config.classifier?.model);
-      if (classify) {
-        const evidence = gatherEvidence(ctx, DEFAULT_LOOKBACK_TURNS);
-        const res = await classify(buildGateRequest(evidence));
-        const decision = gateDecision(res);
-        if (!decision.proceed) {
-          ctx.ui.notify(`Auto-refine: skipped — ${decision.because}.`, "info");
-          return;
-        }
-        ctx.ui.notify(`Auto-refine: gate passed (${decision.because}).`, "info");
-      }
-      // No resolvable classifier → plain cadence behavior (documented soft-fail).
-    }
-
-    ctx.ui.notify(`Auto-refine: running /refine (every ${every} turns, opt-in).`, "info");
-    try {
-      const result = await runRefine(
-        pi,
-        ctx,
-        {
-          commit: config.autoRefine?.commit ?? false,
-          ...(config.proposer ? { proposer: config.proposer } : {}),
-          delivery: "boundary",
-        },
-        "auto",
-      );
-      // Boundary delivery: persist the steering message as a structural entry
-      // and guarantee one next provider request. Only when the boundary CAN
-      // continue — otherwise fall back to the legacy steering send.
-      if (result.steeringMessage) {
-        if (event.context?.canContinue === false) {
-          pi.sendUserMessage(result.steeringMessage);
-          return;
-        }
-        // Hygiene (pi ≥ 0.87 context edits): omit every LIVE prior auto-refine
-        // request from future provider context, so at most one draft (the new
-        // one) is ever model-visible. Already-omitted drafts are skipped by
-        // buildOmissionDrafts; raw history and /tree rollback are untouched.
-        // Kill-switch: autoRefine.omitStaleDrafts: false.
-        const omissions =
-          config.autoRefine?.omitStaleDrafts === false
-            ? []
-            : buildOmissionDrafts(event.context?.contextEntries ?? []);
-        return {
-          entries: [...event.entries, ...omissions, buildRefineDraft(result.steeringMessage)],
-          continue: true,
-        };
-      }
-    } catch (err) {
-      ctx.ui.notify(`Auto-refine failed: ${(err as Error).message}`, "error");
-    }
-  });
+  pi.on("turn_end", (event, ctx) => handleAutoRefineTurnEnd(pi, event, ctx));
 }
