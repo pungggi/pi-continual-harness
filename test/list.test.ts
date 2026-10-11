@@ -127,6 +127,23 @@ describe("renderListReport", () => {
     expect(out).toContain("memory (3)");
   });
 
+  it("foreign-only results keep the hidden note, empty or not (review #32)", () => {
+    const foreignOnly = [item({ id: "h_f1", kind: "memory", content: "foreign fact", importance: 0.8, scope: "project", project: "other" })];
+    // Listed result: the note rides along as before.
+    expect(renderListReport([...foreignOnly, item({ id: "h_g", kind: "memory", content: "g", importance: 0.5 })], opts()))
+      .toContain("1 foreign-project item(s) hidden");
+    // Foreign-only store, default scope: the empty result still explains
+    // WHERE the items went instead of generic filter guidance alone.
+    const out = renderListReport(foreignOnly, opts());
+    expect(out).toContain("0 item(s)");
+    expect(out).toContain("Nothing matches");
+    expect(out).toContain("1 foreign-project item(s) hidden");
+    // Same through a kind filter that matches only the foreign item.
+    expect(renderListReport(foreignOnly, opts({ kind: "memory" }))).toContain("1 foreign-project item(s) hidden");
+    // An explicit --scope suppresses the note (the user chose that scope).
+    expect(renderListReport(foreignOnly, opts({ scope: "global" }))).not.toContain("foreign-project item(s) hidden");
+  });
+
   it("default view notes hidden foreign-project items; explicit scopes do not", () => {
     const base = renderListReport(fixture(), opts());
     expect(base).toContain("1 foreign-project item(s) hidden");

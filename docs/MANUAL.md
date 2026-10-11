@@ -392,10 +392,14 @@ the parenthetical.
 
 Scope semantics mirror the durable layers:
 
-- **default** — global + the active project's items (what `/harness
-  import`/`export` touch for this cwd). Items scoped to a *different*
+- **default** — global + the active project's items: the same set layered
+  `/harness import` reads for this cwd. Items scoped to a *different*
   project are hidden and counted in a trailing note (re-run with
-  `--scope all` to see them) — hidden, not missing.
+  `--scope all` to see them) — hidden, not missing, and the note appears
+  on empty results too, so a store whose matching items are all foreign
+  never reads as a plain filter miss. (Layered `/harness export` writes
+  more than this view shows — every project layer with active items,
+  foreign included; see `export` below.)
 - **`--scope global`** — global-scope items only.
 - **`--scope project`** — every project-scoped item, foreign included; rows
   carry the slug.

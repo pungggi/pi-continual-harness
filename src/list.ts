@@ -5,9 +5,11 @@
 // parsing + one ctx.ui.notify).
 //
 // Scope semantics mirror the durable layers (issue #7): the default view is
-// the session's own layer set — global + the ACTIVE project — because that is
-// what /harness import|export touch for this cwd. Items scoped to a DIFFERENT
-// project are hidden (and counted in a note) unless you ask for them:
+// the session's own layer set — global + the ACTIVE project — the same set
+// layered /harness import READS for this cwd (layered export writes more:
+// every project layer with active items, foreign included — store.ts).
+// Items scoped to a DIFFERENT project are hidden (and counted in a note,
+// listed or not) unless you ask for them:
 // `--scope project` lists every project-scoped item (rows carry the slug) and
 // `--scope all` lists everything. An item's undefined scope counts as global
 // (legacy snapshots / durable files — see types.ts).
@@ -118,6 +120,19 @@ export function renderListReport(items: HarnessItem[], opts: ListOptions): strin
     `Harness list: ${shown.length} item(s) — ${scopeDescription(opts)}` +
     (opts.kind ? `, kind ${opts.kind}` : "") +
     ` (${opts.full ? "full text" : "compact; -f for full text"}).`;
+  // The default view hides foreign-project items on purpose (they are not
+  // this session's layers) — say so instead of letting them look missing.
+  // Computed ONCE so the note rides along on every non-empty-store result,
+  // empty filter results included (a foreign-only store still gets it).
+  let foreignNote: string | undefined;
+  if (opts.scope === undefined) {
+    const foreign = items.filter(
+      (i) => i.scope === "project" && i.project !== opts.slug && (opts.kind ? i.kind === opts.kind : true),
+    ).length;
+    if (foreign > 0) {
+      foreignNote = `+ ${foreign} foreign-project item(s) hidden — re-run with --scope all to see them.`;
+    }
+  }
   if (shown.length === 0) {
     if (items.length === 0) {
       return [
@@ -125,21 +140,16 @@ export function renderListReport(items: HarnessItem[], opts: ListOptions): strin
         "No harness items yet. Run `/refine` after a working session (or `/harness import`) — items appear here as they are created.",
       ].join("\n");
     }
+    // A store whose matching items are ALL foreign must not collapse into
+    // generic filter guidance: the hidden note explains where they went
+    // (review #32) — the default view hides them, no filter removed them.
     return [
       header,
       `Nothing matches ${filters.join(" ")}. The store holds ${items.length} item(s): ${tally(items, (i) => i.kind)}. Widen --scope or drop --kind.`,
+      ...(foreignNote ? [foreignNote] : []),
     ].join("\n");
   }
   const lines = [header, ...shown.map(opts.full ? fullRow : row)];
-  // The default view hides foreign-project items on purpose (they are not
-  // this session's layers) — say so instead of letting them look missing.
-  if (opts.scope === undefined) {
-    const foreign = items.filter(
-      (i) => i.scope === "project" && i.project !== opts.slug && (opts.kind ? i.kind === opts.kind : true),
-    ).length;
-    if (foreign > 0) {
-      lines.push(`+ ${foreign} foreign-project item(s) hidden — re-run with --scope all to see them.`);
-    }
-  }
+  if (foreignNote) lines.push(foreignNote);
   return lines.join("\n");
 }
