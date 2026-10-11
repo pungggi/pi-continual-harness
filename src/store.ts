@@ -443,7 +443,8 @@ function titleFor(kind: ComponentKind): string {
 //     contains them, so they cannot have been "deleted" by pi-reflect).
 
 export interface DurableImportResult {
-  /** Items successfully parsed from the file. */
+  /** Distinct items successfully parsed from the file(s): an id present in
+   *  several layers counts once (global + project copies are ONE item). */
   imported: number;
   created: number;
   updated: number;
@@ -587,6 +588,19 @@ function mergeParsed(
   const fileIds = new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id)));
   const existingById = new Map(state.items.map((i) => [i.id, i] as const));
   const preActiveIds = new Set(state.items.filter((i) => i.active).map((i) => i.id));
+  // Distinct parsed items: an explicit id folding across layers (the normal
+  // global-then-project collision) is ONE item, not one per copy; bullets
+  // without an id are always separate items (create assigns fresh ids).
+  const seenIds = new Set<string>();
+  let distinct = 0;
+  for (const p of parsed) {
+    if (p.id) {
+      if (!seenIds.has(p.id)) {
+        seenIds.add(p.id);
+        distinct += 1;
+      }
+    } else distinct += 1;
+  }
 
   let created = 0;
   let updated = 0;
@@ -662,10 +676,10 @@ function mergeParsed(
     if (pruned > 0) dirty = true;
   }
 
-  if (!dirty) return { imported: parsed.length, created, updated, pruned, missingFile: false, createdIds, updatedIds };
+  if (!dirty) return { imported: distinct, created, updated, pruned, missingFile: false, createdIds, updatedIds };
   version += 1;
   persist(state, version);
-  return { imported: parsed.length, created, updated, pruned, missingFile: false, createdIds, updatedIds };
+  return { imported: distinct, created, updated, pruned, missingFile: false, createdIds, updatedIds };
 }
 
 /** Resolve a parsed item's scope against the layer default (for items without

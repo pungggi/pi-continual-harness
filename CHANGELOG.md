@@ -31,9 +31,13 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   detailed educational guide, rotating through 7 slots so repeat viewers
   never see the same wall of text: how the improvement loop works (3
   alternating descriptions), the `/refine` workflow, `keep`/`drop`/
-  `prune --decay` hygiene, `push-mem` (pi-mem composition), `split` (global
-  vs project scopes), `export-corpus` (pi-reflex contract), and a recommended
-  starter config. Config: `"remindRefine": { "everyTurns": 25,
+  `prune --decay <days>` hygiene, `push-mem` (pi-mem composition), `split`
+  (global vs project scopes), `export-corpus` (pi-reflex contract), and a
+  recommended starter config whose guidance is honest about autonomy (review
+  #28): with `autoImport` on, durable layers are already written on every
+  store change — `commit` only adds a refine-time flush when `autoImport` is
+  off — so the conservative start is `autoImport` off + manual
+  `/harness export`. Config: `"remindRefine": { "everyTurns": 25,
   "detailEvery": 4 }` with `1` = every reminder detailed; non-integer/sub-1
   values coerce to the default (spam guard). The short nudge is now
   data-aware ("12 active item(s), 4 never cited since creation"; an empty
@@ -45,15 +49,26 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - **Awareness reminders for durable sync (`importRemind`)** — with
   `"autoImport": true`, silently-imported instructions now announce
   themselves. The session-start import lists **what arrived** (item id, kind,
-  first words of content — bounded to 5 lines), and a one-line `turn_end`
+  first words of content — bounded to 5 lines; an id present in both layers
+  is listed once, with its post-merge content), and a one-line `turn_end`
   reminder re-surfaces the imported batch every `importRemind.everyTurns`
-  turns (default 25). Bounded by design: at most 3 reminders per imported
-  batch, then quiet until the next session — awareness without nagging.
+  **completed** turns (default 25; aborted/error `turn_end`s are inert — they
+  neither seed nor fire, so they never consume one of the bounded notices,
+  and the count cannot be defeated by pi resetting `turnIndex` on every
+  `agent_start`). Both pointers are truthful (review #28): the overflow line
+  and the reminder point at the agent's `harness_list` tool (which actually
+  lists ids/content), not `/harness status` (counts only), and the advertised
+  kill-switch is valid, paste-able JSON. Bounded by design: at most 3
+  reminders per imported batch, then quiet until the next session — awareness
+  without nagging.
   Config: `"importRemind": { "enabled": true, "everyTurns": 25 }`
   (effective only with `autoImport`; kill-switch `enabled: false` keeps the
   start-of-session listing). `DurableImportResult` now carries
   `createdIds`/`updatedIds` (additive) so the sync knows exactly which items
-  to re-surface; `evaluateImportReminder`/`registerImportReminder`/
+  to re-surface, and `imported` counts DISTINCT items — an id folded across
+  layers is one item, not one per copy (so the "imported N item(s)" notify
+  no longer double-counts collisions);
+  `evaluateImportReminder`/`registerImportReminder`/
   `getImportedThisSession`/`summarizeImported` exported for tests and
   companions.
 

@@ -186,23 +186,58 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     expect(getImportedThisSession()).toHaveLength(0);
   });
 
-  it("evaluateImportReminder: gates, cadence, bounded repeats", async () => {
+  it("evaluateImportReminder: gates, cadence, bounded repeats (completed turns)", async () => {
     await reset();
     const on = { autoImport: true } as HarnessConfig;
     // gates
-    expect(evaluateImportReminder({ ...on, autoImport: false }, 30, 3)).toBe(false);
-    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, 30, 3)).toBe(false);
-    expect(evaluateImportReminder(on, 30, 0)).toBe(false);
-    // cadence: seed at 0, fire every 25
-    expect(evaluateImportReminder(on, 0, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 24, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 25, 2)).toBe(true);
-    expect(evaluateImportReminder(on, 26, 2)).toBe(false);
-    expect(evaluateImportReminder(on, 50, 2)).toBe(true);
-    expect(evaluateImportReminder(on, 75, 2)).toBe(true);
+    expect(evaluateImportReminder({ ...on, autoImport: false }, undefined, 3)).toBe(false);
+    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, undefined, 3)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 0)).toBe(false);
+    // cadence: seed on the first completed turn, fire every 25 of them
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(false); // seed
+    for (let n = 1; n < 25; n++) expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(true); // 25th completed (fire 1)
+    for (let n = 1; n < 25; n++) expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(true); // fire 2, cadence resets
+    for (let n = 1; n < 25; n++) expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(true); // fire 3
     // bounded: never more than MAX_IMPORT_REMINDERS per batch
-    expect(evaluateImportReminder(on, 100, 2)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
     expect(MAX_IMPORT_REMINDERS).toBe(3);
+  });
+
+  it("aborted/error turns neither seed nor fire the import reminder (review #28)", async () => {
+    await reset();
+    const on = { autoImport: true } as HarnessConfig;
+    expect(evaluateImportReminder(on, "aborted", 2)).toBe(false); // bad turn: no seed
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(false); // seed
+    expect(evaluateImportReminder(on, "error", 2)).toBe(false); // inert
+    expect(evaluateImportReminder(on, "aborted", 2)).toBe(false); // inert
+    for (let n = 1; n < 25; n++) expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(true); // 25 completed turns, not indices
+    expect(evaluateImportReminder(on, "error", 2)).toBe(false); // never consumes a notice
+    expect(evaluateImportReminder(on, undefined, 2)).toBe(false);
+  });
+
+  it("an id present in both layers is listed once (review #28)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_x]** (importance 0.50) fact", "  - evidence: e"]);
+    writeLayer(join(paths.projectDir, "proj.md"), [
+      "- **[h_x]** (importance 0.70) fact (updated by project)",
+      "  - evidence: e2",
+      "  - scope: project (proj)",
+    ]);
+    const { pi, ctx, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+      { path: join(paths.projectDir, "proj.md"), defaultScope: { scope: "project", project: "proj" } },
+    ]);
+    const imported = getImportedThisSession();
+    expect(imported).toHaveLength(1); // created by global + updated by project → ONE entry
+    expect(imported[0]!.id).toBe("h_x");
+    expect(imported[0]!.content).toContain("updated by project"); // post-merge content wins
+    const listing = notifications.find((n) => /New instructions now active/.test(n.msg));
+    expect(listing!.msg).toContain("durable sync imported 1 item(s)"); // distinct ids, not bullets
   });
 
   it("turn_end reminder fires on the cadence after an import, then stops at the cap", async () => {
@@ -214,13 +249,34 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     ]);
     registerImportReminder(pi);
     for (let t = 0; t <= 100; t++) {
-      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+      // Synthetic events carry no outcome → treated as completed (0.14.0).
+      await fire("turn_end", { type: "turn_end" }, ctx());
     }
     const reminders = notifications.filter((n) => /imported item\(s\) are active/.test(n.msg));
-    expect(reminders).toHaveLength(3); // 25, 50, 75 — capped after
+    expect(reminders).toHaveLength(3); // after 25, 50, 75 completed turns — capped after
     expect(reminders[0]!.msg).toContain("[h_g]");
-    expect(reminders[0]!.msg).toContain("/harness status");
-    expect(reminders[0]!.msg).toContain("importRemind");
+    expect(reminders[0]!.msg).toContain("harness_list"); // truthful overflow pointer (review #28)
+    // The advertised kill-switch must be paste-able JSON (review #28): the
+    // object fragment parses, and the keys are double-quoted.
+    expect(reminders[0]!.msg).toContain('"importRemind": { "enabled": false }');
+    const snippet = reminders[0]!.msg.match(/\{[^{}]*"enabled"[^{}]*\}/)![0];
+    expect(() => JSON.parse(snippet)).not.toThrow();
+    expect(JSON.parse(snippet)).toEqual({ enabled: false });
+  });
+
+  it("aborted turn_end never advances or consumes the import reminder (review #28)", async () => {
+    await primeConfig({ autoImport: true });
+    writeLayer(paths.globalPath, ["- **[h_g]** (importance 0.50) fact", "  - evidence: e"]);
+    const { pi, ctx, fire, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
+      { path: paths.globalPath, defaultScope: { scope: "global" } },
+    ]);
+    registerImportReminder(pi);
+    await fire("turn_end", { type: "turn_end" }, ctx()); // seed
+    for (let t = 0; t < 60; t++) {
+      await fire("turn_end", { type: "turn_end", outcome: "aborted" }, ctx());
+    }
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
   });
 
   it("no import → no reminders, whatever the cadence", async () => {
@@ -228,7 +284,7 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     const { pi, ctx, fire, notifications } = makeFakePi([]);
     registerImportReminder(pi);
     for (let t = 0; t <= 30; t++) {
-      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+      await fire("turn_end", { type: "turn_end" }, ctx());
     }
     expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
   });
@@ -242,7 +298,7 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     ]);
     registerImportReminder(pi);
     for (let t = 0; t <= 30; t++) {
-      await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
+      await fire("turn_end", { type: "turn_end" }, ctx());
     }
     expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
     // the session-start WHAT-listing still fires (awareness at import time)

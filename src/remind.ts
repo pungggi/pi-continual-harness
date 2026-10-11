@@ -152,7 +152,7 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
       "- **/refine**: reviews the recent trajectory and proposes evidence-backed structured deltas (create / update / delete).",
       "- **Injection**: active items surface in the system prompt each turn, importance-ordered within a token budget, so the prompt stays finite as the store grows.",
       "- **Outcome citations**: with outcomeImportance on, any item you cite by its [h_xxxx] tag gains importance.",
-      "- **Decay**: untouched items fade (/harness prune --decay); cited and kept ones survive.",
+      "- **Decay**: untouched items fade (/harness prune --decay <days>); cited and kept ones survive.",
       "Run /refine now to turn this session's corrections into durable items.",
     ].join("\n");
   },
@@ -212,7 +212,7 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
       '  "outcomeImportance": { "enabled": true, "bump": 0.03 },',
       '  "classifier": { "model": "typesafe/jev-latest" }',
       "}",
-      `Guidance: gate (needs classifier.model) spends one cheap yes/no question before each auto-refine, so cadence becomes signal. Keep commit false until you trust the flow; true writes durable layers on every auto-run. This nudge fires every ${state.everyTurns} completed turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} completed turns).`,
+      `Guidance: gate (needs classifier.model) spends one cheap yes/no question before each auto-refine, so cadence becomes signal. Durable writes are autonomous in this config: with autoImport on, the layers re-export on every store change (that is what makes /refine output survive into new sessions); commit only adds a flush at each auto-run and matters when autoImport is off. Prefer autoImport off + manual /harness export until you trust the refinements, then opt in. This nudge fires every ${state.everyTurns} completed turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} completed turns).`,
     ].join("\n"),
 ];
 

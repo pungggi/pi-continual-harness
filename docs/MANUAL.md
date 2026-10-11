@@ -668,7 +668,7 @@ defaults (the loader never throws).
 |---|---|---|---|
 | `autoImport` | `false` | bool | Opt-in **durable sync**: `session_start` layered auto-import (global always + current project file, loss-free, quiet when nothing changes) + `turn_end` layered auto-export when the store changed since the last export. Both halves visible + `/tree`-rollback-able. |
 | `importRemind.enabled` | `true` | bool | **Awareness reminders** for the sync (only effective with `autoImport` on). The session-start import lists WHAT arrived; reminders re-surface it on the cadence so silently-imported instructions never go unnoticed. |
-| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence (completed turns). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
+| `importRemind.everyTurns` | `25` | int ≥ 1 | Reminder cadence. Aborted/error `turn_end`s are skipped: the cadence counts completed turns, not raw turn indices (which reset every `agent_start`). At most 3 reminders per imported batch; non-integer/sub-1 values coerce to the default. |
 | `proposer` | `"steering"` | name string | Default proposer for `/refine` and auto-refine. Unknown name → `steering`. |
 | `dedupe.threshold` | `0.6` | `0 < t ≤ 1` | Token-overlap threshold at which the `dedupe` proposer treats two items as duplicates. `1` = identical token sets only. Bad values degrade to `0.6`. |
 | `dedupe.merge` | `true` | bool | **Merge** duplicates into their keeper (evidence union) instead of delete-only. `false` restores the pre-0.10 behavior. |

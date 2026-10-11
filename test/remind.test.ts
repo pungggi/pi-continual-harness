@@ -157,6 +157,20 @@ describe("detail library", () => {
     expect(msg).toContain("about every 100 completed turns"); // 25 × 4
     expect(msg).toContain('"remindRefine"');
   });
+
+  it("guide copy is truthful (review #28): decay needs <days>; the starter config owns its autonomy", () => {
+    const state = facts();
+    // Slot 0's decay mention must carry the required <days> argument.
+    expect(buildDetailGuide(1, state)).toContain("--decay <days>");
+    expect(buildDetailGuide(1, state)).not.toContain("--decay)");
+    // The starter-config slot must not pair autoImport: true with a
+    // "commit false is the safe option" claim — autoImport already writes
+    // durable layers autonomously on every store change.
+    const starter = buildDetailGuide(DETAIL_GUIDES.length, state);
+    expect(starter).toContain("autoImport");
+    expect(starter).toContain("autonomous");
+    expect(starter).not.toContain("Keep commit false until you trust");
+  });
 });
 
 describe("buildNudge (cheap tier, data-aware garnish)", () => {

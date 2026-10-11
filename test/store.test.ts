@@ -775,7 +775,8 @@ describe("durable layers — import", () => {
       ];
       const res = await importDurableLayers(files, {}, vi.fn());
       expect(res.missingFile).toBe(false);
-      expect(res.imported).toBe(4); // h_shared parsed from BOTH layers
+      // Distinct items: h_shared parsed from BOTH layers counts ONCE (review #28).
+      expect(res.imported).toBe(3);
       expect(res.created).toBe(3);
       expect(res.updated).toBe(1); // h_shared's project copy updates its global copy
 
