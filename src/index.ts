@@ -190,6 +190,11 @@ export {
   type ProjectedLike,
 } from "./auto-refine.js";
 
+// Message-content flattening (0.15.1): pi message content is a plain string OR
+// a block array; every trajectory reader must go through this instead of
+// assuming blocks. Re-exported for tests and companion packages.
+export { messageText } from "./refine.js";
+
 // Setup wizard (issue #22): presets as pure data + expandPreset, and the one
 // reviewed write path for harness.json (backup + atomic write + reload).
 // Re-exported so tests and companion packages never reach into internal

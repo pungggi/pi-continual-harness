@@ -11,9 +11,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findReferences, registerOutcome, resetOutcome } from "../src/outcome.js";
+import { gatherEvidence, messageText } from "../src/refine.js";
 import { getState, reconstruct, STATE_ENTRY } from "../src/store.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 type Handler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>;
 
@@ -58,6 +59,11 @@ function seedItem(id: string, importance: number): void {
 
 function asst(text: string): unknown {
   return { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } };
+}
+
+/** Same entry shape but with pi's OTHER content representation: a plain string. */
+function asstStr(text: string): unknown {
+  return { type: "message", message: { role: "assistant", content: text } };
 }
 
 describe("findReferences", () => {
@@ -239,5 +245,51 @@ describe("registerOutcome handler", () => {
     const byId = new Map(getState().items.map((i) => [i.id, i.importance]));
     expect(byId.get("h_mine")).toBeCloseTo(0.55); // active model → bumped
     expect(byId.get("h_other")).toBeCloseTo(0.5); // different model → untouched
+  });
+
+  // 0.15.1 regression: pi messages can carry content as a PLAIN STRING, not
+  // only as a block array. Both trajectory readers used to call .map on it and
+  // threw "((intermediate value) ?? []).map is not a function".
+  it("bumps citations from plain-string message content without throwing", async () => {
+    await setConfig(true, 0.05);
+    seedItem("h_abc", 0.5);
+    const branch = [asstStr("seed turn")];
+    const { pi, handlers, ctx, notifications } = makeMini(branch);
+    registerOutcome(pi);
+
+    await handlers.get("turn_end")!({ turnIndex: 0 }, ctx()); // seed
+    branch.push(asstStr("citing [h_abc] in string form"));
+    await handlers.get("turn_end")!({ turnIndex: 1 }, ctx());
+    expect(getState().items[0]!.importance).toBeCloseTo(0.55);
+    expect(notifications.some((n) => /referenced item/.test(n.msg))).toBe(true);
+  });
+});
+
+describe("messageText", () => {
+  it("passes plain string content through", () => {
+    expect(messageText("hello")).toBe("hello");
+  });
+
+  it("joins text blocks with spaces", () => {
+    expect(messageText([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a b");
+  });
+
+  it("degrades to empty string for undefined / non-array / odd shapes", () => {
+    expect(messageText(undefined)).toBe("");
+    expect(messageText({ weird: true } as unknown as string)).toBe("");
+    expect(messageText([{ noText: 1 } as unknown as { text?: string }])).toBe("");
+  });
+});
+
+describe("gatherEvidence with string content", () => {
+  it("renders plain-string messages as evidence lines without throwing", () => {
+    const branch = [
+      { type: "message", message: { role: "user", content: "please fix it" } },
+      { type: "message", message: { role: "assistant", content: "done via [h_abc]" } },
+    ];
+    const ctx = { sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
+    const out = gatherEvidence(ctx, 25);
+    expect(out).toContain("[user] please fix it");
+    expect(out).toContain("[assistant] done via [h_abc]");
   });
 });
