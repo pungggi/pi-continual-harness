@@ -311,9 +311,10 @@ Durable I/O and importance hygiene. The command registers argument
 autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
 menu of subcommands with a one-line help each; one level deeper it completes
 flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--from`,
-`--preset`, `--yes`), `--kind` / `--model` / `--from` / `--preset` values,
-and `keep`/`drop` item ids straight from the live store. Path arguments
-intentionally get no menu (use editor path completion).
+`--preset`, `--yes`, `-f`, `--scope`), `--kind` / `--model` / `--from` /
+`--preset` / `--scope` values, and `keep`/`drop` item ids straight from the
+live store. Path arguments intentionally get no menu (use editor path
+completion).
 
 Subcommands:
 
@@ -366,6 +367,45 @@ loop, `push-mem`, `remindRefine`, `split`) — never the hint shown on the
 previous call. The report builder is pure and exported
 (`buildStatusReport`/`renderStatusReport`, plus the hint library in
 `src/hints.ts`) so companions reuse the same copy source.
+
+#### `list [-f] [--kind <kind>] [--scope <global|project|all>]`
+
+```
+/harness list                    # compact rows, this session's layers
+/harness list -f                 # full text + evidence per item
+/harness list --kind memory      # one kind
+/harness list --scope all        # every item, foreign-project included
+```
+
+The read view of the store (issue #31): what `/harness status` counts, but
+with the actual text — so `/refine` reviews, `/harness move`/`split`
+decisions, and keep/drop nudges no longer need an agent turn or a trip to
+the layer files. Read-only: no store mutation, no durable writes, one
+notify.
+
+Default output is one compact row per item — id, kind, importance, scope,
+a ~60-char preview — ranked importance-first (ties keep store order, the
+same stable policy as injection selection). Inactive items are marked
+`(inactive)`. `-f` switches to the full rendering the `harness_list` tool
+uses: complete text plus the evidence line, with owner model and scope in
+the parenthetical.
+
+Scope semantics mirror the durable layers:
+
+- **default** — global + the active project's items (what `/harness
+  import`/`export` touch for this cwd). Items scoped to a *different*
+  project are hidden and counted in a trailing note (re-run with
+  `--scope all` to see them) — hidden, not missing.
+- **`--scope global`** — global-scope items only.
+- **`--scope project`** — every project-scoped item, foreign included; rows
+  carry the slug.
+- **`--scope all`** — everything.
+
+An empty store gets zero-state guidance (first steps), an empty *filter*
+result explains what the store holds instead (kind tallies), and invalid
+`--kind`/`--scope` values warn rather than silently listing unfiltered. The
+selection/rendering core is pure and exported
+(`selectListItems`/`renderListReport` from `src/list.ts`).
 
 #### `export [path]`
 

@@ -132,6 +132,17 @@ export {
 } from "./hints.js";
 export { getInjectionStats, resetInjectionStats, type InjectionStats } from "./inject.js";
 
+// /harness list (issue #31): pure selection + rendering for the read view of
+// the store (compact rows / full text + evidence). Re-exported for tests and
+// companions without reaching into internal paths.
+export {
+  preview,
+  renderListReport,
+  selectListItems,
+  type ListOptions,
+  type ListScope,
+} from "./list.js";
+
 // Injection selection policy (on by default). Re-exported so companion packages
 // and tests can reuse the pure selection/normalization without reaching into
 // internal paths.
