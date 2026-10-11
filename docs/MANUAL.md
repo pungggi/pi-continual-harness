@@ -310,10 +310,10 @@ proposes evidence-backed CRUD deltas.
 Durable I/O and importance hygiene. The command registers argument
 autocomplete (`getArgumentCompletions`): typing `/harness ` opens a filtered
 menu of subcommands with a one-line help each; one level deeper it completes
-flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--preset`,
-`--yes`), `--kind` / `--model` / `--preset` values, and `keep`/`drop` item
-ids straight from the live store. Path arguments intentionally get no menu
-(use editor path completion).
+flags (`--prune`, `--decay`, `--all`, `--kind`, `--model`, `--from`,
+`--preset`, `--yes`), `--kind` / `--model` / `--from` / `--preset` values,
+and `keep`/`drop` item ids straight from the live store. Path arguments
+intentionally get no menu (use editor path completion).
 
 Subcommands:
 
@@ -461,6 +461,67 @@ vs `project` for each, applying the result as ONE `harness_mutate` batch of
 scope-only update deltas. The model's `harness_mutate` call is visible,
 audited, and `/tree`-rollback-able; the command itself mutates nothing.
 Everything with an empty store → warning.
+
+#### `adopt --from <provider/id> [--all]`
+
+```
+/harness adopt --from anthropic/claude-4.5            # agent filters, then copies
+/harness adopt --from anthropic/claude-4.5 --all      # copy everything, no filter
+```
+
+The reviewable path for carrying **owned** items across models (per-model
+isolation means a new model id starts from a blank harness; orphan adoption
+only covers *unowned* items). Collects the source model's **active** items
+(importance-ordered, capped to the **20** best — matching `harness_mutate`'s
+per-call delta limit so the whole adoption fits ONE audited batch) and sends
+a steering message asking the agent to classify each item:
+
+- **generalizes** — model-agnostic knowledge (engineering practices, user
+  preferences, project facts) → adopted;
+- **stays** — specific to the source model (its quirks, formatting
+  preferences, failure modes) → skipped.
+
+`--all` skips the filter and adopts everything. The agent then applies ONE
+`harness_mutate` batch of **create** deltas:
+
+- **Copy, not move** — the source model's harness is never touched (no
+  cross-model data loss); adopted copies get fresh ids.
+- **Stamped to the active model** — `ownerModel` is not model-settable, so
+  creates bind to the model driving the turn (the adopter) automatically.
+- **Verbatim + annotated** — content, kind, importance, and durable scope are
+carried over unchanged; the evidence gains `(adopted from <provider/id>)`.
+The filter decides *whether* an item transfers, never rewrites it.
+
+The whole path is visible end-to-end: steering message in the transcript,
+audited `harness-state` entry, `/tree` rollback. Guards: missing `--from`,
+empty store, unknown model (the warning lists the models actually present,
+with counts), and adopting from the active model itself — compared against
+the **resolved binding key** (`virtualBinding`-aware: under `physical` a
+router selection adopts as the routed model, so the guard sees the same key
+create-stamping uses) — all warn and do nothing.
+
+Two store-level filters run before the batch cap (review #25):
+
+- **Foreign-project items are skipped, not re-stamped.** Adopting an item
+  scoped to project A from a session in project B would stamp the copy with
+  B's slug, silently moving A's project facts into B's durable layer —
+  adopt them from a session in that project instead. The notification
+  reports the skip count.
+- **Already-owned content is skipped.** An exact-content item owned by the
+  adopter never consumes a cap slot, so re-running `/harness adopt` against
+  a source larger than the cap reaches NEW items instead of re-selecting
+  the same highest-importance ones forever.
+
+Importance is listed per item at **full precision** (no rounding) — the
+agent copies it verbatim, so an adopted copy keeps its exact ranking
+against existing items in injection selection. When every candidate is
+filtered out, the warning attributes each skip ("N already owned, M scoped
+to another project").
+
+`--from` values complete from the model keys in the store. Overlaps
+between the two models' items afterwards are the dedupe proposer's job:
+`/refine --proposer dedupe`. No automatic adoption exists — explicit,
+manual, reviewable only.
 
 #### `prune [--decay <days>]`
 
@@ -1296,6 +1357,7 @@ to the current turn) on top (see [§8 → Injection selection](#injection-select
 | Injection chars/token | `4` | `select.ts` `DEFAULT_INJECTION.charsPerToken` |
 | Dedupe threshold | `0.6` Jaccard | `proposer.ts` `DEDUPE_THRESHOLD` |
 | `harness_mutate` batch size | `1`–`20` deltas | `tools.ts` |
+| `adopt` batch cap | `20` items (matches the mutate batch size) | `harness.ts` `ADOPT_BATCH_CAP` |
 | Default create importance | `0.5` | `store.ts` `applyOne` |
 | Default item scope | `"global"` | `store.ts` `applyOne` |
 | Durable sync (autoImport) | `false` (off; opt-in) | `config.ts` `DEFAULT_CONFIG` |

@@ -134,6 +134,44 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 12 — DONE (main; unreleased) — cross-model adoption
+
+- **`/harness adopt --from <provider/id> [--all]`** (issue #21) — the
+  audited, agent-filtered path for carrying **owned** items across models.
+  Phase 6 binds items to the exact owning model id (rightly — model quirks
+  don't transfer), which left every model switch on a blank harness with no
+  reviewable bridge; orphan adoption only covered *unowned* items. Adopt is
+  that bridge, following the established steering pattern (`split`,
+  `push-mem`): collect the source model's active items, steer the agent to
+  classify each **generalizes** vs **stays** (`--all` skips the filter), then
+  apply ONE `harness_mutate` batch of create deltas stamped to the ACTIVE
+  model via the existing create-stamping path.
+  - **Copy, not move** — the source harness is never touched; adopted copies
+    get fresh ids, content is copied verbatim (ACE anti-collapse), evidence is
+    annotated `adopted from <provider/id>`, kind/importance/scope carry over.
+  - **Batch-capped to 20** (the issue suggested "e.g. 50", but
+    `harness_mutate` caps one call at 20 deltas — the cap is sized so the
+    whole adoption fits ONE audited, `/tree`-rollback-able batch); keeps the
+    highest-importance items first and says so when it truncates.
+  - Guards: missing `--from`, empty store, unknown model (warning lists the
+    owners actually present), self-adopt — compared against the **resolved
+    binding key** (`virtualBinding`-aware, the same key create-stamping
+    uses). `--from` completes from the store's owner keys. Composes with
+    `/refine --proposer dedupe` as the overlap cleanup. No automatic
+    adoption — explicit, manual, reviewable only.
+  - Review #25 hardening: foreign-project source items are skipped, not
+    re-stamped into the current session's project layer (adopt them from a
+    session in that project); content the adopter already owns is skipped
+    BEFORE the cap, so repeated adoption of a >20-item source progresses
+    instead of re-selecting the same top items; importance is listed at
+    full precision so the copy keeps its exact ranking.
+  - Public API: `buildAdoptPrompt` / `selectAdoptSource` /
+    `ADOPT_BATCH_CAP` re-exported from the package entry.
+
+**Effort:** ~150 lines + 21 tests. **Risk:** low-medium — the mutation is
+agent-applied, but inside the same audited, rollback-able envelope as
+`split`, and the source model's harness is structurally out of reach (create
+deltas only).
 ## Phase 11 — DONE (0.14.0) — aborted/error turns are inert
 
 pi's `turn_end` `BoundaryState.outcome` (`"completed" | "aborted" | "error"`,

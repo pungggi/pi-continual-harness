@@ -200,3 +200,9 @@ export {
   type PresetDelta,
   type PresetName,
 } from "./setup.js";
+
+// Cross-model adoption (issue #21, /harness adopt --from <provider/id>): the
+// pure steering-prompt builder and the importance-ordered, batch-capped
+// source selection. Re-exported for tests and companion packages without
+// reaching into internal paths.
+export { ADOPT_BATCH_CAP, buildAdoptPrompt, selectAdoptSource } from "./harness.js";
