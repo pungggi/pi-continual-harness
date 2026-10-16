@@ -8,6 +8,23 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+### Changed
+
+- **pi 1.2 adoption** — the peer floor moves from `>=0.99.0` to `>=1.2.0`.
+  - Every `pi.sendUserMessage` steering send now passes an explicit
+    `deliverAs`: `"steer"` for `/refine` (mid-run injection when busy) and
+    `"followUp"` for the auto-refine boundary fallback and the `/harness`
+    split/adopt/push-mem steering prompts (queued instead of throwing). Pi
+    1.2 counts the session as busy from run start, and a bare send throws
+    "Agent is already processing" in that window.
+  - Extension-triggered runs (`pi.sendMessage(..., { triggerTurn: true })`,
+    e.g. scheduled tasks) now fire `before_agent_start` with
+    `messageType: "custom"`, so the model-binding bridge — binding key,
+    orphan adoption, injection — covers them. Before pi 1.2 those runs ran
+    with an empty binding cache.
+
 ## [0.18.0] — 2026-10-11
 
 ### Changed

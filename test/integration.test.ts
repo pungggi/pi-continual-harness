@@ -117,7 +117,7 @@ describe("injection — before_agent_start bridge + context_with_system render",
 
     // before_agent_start adopts the restored orphan to the active model first
     // (the bridge), then the per-request render happens in context_with_system.
-    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
     const [ret] = (await fire("context_with_system", {
       messages: [{ role: "system", content: "BASE" }],
     }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
@@ -133,7 +133,7 @@ describe("injection — before_agent_start bridge + context_with_system render",
     const { pi, fire, ctx, tools } = makeFakePi([]);
     continualHarness(pi);
     await fire("session_start", { reason: "startup" }, ctx());
-    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
 
     const first = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
     expect(first[0]).toBeUndefined(); // empty store → no owned transcript
@@ -150,7 +150,7 @@ describe("injection — before_agent_start bridge + context_with_system render",
   it("returns undefined (no transcript ownership) when there is no active state", async () => {
     const { pi, fire, ctx } = makeFakePi([]);
     continualHarness(pi);
-    await fire("before_agent_start", { systemPrompt: "BASE" }, ctx());
+    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
     const [ret] = await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx());
     expect(ret).toBeUndefined();
   });
@@ -176,7 +176,7 @@ describe("context_with_system injection selection (default on, opt-out)", () => 
       const { pi, fire, ctx } = makeFakePi([]);
       continualHarness(pi);
       applyDeltas(items, () => {});
-      await fire("before_agent_start", { systemPrompt: "BASE" }, ctx()); // cache the active model
+      await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx()); // cache the active model
       const [ret] = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{
         messages?: Array<{ role: string; content: string }>;
       }>;
@@ -237,7 +237,7 @@ describe("/refine command", () => {
       { type: "message", message: { role: "user", content: [{ type: "text", text: "Fix the login bug in auth.ts" }] } },
       { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Looking into auth.ts now" }] } },
     ];
-    const { pi, commands, ctx, sentMessages, entries } = makeFakePi(branch);
+    const { pi, commands, ctx, sentMessages, sendOptions, entries } = makeFakePi(branch);
     continualHarness(pi);
 
     await commands.get("refine")!.handler("25", ctx());
@@ -246,6 +246,8 @@ describe("/refine command", () => {
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).toContain("Fix the login bug in auth.ts");
     expect(sentMessages[0]).toContain("harness_mutate");
+    // pi ≥ 1.2: explicit deliverAs — a bare send throws in the widened busy window
+    expect(sendOptions[0]).toEqual({ deliverAs: "steer" });
 
     // audit entry recorded
     expect(entries.some((e) => e.customType === "harness-refinement")).toBe(true);

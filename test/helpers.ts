@@ -31,6 +31,8 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
   >();
   const entries: Array<{ type: string; customType: string; data: unknown }> = [];
   const sentMessages: string[] = [];
+  /** Parallel to sentMessages: the options arg of each sendUserMessage call. */
+  const sendOptions: unknown[] = [];
   const notifications: Array<{ msg: string; level: string }> = [];
   const statuses: Array<{ key: string; text: string | undefined }> = [];
   // Scripted prompt answers (shift-ed in order). Defaults are the SAFE ones:
@@ -57,8 +59,9 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
     appendEntry: (customType: string, data: unknown) => {
       entries.push({ type: "custom", customType, data });
     },
-    sendUserMessage: (msg: string) => {
+    sendUserMessage: (msg: string, opts?: unknown) => {
       sentMessages.push(msg);
+      sendOptions.push(opts);
     },
   };
 
@@ -85,6 +88,7 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
     commands,
     entries,
     sentMessages,
+    sendOptions,
     notifications,
     statuses,
     selects,

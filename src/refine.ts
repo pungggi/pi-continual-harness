@@ -247,7 +247,10 @@ export async function runRefine(
       // Caller owns delivery: persist as a structural boundary entry and
       // continue — see auto-refine.ts. Returned via RefineResult.
     } else {
-      pi.sendUserMessage(result.steeringMessage);
+      // deliverAs "steer": injects mid-run when the session is busy, ignored
+      // when idle (starts the refine run). Required since pi 1.2 — the busy
+      // window now includes run start, and a bare send throws there.
+      pi.sendUserMessage(result.steeringMessage, { deliverAs: "steer" });
     }
   }
   ctx.ui.setStatus("harness", undefined);

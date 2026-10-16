@@ -159,7 +159,11 @@ export async function handleAutoRefineTurnEnd(
     // continue — otherwise fall back to the legacy steering send.
     if (result.steeringMessage) {
       if (event.context?.canContinue === false) {
-        pi.sendUserMessage(result.steeringMessage);
+        // deliverAs "followUp": queue after the in-flight run instead of
+        // throwing — pi 1.2 counts the session as busy from run start, so a
+        // bare sendUserMessage can fail here when another extension is
+        // starting a run at this turn_end.
+        pi.sendUserMessage(result.steeringMessage, { deliverAs: "followUp" });
         return;
       }
       // Hygiene (pi ≥ 0.87 context edits): omit every LIVE prior auto-refine

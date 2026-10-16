@@ -141,9 +141,10 @@ outcome).
 
 ## 2. Installation
 
-Requires **pi ≥ 0.99.0** (peer dependency; the adopted extension events —
-`context_with_system`, actionable `turn_end` boundaries — and the classifier /
-structured-tool APIs all ship by 0.99.0).
+Requires **pi ≥ 1.2.0** (peer dependency). The adopted extension events —
+`context_with_system`, actionable `turn_end` boundaries, the
+`before_agent_start` `messageType` union — and the `sendUserMessage`
+`deliverAs` contract (required in the widened busy window) all ship by 1.2.0.
 
 ```
 pi install npm:pi-continual-harness

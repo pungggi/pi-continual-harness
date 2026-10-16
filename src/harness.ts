@@ -623,7 +623,9 @@ async function handleSplit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
     ctx.ui.notify("No active items to split (run /refine first).", "warning");
     return;
   }
-  pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd));
+  // deliverAs "followUp": queue behind any in-flight run (pi ≥ 1.2 busy window
+  // starts at run start; a bare send would throw) rather than steering mid-task.
+  pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd), { deliverAs: "followUp" });
   ctx.ui.notify(`Steering agent to classify ${items.length} item(s) global vs project "${projectSlug(ctx.cwd)}".`, "info");
 }
 
@@ -786,7 +788,7 @@ async function handleAdopt(
   if (ownedSkipped > 0) bits.push(`${ownedSkipped} already owned`);
   if (foreign > 0) bits.push(`${foreign} foreign-project skipped`);
   const suffix = bits.length > 0 ? ` (${bits.join("; ")})` : "";
-  pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }));
+  pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }), { deliverAs: "followUp" });
   ctx.ui.notify(
     `Steering agent to ${rest.includes("--all") ? "adopt" : "review for adoption"} ${items.length} item(s) from ${from}${suffix}.`,
     "info",
@@ -856,7 +858,7 @@ async function handlePushMem(
   const scope = all ? "item(s)" : `${kind ?? "memory"} item(s)`;
   const modelNote = modelFilter !== undefined ? ` [model ${modelFilter || "(orphan)"}]` : "";
   const msg = buildPushMemPrompt(items, scope);
-  pi.sendUserMessage(msg);
+  pi.sendUserMessage(msg, { deliverAs: "followUp" });
   ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
 }
 
