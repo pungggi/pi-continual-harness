@@ -8,7 +8,7 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
-## [Unreleased]
+## [0.19.0] — 2026-10-16
 
 ### Changed
 
