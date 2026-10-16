@@ -505,7 +505,7 @@ implementation on first `propose()`) directly into
 
 ## Status
 
-0.12.x. Requires **pi ≥ 0.99.0**. Implemented:
+0.18.x. Requires **pi ≥ 1.2.0**. Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
@@ -535,7 +535,10 @@ implementation on first `propose()`) directly into
   model instead of the router id, so a router selection does not silently
   reset the harness. Owned items can be carried across models explicitly with
   `/harness adopt --from <provider/id> [--all]` (agent-filtered copy; see
-  [Model binding](#model-binding-per-model-isolation)).
+  [Model binding](#model-binding-per-model-isolation)). Since pi 1.2,
+  `before_agent_start` also fires for runs started by `pi.sendMessage(...,
+  { triggerTurn: true })`, so scheduled and extension-triggered runs get the
+  same binding, orphan adoption, and injection as interactive prompts.
 - **Bounded injection (on by default)**: the supplemental block is
   importance-ordered and capped per kind + by a total token budget, so a growing
   harness never balloons the system prompt. Tunable / opt-out via the `injection`

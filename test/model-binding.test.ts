@@ -89,7 +89,7 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
     handlers: Map<string, Handler>,
     ctx: { model: { provider: string; id: string; api?: string } },
   ): Promise<string | undefined> {
-    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+    await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
     const ret = (await handlers.get("context_with_system")!(
       { messages: [{ role: "system", content: "BASE" }] },
       ctx,
@@ -148,6 +148,40 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
     const b = await renderFor(handlers, ctxWithModel("google", "gemini"));
     expect(b).toBeUndefined();
   });
+
+  // pi 1.2: before_agent_start also fires for runs started by
+  // pi.sendMessage(..., { triggerTurn: true }) (messageType "custom"). The
+  // bridge ignores the event payload (binding comes from ctx), so custom runs
+  // get the same adopt + cache + render as user-prompt runs — before 1.2 they
+  // silently ran with an empty binding cache.
+  it("custom-message runs (pi ≥ 1.2 triggerTurn) adopt + cache + render like user runs", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "prompt", content: "legacy orphan", evidence: "e" }],
+      () => {},
+    );
+    const { pi, handlers, entries } = fakePi();
+    registerInjection(pi);
+    const ctx = ctxWithModel("anthropic", "sonnet");
+
+    await handlers.get("before_agent_start")!(
+      {
+        type: "before_agent_start",
+        messageType: "custom",
+        systemPrompt: "BASE",
+        message: { role: "custom", customType: "pi-schedule/task", content: "run the daily review" },
+      },
+      ctx,
+    );
+    // orphan adopted to the custom run's model and persisted
+    expect(getState().items[0]!.ownerModel).toBe("anthropic/sonnet");
+    expect(entries.some((e) => e.customType === "harness-state")).toBe(true);
+    // ...and rendered on the very next provider request of that custom run
+    const ret = (await handlers.get("context_with_system")!(
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx,
+    )) as { messages?: Array<{ role: string; content: string }> } | undefined;
+    expect(ret?.messages?.[0]?.content).toContain("legacy orphan");
+  });
 });
 
 describe("virtual-model binding policy (pi ≥ 0.99)", () => {
@@ -167,7 +201,7 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
     const { pi, handlers } = fakePi();
     registerInjection(pi);
     const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
-    await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+    await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
     const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
       messages?: Array<{ role: string; content: string }>;
     } | undefined;
@@ -188,7 +222,7 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
       const { pi, handlers } = fakePi();
       registerInjection(pi);
       const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
-      await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx);
+      await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
       const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
         messages?: Array<{ role: string; content: string }>;
       } | undefined;
@@ -209,7 +243,7 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
       const { pi, handlers, entries } = fakePi();
       registerInjection(pi);
       const ctx = { ...virtualCtx, sessionManager: { getBranch: () => [] } };
-      const ret = (await handlers.get("before_agent_start")!({ systemPrompt: "BASE" }, ctx)) as { systemPrompt?: string };
+      const ret = (await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx)) as { systemPrompt?: string };
       expect(ret?.systemPrompt).toBeUndefined();
       const rendered = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
         messages?: Array<{ role: string; content: string }>;
