@@ -860,6 +860,7 @@ session start, so a typo can't silently reset every setting.
 
 ```jsonc
 {
+  "$schema": "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
   "autoImport": false,                      // opt-in durable sync (import + export bundle)
   "importRemind":  { "enabled": true, "everyTurns": 25 },  // awareness reminders for the sync
   "proposer": "steering",                   // steering | dedupe | <custom>
@@ -872,6 +873,13 @@ session start, so a typo can't silently reset every setting.
   "virtualBinding": "virtual"             // "physical" keys by routed model (pi ≥ 0.99)
 }
 ```
+
+**Editor validation** (pi ≥ 1.2 pattern): the `$schema` line above points at
+the published schema
+(`harness.schema.json` in the repo, also shipped inside the npm package), so
+editors that support JSON schemas offer completion and flag typos. The loader
+ignores unknown keys — `$schema` included — and a `/harness setup` rewrite
+preserves it.
 
 ### Keys
 
