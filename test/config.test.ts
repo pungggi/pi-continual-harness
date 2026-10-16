@@ -12,6 +12,7 @@ import {
   projectDurablePath,
   projectSlug,
   resetConfigCache,
+  saveConfig,
 } from "../src/config.js";
 import { DEFAULT_INJECTION } from "../src/select.js";
 import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR } from "../src/store.js";
@@ -88,6 +89,29 @@ describe("config", () => {
         expect((cfg as Record<string, unknown>).durableScope).toBeUndefined();
         expect(cfg.remindRefine?.everyTurns).toBe(10);
         expect(cfg.remindRefine?.enabled).toBe(true); // on by default (issue #19)
+      });
+    });
+
+    it("tolerates $schema (editor-validation key) — defaults, not malformed, preserved by rewrites", async () => {
+      // The README/MANUAL examples now start with "$schema": <schema URL> for
+      // editor completion (the pi ≥ 1.2 published-schemas pattern). The loader
+      // must not flag the file malformed, and saveConfig must keep the key.
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({
+            $schema: "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
+            autoImport: true,
+          }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.autoImport).toBe(true);
+        expect(configMalformed(file)).toBe(false);
+        const saved = await saveConfig({ proposer: "dedupe" }, file);
+        expect((saved.merged as Record<string, unknown>).$schema).toBe(
+          "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
+        );
       });
     });
 
