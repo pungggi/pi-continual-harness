@@ -193,6 +193,26 @@ describe("registerOutcome handler", () => {
     expect(getState().items[0]!.importance).toBeCloseTo(0.5);
     expect(notifications).toHaveLength(0);
     expect(entries).toHaveLength(0);
+    expect(getState().items[0]!.support).toBeUndefined();
+  });
+
+  it("a citation records support.citations + lastCitedAt (Harness² retention evidence)", async () => {
+    await setConfig(true, 0.05);
+    seedItem("h_abc", 0.5);
+    const branch = [asst("seed")];
+    const { pi, handlers, ctx } = makeMini(branch);
+    registerOutcome(pi);
+
+    await handlers.get("turn_end")!({ turnIndex: 0 }, ctx());
+    expect(getState().items[0]!.support).toBeUndefined();
+    branch.push(asst("citing [h_abc] now"));
+    await handlers.get("turn_end")!({ turnIndex: 1 }, ctx());
+    const first = getState().items[0]!.support!;
+    expect(first.citations).toBe(1);
+    expect(typeof first.lastCitedAt).toBe("number");
+    branch.push(asst("citing [h_abc] again"));
+    await handlers.get("turn_end")!({ turnIndex: 2 }, ctx());
+    expect(getState().items[0]!.support!.citations).toBe(2);
   });
 
   it("ignores citations of items that are not active", async () => {

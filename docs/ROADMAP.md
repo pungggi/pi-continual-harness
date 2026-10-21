@@ -134,6 +134,38 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
+## Phase 13 — DONE (0.20.0) — Harness²: harnessing-level recursion
+
+Inspired by **Harness² — Recursive Agent Harnessing** (arXiv
+[2610.14224](https://arxiv.org/abs/2610.14224)): beyond refining the harness
+for the current task, the improvement process itself learns from what past
+improvement yielded, and a lesson is retained only when execution evidence
+supports it. Implemented with zero extra model calls, from signals the branch
+already carries:
+
+- **Support counters** (`SupportInfo` on every item): citations from the
+  outcome loop, keeps/drops from `/harness keep|drop`. Dedupe merges carry
+  them onto the keeper; durable files round-trip them (`support:` sub-line);
+  `/harness list -f` and `harness_list` display them.
+- **Lessons digest** (`src/lessons.ts`, pure): an evidence-gated summary
+  injected into the `/refine` steering prompt — proven-useful items, rejected
+  signals (drops with no use since; never-cited items are NOT named), and
+  recent refine-run productivity. `/harness lessons` prints it on demand.
+- **Scoped proposals**: the steering prompt classifies every create as
+  invariant (cross-domain agentic behavior → `scope: "global"`) or
+  domain-specific (project knowledge → `scope: "project"`). The paper's
+  ablation shows scoping is load-bearing; here it also protects the global
+  layer from project noise.
+- **History gate**: `autoRefine.refineNoOpSkip` (default 3) skips a cadenced
+  auto-refine when the last N refine runs were all ineffective — a free gate
+  that runs before the classifier gate, bounded to one consecutive skip so it
+  can never latch shut against later trajectory evidence. Manual `/refine`
+  bypasses it.
+
+Deferred by design: Harness²'s true probe step (re-execute under a candidate
+harness and contrast behavior) needs task re-execution infrastructure this
+package intentionally does not own — a candidate companion package.
+
 ## Phase 12 — DONE (main; unreleased) — cross-model adoption
 
 - **`/harness adopt --from <provider/id> [--all]`** (issue #21) — the

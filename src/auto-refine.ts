@@ -36,9 +36,10 @@
 // evaluateAutoRefine() so it is unit-testable without a live pi runtime.
 
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
+import { DEFAULT_AUTO_EVERY_TURNS, DEFAULT_REFINE_NOOP_SKIP, type HarnessConfig, loadConfig } from "./config.js";
 import { runRefine, gatherEvidence, DEFAULT_LOOKBACK_TURNS } from "./refine.js";
 import { buildClassify, buildGateRequest, gateDecision } from "./classify.js";
+import { recentIneffectiveRuns } from "./lessons.js";
 import { makeTurnCadence } from "./cadence.js";
 
 // turnEndedBadly's canonical home is cadence.ts (shared completed-turn
@@ -48,9 +49,23 @@ export { turnEndedBadly } from "./cadence.js";
 // The auto-refine cadence counter (shared implementation — see cadence.ts).
 const cadence = makeTurnCadence();
 
-/** Test hook: reset internal counter. */
+/** History gate bound (review r4341960942): the gate's predicate only reads
+ *  REFINE entries on the branch, and a SKIPPED cadence adds none — without a
+ *  bound, three consecutive no-op runs would latch the gate shut until a
+ *  manual /refine, no matter what later turns contain. So at most ONE
+ *  consecutive cadence is skipped on history grounds: the next cadence runs
+ *  the refine regardless (its result re-evaluates the window afterwards),
+ *  giving later trajectory evidence a bounded path in. */
+export const HISTORY_GATE_MAX_CONSECUTIVE_SKIPS = 1;
+
+/** Consecutive cadences the history gate has skipped this session (reset when
+ *  a refine actually runs, by resetAutoRefine, and at session_start). */
+let historyGateSkips = 0;
+
+/** Test hook: reset internal counters. */
 export function resetAutoRefine(): void {
   cadence.reset();
+  historyGateSkips = 0;
 }
 
 /**
@@ -126,6 +141,23 @@ export async function handleAutoRefineTurnEnd(
   if (!evaluateAutoRefine(config, event.outcome)) return;
   const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
 
+  // History gate (harnessing-level recursion): free, runs before the classifier
+  // gate — when the last N refine runs were ALL ineffective, a cadenced refine
+  // over the same quiet trajectory would most likely be another no-op. Manual
+  // /refine never consults this gate. BOUNDED: at most
+  // HISTORY_GATE_MAX_CONSECUTIVE_SKIPS consecutive cadence is skipped, so the
+  // gate can never latch shut against later, richer trajectory evidence
+  // (review r4341960942) — the run after a skip always happens.
+  const noOpSkip = config.autoRefine?.refineNoOpSkip ?? DEFAULT_REFINE_NOOP_SKIP;
+  if (historyGateSkips < HISTORY_GATE_MAX_CONSECUTIVE_SKIPS && recentIneffectiveRuns(ctx.sessionManager.getBranch(), noOpSkip)) {
+    historyGateSkips += 1;
+    ctx.ui.notify(
+      `Auto-refine: skipped — the last ${noOpSkip} refine run(s) produced nothing durable (history gate, ${historyGateSkips}/${HISTORY_GATE_MAX_CONSECUTIVE_SKIPS} consecutive skip; the next cadence runs regardless; refineNoOpSkip: 0 disables).`,
+      "info",
+    );
+    return;
+  }
+
   // Opt-in classifier gate: cheap yes/no before spending the refine.
   if (config.autoRefine?.gate) {
     const classify = buildClassify(ctx, config.classifier?.model);
@@ -143,6 +175,9 @@ export async function handleAutoRefineTurnEnd(
   }
 
   ctx.ui.notify(`Auto-refine: running /refine (every ${every} turns, opt-in).`, "info");
+  // A refine runs this cadence → the history gate's consecutive-skip budget
+  // is spent again (window re-evaluated from scratch next cadence).
+  historyGateSkips = 0;
   try {
     const result = await runRefine(
       pi,

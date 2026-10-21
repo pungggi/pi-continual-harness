@@ -8,10 +8,40 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
-## [Unreleased]
+## [0.20.0] — 2026-10-21
 
 ### Added
 
+- **Harness²-inspired harnessing-level recursion** (arXiv
+  [2610.14224](https://arxiv.org/abs/2610.14224)): the improvement process now
+  learns from what past improvement yielded, using only signals already on the
+  branch — no extra model calls.
+  - **Support counters** on every item: `citations` (the outcome loop saw the
+    agent cite `[h_xxxx]`), `keeps` / `drops` (`/harness keep|drop`). Dedupe
+    merges carry them onto the keeper; durable export/import round-trips them
+    via a `support:` sub-line; `/harness list -f` and the `harness_list` tool
+    show them.
+  - **Lessons digest** injected into the `/refine` steering prompt:
+    evidence-gated sections for items proven useful (cited/kept), rejected
+    signals (drops strictly outweighing later use — a drop followed by
+    re-citations is contested, not rejected), and recent refine-run
+    productivity. Never-cited items are never named (no signal ≠ negative
+    signal); the digest is scoped to the **active model's items** (per-model
+    isolation applies to what the improver is told). Visible
+    any time via the new **`/harness lessons`** command.
+  - **Scoped refine proposals**: the steering prompt classifies every create
+    as invariant (cross-domain agentic behavior → `scope: "global"`) or
+    domain-specific (project knowledge → `scope: "project"`).
+  - **History gate** for auto-refine: `autoRefine.refineNoOpSkip` (default 3,
+    `0` disables) skips a cadenced refine when the last N refine runs all
+    produced nothing durable. Runs before the classifier gate and costs
+    nothing; **bounded to one consecutive skip** so the gate can never latch
+    shut against later trajectory evidence; manual `/refine` bypasses it.
+- New exports for companion packages: `buildLessonsDigest`, `classifyRuns`,
+  `isEffectiveRun`, `recentIneffectiveRuns`, `mergeSupport`, `renderSupport`,
+  `parseSupport`, `buildSteeringPrompt`, `DEFAULT_REFINE_NOOP_SKIP`,
+  `HISTORY_GATE_MAX_CONSECUTIVE_SKIPS`, and the
+  `SupportInfo` type.
 - **`harness.schema.json`** — published JSON Schema for `harness.json`
   (same pattern as pi ≥ 1.2's published config schemas). Both doc examples
   now start with a `$schema` line pointing at the raw GitHub URL; the schema

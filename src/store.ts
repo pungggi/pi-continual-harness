@@ -13,7 +13,7 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState } from "./types.js";
+import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState, SupportInfo } from "./types.js";
 
 /** Resolved durable-layer scope for a parsed item. */
 export interface ScopeInfo {
@@ -84,11 +84,16 @@ export function getState(): HarnessState {
   return state;
 }
 
-/** A defensive deep-enough copy of current state (items are flat). Use when
- *  handing state to untrusted/external code (e.g. a DeltaProposer) so it cannot
- *  mutate the live store outside applyDeltas. */
+/** A defensive deep-enough copy of current state. Use when handing state to
+ *  untrusted/external code (e.g. a DeltaProposer) so it cannot mutate the
+ *  live store outside applyDeltas. Items are flat EXCEPT the nested
+ *  `support` counters — those are cloned too, or a proposer could fabricate
+ *  citation/keep/drop evidence by mutating `items[0].support` in place
+ *  (review r4341960948). */
 export function snapshotState(): HarnessState {
-  return { items: state.items.map((i) => ({ ...i })) };
+  return {
+    items: state.items.map((i) => (i.support ? { ...i, support: { ...i.support } } : { ...i })),
+  };
 }
 
 export function listItems(kind?: ComponentKind): HarnessItem[] {
@@ -145,6 +150,10 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       importance: clamp(delta.importance ?? before.importance),
       active: delta.active ?? before.active,
       ownerModel: delta.ownerModel ?? before.ownerModel,
+      // Support counters: replace semantics, like every other optional field.
+      // Server-side only (dedupe carries absorbed support onto the keeper);
+      // the model-facing tool schema does not expose it.
+      support: delta.support ?? before.support,
       updatedAt: Date.now(),
     };
     applyDeltaScope(after, delta);
@@ -250,6 +259,9 @@ export function reconstruct(entries: Iterable<unknown>): void {
           } else {
             delete item.project;
           }
+          // Support must be a plain object if present; anything else (a corrupt
+          // snapshot) drops the field rather than poisoning the digest/list.
+          if (i.support === undefined || typeof i.support !== "object") delete item.support;
           return item;
           }),
       }
@@ -293,19 +305,54 @@ export function decayAndPrune(
   return { pruned, decayed };
 }
 
-/** Nudge an item's importance by delta (clamped to [0,1]) and touch updatedAt. */
+/** Nudge an item's importance by delta (clamped to [0,1]) and touch updatedAt.
+ *  `opts.support` records WHERE the nudge came from in the item's support
+ *  counters (Harness²-style retention evidence): "citation" (the outcome loop
+ *  saw the agent cite the item) increments citations + stamps lastCitedAt;
+ *  "keep" / "drop" (the human ran /harness keep|drop) increment those. */
 export function bumpImportance(
   id: string,
   delta: number,
   persist: (snapshot: HarnessState, version: number) => void,
+  opts?: { support?: "citation" | "keep" | "drop" },
 ): HarnessItem | undefined {
   const item = state.items.find((i) => i.id === id);
   if (!item) return undefined;
   item.importance = clamp(item.importance + delta);
   item.updatedAt = Date.now();
+  if (opts?.support) {
+    const s: SupportInfo = { ...(item.support ?? {}) };
+    if (opts.support === "citation") {
+      s.citations = (s.citations ?? 0) + 1;
+      s.lastCitedAt = item.updatedAt;
+    } else if (opts.support === "keep") {
+      s.keeps = (s.keeps ?? 0) + 1;
+    } else {
+      s.drops = (s.drops ?? 0) + 1;
+    }
+    item.support = s;
+  }
   version += 1;
   persist(state, version);
   return item;
+}
+
+/** Sum two support records (dedupe merge: the keeper inherits everything the
+ *  absorbed duplicates accumulated). Counters add; lastCitedAt takes the max.
+ *  Undefined when both sides are empty, so items stay support-less until the
+ *  first real signal. */
+export function mergeSupport(a?: SupportInfo, b?: SupportInfo): SupportInfo | undefined {
+  if (!a && !b) return undefined;
+  const out: SupportInfo = {};
+  const citations = (a?.citations ?? 0) + (b?.citations ?? 0);
+  const keeps = (a?.keeps ?? 0) + (b?.keeps ?? 0);
+  const drops = (a?.drops ?? 0) + (b?.drops ?? 0);
+  if (citations > 0) out.citations = citations;
+  if (keeps > 0) out.keeps = keeps;
+  if (drops > 0) out.drops = drops;
+  const last = Math.max(a?.lastCitedAt ?? 0, b?.lastCitedAt ?? 0);
+  if (last > 0) out.lastCitedAt = last;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Adopt every orphan item (ownerModel === "") to the given model key. This is
@@ -356,11 +403,49 @@ function renderDurable(items: HarnessItem[]): string {
       lines.push(`  - evidence: ${i.evidence}`);
       if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
       if (i.scope === "project") lines.push(`  - scope: project (${i.project ?? ""})`);
+      const sup = renderSupport(i.support);
+      if (sup) lines.push(`  - support: ${sup}`);
     }
     lines.push("");
   }
   if (lines.length <= 2) lines.push("_(no active items)_", "");
   return lines.join("\n");
+}
+
+/** Render an item's support counters as a durable sub-line payload.
+ *  Only non-zero counters are written, so a fresh item adds no line at all
+ *  (legacy files stay byte-identical until real feedback exists). */
+export function renderSupport(s?: SupportInfo): string | undefined {
+  if (!s) return undefined;
+  const parts: string[] = [];
+  if (s.citations) parts.push(`citations=${s.citations}`);
+  if (s.keeps) parts.push(`keeps=${s.keeps}`);
+  if (s.drops) parts.push(`drops=${s.drops}`);
+  if (s.lastCitedAt) parts.push(`last-cited=${new Date(s.lastCitedAt).toISOString()}`);
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+const RE_SUPPORT = /^\s+-\s+support:\s*(.*)$/i;
+
+/** Parse a durable `support:` sub-line payload back into SupportInfo.
+ *  Tolerant: unknown tokens are ignored; malformed numbers degrade to
+ *  omission (a bad file must never crash an import). */
+export function parseSupport(line: string): SupportInfo | undefined {
+  const out: SupportInfo = {};
+  for (const tok of line.split(/\s+/).filter(Boolean)) {
+    const m = tok.match(/^(citations|keeps|drops)=(\d+)$/);
+    if (m) {
+      const n = Number(m[2]);
+      if (n > 0) out[m[1] as "citations" | "keeps" | "drops"] = n;
+      continue;
+    }
+    const lc = tok.match(/^last-cited=(.+)$/);
+    if (lc) {
+      const t = Date.parse(lc[1]!);
+      if (Number.isFinite(t)) out.lastCitedAt = t;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 async function writeFileDur(path: string, body: string): Promise<void> {
@@ -479,6 +564,8 @@ export interface ParsedItem {
   /** Only set when the file carries an explicit `scope:` sub-line. */
   scope?: "global" | "project";
   project?: string;
+  /** Parsed from a `support:` sub-line (post-adoption feedback counters). */
+  support?: SupportInfo | undefined;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -553,6 +640,12 @@ export function parseDurable(text: string): ParsedItem[] {
           pending.scope = "global";
         }
       }
+      continue;
+    }
+
+    const sup = line.match(RE_SUPPORT);
+    if (sup) {
+      if (pending) pending.support = parseSupport(sup[1]!);
       continue;
     }
 
@@ -645,7 +738,8 @@ function mergeParsed(
         existing.active &&
         existing.ownerModel === ownerModel &&
         (existing.scope ?? "global") === p.scope &&
-        (existing.scope === "project" ? existing.project : undefined) === p.project;
+        (existing.scope === "project" ? existing.project : undefined) === p.project &&
+        supportEqual(existing.support, p.support);
       if (unchanged) continue;
       existing.content = p.content;
       existing.evidence = p.evidence;
@@ -658,6 +752,9 @@ function mergeParsed(
       existing.scope = p.scope;
       if (p.scope === "project" && p.project) existing.project = p.project;
       else delete existing.project;
+      // Durable wins on support too (offline edits / cross-session sync).
+      if (p.support) existing.support = p.support;
+      else delete existing.support;
       existing.updatedAt = now;
       updated += 1;
       updatedIds.push(existing.id);
@@ -677,6 +774,7 @@ function mergeParsed(
         active: true,
         ownerModel: p.ownerModel ?? "",
         ...(p.scope === "project" && p.project ? { scope: "project" as const, project: p.project } : { scope: "global" as const }),
+        ...(p.support ? { support: p.support } : {}),
         createdAt: now,
         updatedAt: now,
       });
@@ -709,6 +807,19 @@ function mergeParsed(
   version += 1;
   persist(state, version);
   return { imported: distinct, created, updated, pruned, missingFile: false, createdIds, updatedIds };
+}
+
+/** Structurally compare two optional support records (field-wise, so a
+ *  missing key equals an explicitly-zero key — renders never emit zeros). */
+function supportEqual(a: SupportInfo | undefined, b: SupportInfo | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    (a.citations ?? 0) === (b.citations ?? 0) &&
+    (a.keeps ?? 0) === (b.keeps ?? 0) &&
+    (a.drops ?? 0) === (b.drops ?? 0) &&
+    (a.lastCitedAt ?? 0) === (b.lastCitedAt ?? 0)
+  );
 }
 
 /** Resolve a parsed item's scope against the layer default (for items without

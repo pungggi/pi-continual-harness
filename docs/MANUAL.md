@@ -273,9 +273,12 @@ proposes evidence-backed CRUD deltas.
    messages, capped at **16000 bytes**, truncated if longer).
 2. Resolves the proposer (from `--proposer`, else the `proposer` config key,
    else `steering`). **Unknown names fall back to `steering`.**
-3. Calls `propose({ evidence, state, lookback, config })` with a **defensive copy** of
+3. Calls `propose({ evidence, state, lookback, config, lessons })` with a **defensive copy** of
    state (proposers cannot mutate the live store) and the loaded config (so
-   proposers read tuned knobs without file I/O).
+   proposers read tuned knobs without file I/O). `lessons` is the
+   evidence-gated digest of past refine outcomes + support signals (see
+   `/harness lessons` below) — empty when nothing is supportable, so a fresh
+   store's prompt is unchanged.
 4. If the proposer returns `deltas`, they are applied directly (persisted via a
    `harness-state` entry → `/tree` rollback covers them).
 5. Writes a `harness-refinement` **audit entry** recording `lookback`, `commit`,
@@ -301,6 +304,12 @@ proposes evidence-backed CRUD deltas.
 > visible and reviewable in the transcript. A dedicated-model proposer is
 > supported by the interface but intentionally not shipped — hidden model spend
 > is a tradeoff kept as a separate decision (see [ROADMAP](ROADMAP.md)).
+
+> **Scope buckets + lessons.** The steering prompt classifies every proposed
+> create as **invariant** (cross-domain agentic behavior → `scope: "global"`)
+> or **domain-specific** (project knowledge → `scope: "project"`), and appends
+> the lessons digest when one exists (Harness², arXiv 2610.14224 — see
+> [`lessons`](#lessons)).
 
 ### `/harness`
 
@@ -389,7 +398,9 @@ a ~60-char preview — ranked importance-first (ties keep store order, the
 same stable policy as injection selection). Inactive items are marked
 `(inactive)`. `-f` switches to the `harness_list`-style full rendering,
 extended with the scope: complete text plus the evidence line, with owner
-model and `global` / `project "slug"` in the parenthetical.
+model and `global` / `project "slug"` in the parenthetical. `-f` also appends
+a `support:` line (`cited 3×, kept 1×, dropped 0×`-style, only the
+non-zero signals) once an item has feedback — see [`lessons`](#lessons).
 
 Scope semantics mirror the durable layers:
 
@@ -594,8 +605,9 @@ items (both touch `updatedAt`).
 /harness keep h_lz3k9p2_a1b2c
 ```
 
-Bumps an item's importance **+0.1** (clamped) and touches `updatedAt`. Not found
-→ warning.
+Bumps an item's importance **+0.1** (clamped) and touches `updatedAt`, and
+records the signal in the item's **support counters** (`keeps` — shown by
+`/harness list -f` and fed to the lessons digest). Not found → warning.
 
 #### `drop <id>`
 
@@ -603,7 +615,9 @@ Bumps an item's importance **+0.1** (clamped) and touches `updatedAt`. Not found
 /harness drop h_lz3k9p2_a1b2c
 ```
 
-Bumps an item's importance **−0.1** (clamped) and touches `updatedAt`. This
+Bumps an item's importance **−0.1** (clamped), touches `updatedAt`, and records
+the signal as `drops` in the support counters (a dropped-and-never-used item
+becomes a "rejected signal" in the lessons digest). This
 *demotes*; to actually *remove*, follow with `prune` once it falls below the
 floor, or use `harness_mutate` `delete`.
 
@@ -674,6 +688,30 @@ shows exactly what will land. The wizard writes config files only and never
 touches harness state. When the UI has no blocking prompts, the interactive
 menu cancels itself — use the `--preset` form there.
 
+#### `lessons`
+
+```text
+/harness lessons
+```
+
+Prints the **evidence-gated lessons digest** (harnessing-level recursion,
+Harness² arXiv 2610.14224) — the exact summary the next `/refine` will steer
+with:
+
+- **Proven useful** — active items with organic citations (outcome loop) or
+  `/harness keep` feedback, strongest first.
+- **Rejected signals** — items whose drops strictly outweigh any later use
+  (candidates to delete or rewrite). A drop followed by re-citations is
+  contested, not rejected, and never-cited-never-dropped items are **not**
+  named: no signal is not a negative signal.
+- **Refine history** — how many of the last refine runs produced durable
+  deltas vs. no-ops (the same runs the auto-refine history gate consults).
+
+The digest is **scoped to the active model's items** (the same per-model
+isolation as injection — a fresh model is never fed foreign notes or told to
+delete ids it cannot mutate). Nothing to say (fresh store) → one guidance
+line instead of a blank dump.
+
 ---
 
 ## 6. Model-facing tools
@@ -692,9 +730,10 @@ items (what gets injected this turn); pass `"*"` for every model, or an
 explicit `"provider/id"`. Returns one text line per item plus a matching
 `structuredContent.items[]` (see below):
 
-```
+```text
 [h_lz3k9p2_a1b2c] (memory, importance 0.62, active, model anthropic/sonnet) <content>
   evidence: <evidence>
+  support: cited 3×, kept 1×            ← only when the item has feedback
 ```
 
 Always call this before proposing changes so you operate on current state.
@@ -709,7 +748,10 @@ situations behind one opaque line, so the message now says which one it is:
   `model: "*"` pointer (per-model isolation, not a bug).
 - **Kind filter** — `No <kind> items` plus a tally of what the store holds.
 
-`structuredContent` is unchanged (`{ count, items }`); only the text differs.
+`structuredContent` keeps its shape (`{ count, items }`); items carry the
+same fields as before plus an optional `support` object
+(`{ citations?, keeps?, drops?, lastCitedAt? }`) when the item has feedback.
+Only the text differs otherwise.
 
 ### `harness_mutate`
 
@@ -867,7 +909,7 @@ session start, so a typo can't silently reset every setting.
   "dedupe":       { "threshold": 0.6, "merge": true },
   "injection":    { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine":  { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
-  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "omitStaleDrafts": true },
+  "autoRefine":    { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "omitStaleDrafts": true, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "classifier":    { "model": "typesafe/jev-latest" },   // opt-in classifier (pi ≥ 0.99)
   "virtualBinding": "virtual"             // "physical" keys by routed model (pi ≥ 0.99)
@@ -903,6 +945,7 @@ preserves it.
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
+| `autoRefine.refineNoOpSkip` | `3` | int ≥ 0 | **History gate** (harnessing-level recursion): skip a cadenced refine when the last N refine runs (any source) were ALL ineffective — no deltas applied and no state mutation followed. Runs before the classifier gate; bounded to 1 consecutive skip (the next cadence runs regardless, so the gate can never latch); `0` disables; manual `/refine` bypasses it. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
 | `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. With pi ≥ 1.1.0 the catalog also offers OpenAI's GPT-6 Luna (Decisions API, e.g. `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`, llama.cpp ≥ 0.6.0 — listed only as classifiers, ideal as a free local gate). Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
@@ -1096,7 +1139,7 @@ is why it could safely default on).
 
 ### Auto-refine (`src/auto-refine.ts`)
 
-`autoRefine: { enabled, everyTurns, commit, gate }` — **autonomous
+`autoRefine: { enabled, everyTurns, commit, gate, refineNoOpSkip }` — **autonomous
 self-mutation**.
 
 - Fires `/refine` itself every `everyTurns` (default **100**) turns.
@@ -1126,6 +1169,16 @@ self-mutation**.
   "No" skips the refine (notified); "yes" proceeds. The gate **soft-fails to
   the plain cadence** on any classifier error or missing answer — it can skip
   work, never block it.
+- **History gate** (`refineNoOpSkip`, default **3**, `0` disables — runs
+  FIRST, free): when the last N refine runs (any source) were ALL ineffective
+  (no deltas applied and no state mutation followed), the cadenced refine is
+  skipped as a likely repeat no-op. This is the harnessing-level signal: a
+  quiet trajectory keeps producing quiet refinements, so the gate stops
+  spending steering turns on it. **Bounded to one consecutive skip**: the
+  predicate only reads refine entries (a skip adds none), so without a bound
+  three no-ops could latch the gate shut forever — the cadence after a skip
+  always runs the refine, giving later trajectory evidence a bounded path in.
+  Manual `/refine` bypasses the gate.
 - First observed turn seeds the baseline (no auto-refine on the seed turn); each
   fired refine resets the counter (so the refine turn can't immediately
   re-trigger).
@@ -1147,7 +1200,10 @@ This is the package's **first** opt-in autonomous-mutation path.
   evidence the item was useful.
 - Bumps each referenced item's importance by **+`bump`** (default **0.03**,
   clamped to `[0,1]`) and touches `updatedAt`, so promoted items survive
-  time-based decay.
+  time-based decay. The same event also increments the item's
+  **`support.citations`** counter (with `lastCitedAt`) — the retention signal
+  the lessons digest reads (Harness²: keep a lesson only when execution
+  evidence supports it).
 - Persisted per bump via `harness-state` entries → branch-local, `/tree`
   rollback, visible (notifies per turn).
 - **Seeding**: the first observed turn sets the scan cursor (no retroactive bump

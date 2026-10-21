@@ -235,6 +235,30 @@ describe("steeringProposer", () => {
     expect(r.steeringMessage).toContain("/refine");
     expect(r.steeringMessage).toContain("some evidence");
   });
+
+  it("scopes every proposal invariant→global vs domain→project (Harness² §2.2)", async () => {
+    const r = await steeringProposer.propose({ evidence: "e", state: { items: [] }, lookback: 25 });
+    const msg = r.steeringMessage!;
+    expect(msg).toContain("INVARIANT");
+    expect(msg).toContain('scope "global"');
+    expect(msg).toContain("DOMAIN-SPECIFIC");
+    expect(msg).toContain('scope "project"');
+  });
+
+  it("appends the lessons digest only when provided (harnessing-level recursion)", async () => {
+    const withLessons = await steeringProposer.propose({
+      evidence: "e",
+      state: { items: [] },
+      lookback: 25,
+      lessons: "## Lessons from past refines\n- [h_a] (cited 2×): fact",
+    });
+    expect(withLessons.steeringMessage).toContain("## Lessons from past refines");
+    expect(withLessons.steeringMessage).toContain("[h_a] (cited 2×)");
+    const without = await steeringProposer.propose({ evidence: "e", state: { items: [] }, lookback: 25 });
+    expect(without.steeringMessage).not.toContain("Lessons from past refines");
+    const empty = await steeringProposer.propose({ evidence: "e", state: { items: [] }, lookback: 25, lessons: "" });
+    expect(empty.steeringMessage).not.toContain("Lessons from past refines");
+  });
 });
 
 describe("registry", () => {

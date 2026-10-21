@@ -60,6 +60,12 @@
           "type": "boolean",
           "default": true,
           "description": "Omit prior auto-refine request drafts from future provider context (at most one, the newest, stays model-visible). Raw history and /tree rollback are untouched."
+        },
+        "refineNoOpSkip": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3,
+          "description": "History gate: skip a cadenced refine when the last N refine runs (any source) were all ineffective (no deltas applied, no state mutation followed). Bounded to 1 consecutive skip so the gate can never latch shut against later evidence. 0 disables. Manual /refine bypasses the gate."
         }
       }
     },

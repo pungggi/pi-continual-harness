@@ -25,19 +25,13 @@ export {
   type Delta,
   type HarnessItem,
   type HarnessState,
+  type SupportInfo,
 } from "./types.js";
 
 // Public extension API: other extensions can register their own delta proposer
 // (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>
 // or the `proposer` config key.
-export {
-  DEFAULT_DEDUPE,
-  DEDUPE_THRESHOLD,
-  EVIDENCE_MERGE_CAP,
-  listProposers,
-  planDedupe,
-  registerProposer,
-  unionEvidence,
+export { DEFAULT_DEDUPE, DEDUPE_THRESHOLD, EVIDENCE_MERGE_CAP, buildSteeringPrompt, listProposers, planDedupe, registerProposer, unionEvidence,
   type CompleteOptions,
   type CompleteResult,
   type DedupeOptions,
@@ -48,6 +42,20 @@ export {
   type ProposeResult,
   type SimilarityResult,
 } from "./proposer.js";
+
+// Harnessing-level recursion (Harness², arXiv 2610.14224): evidence-gated
+// lessons from past refines + the auto-refine history gate. Re-exported for
+// tests and companion packages.
+export {
+  buildLessonsDigest,
+  classifyRuns,
+  isEffectiveRun,
+  recentIneffectiveRuns,
+  type DigestOptions,
+  type RefineRun,
+} from "./lessons.js";
+export { mergeSupport, renderSupport, parseSupport } from "./store.js";
+export { DEFAULT_REFINE_NOOP_SKIP } from "./config.js";
 
 // Calibration corpus exporter (pi-reflex contract §4, formerly pi-jev). Re-exported so companion
 // packages can build corpora from exported session branches without reaching
