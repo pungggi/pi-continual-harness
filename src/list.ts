@@ -15,7 +15,7 @@
 // `--scope all` lists everything. An item's undefined scope counts as global
 // (legacy snapshots / durable files — see types.ts).
 
-import type { ComponentKind, HarnessItem } from "./types.js";
+import type { ComponentKind, HarnessItem, SupportInfo } from "./types.js";
 
 /** `--scope` values for /harness list. `undefined` (no flag) = the session's
  *  layer set: global + the active project. */
@@ -77,6 +77,17 @@ function row(i: HarnessItem): string {
   }${preview(i.content)}`;
 }
 
+/** Compact support summary for one line: "cited 3, kept 1, dropped 0" —
+ *  only non-zero signals, so clean items add nothing. */
+export function supportSummary(s?: SupportInfo): string | undefined {
+  if (!s) return undefined;
+  const parts: string[] = [];
+  if (s.citations) parts.push(`cited ${s.citations}×`);
+  if (s.keeps) parts.push(`kept ${s.keeps}×`);
+  if (s.drops) parts.push(`dropped ${s.drops}×`);
+  return parts.length > 0 ? `support: ${parts.join(", ")}` : undefined;
+}
+
 /** Full row (`-f`): the harness_list rendering, scope-aware — the same
  *  parenthetical the split/adopt prompts use, plus the evidence line. */
 function fullRow(i: HarnessItem): string {
@@ -87,7 +98,8 @@ function fullRow(i: HarnessItem): string {
     `model ${i.ownerModel || "(orphan)"}`,
     i.scope === "project" ? `project "${i.project ?? ""}"` : "global",
   ];
-  return `[${i.id}] (${bits.join(", ")}) ${i.content}\n  evidence: ${i.evidence}`;
+  const sup = supportSummary(i.support);
+  return `[${i.id}] (${bits.join(", ")}) ${i.content}\n  evidence: ${i.evidence}` + (sup ? `\n  ${sup}` : "");
 }
 
 /** Tally `items` by a string key, rendered as "key (n), key (n)". */

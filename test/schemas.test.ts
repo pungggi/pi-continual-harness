@@ -68,6 +68,14 @@ const ItemSchema = Type.Object({
   ownerModel: Type.String(),
   scope: Type.Optional(StringEnum(["global", "project"])),
   project: Type.Optional(Type.String()),
+  support: Type.Optional(
+    Type.Object({
+      citations: Type.Optional(Type.Number()),
+      keeps: Type.Optional(Type.Number()),
+      drops: Type.Optional(Type.Number()),
+      lastCitedAt: Type.Optional(Type.Number()),
+    }),
+  ),
   createdAt: Type.Number(),
   updatedAt: Type.Number(),
 });

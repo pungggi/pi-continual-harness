@@ -36,9 +36,10 @@
 // evaluateAutoRefine() so it is unit-testable without a live pi runtime.
 
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_AUTO_EVERY_TURNS, type HarnessConfig, loadConfig } from "./config.js";
+import { DEFAULT_AUTO_EVERY_TURNS, DEFAULT_REFINE_NOOP_SKIP, type HarnessConfig, loadConfig } from "./config.js";
 import { runRefine, gatherEvidence, DEFAULT_LOOKBACK_TURNS } from "./refine.js";
 import { buildClassify, buildGateRequest, gateDecision } from "./classify.js";
+import { recentIneffectiveRuns } from "./lessons.js";
 import { makeTurnCadence } from "./cadence.js";
 
 // turnEndedBadly's canonical home is cadence.ts (shared completed-turn
@@ -125,6 +126,19 @@ export async function handleAutoRefineTurnEnd(
   const config = await loadConfig();
   if (!evaluateAutoRefine(config, event.outcome)) return;
   const every = config.autoRefine?.everyTurns ?? DEFAULT_AUTO_EVERY_TURNS;
+
+  // History gate (harnessing-level recursion): free, runs before the classifier
+  // gate — when the last N refine runs were ALL ineffective, a cadenced refine
+  // over the same quiet trajectory would most likely be another no-op. Manual
+  // /refine never consults this gate.
+  const noOpSkip = config.autoRefine?.refineNoOpSkip ?? DEFAULT_REFINE_NOOP_SKIP;
+  if (recentIneffectiveRuns(ctx.sessionManager.getBranch(), noOpSkip)) {
+    ctx.ui.notify(
+      `Auto-refine: skipped — the last ${noOpSkip} refine run(s) produced nothing durable (history gate; set refineNoOpSkip: 0 to disable).`,
+      "info",
+    );
+    return;
+  }
 
   // Opt-in classifier gate: cheap yes/no before spending the refine.
   if (config.autoRefine?.gate) {

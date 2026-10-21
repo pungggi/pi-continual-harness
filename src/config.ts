@@ -26,6 +26,10 @@ export const DEFAULT_EVERY_TURNS = 25;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
+/** History-gate default: a cadenced auto-refine is skipped when the last N
+ *  refine runs (any source) were ALL ineffective — no deltas applied and no
+ *  state mutation followed. 0 disables the gate (autoRefine.refineNoOpSkip). */
+export const DEFAULT_REFINE_NOOP_SKIP = 3;
 /** Default cadence (turns) for the auto-import awareness reminder. */
 export const DEFAULT_IMPORT_REMIND_TURNS = 25;
 /** Default escalation cadence for the /refine reminder: every Nth fired
@@ -84,6 +88,13 @@ export interface HarnessConfig {
      *  one (the newest) is ever model-visible. Raw history and /tree rollback
      *  are untouched; set false to keep every draft in context. */
     omitStaleDrafts?: boolean;
+    /** History gate (harnessing-level recursion): skip a cadenced refine when
+     *  the last N refine runs (any source) were ALL ineffective — no deltas
+     *  applied and no state mutation followed. Refines over an unchanged quiet
+     *  trajectory would most likely be no-ops again; the classifier gate (if
+     *  enabled) then never even runs. Manual /refine bypasses this. Default
+     *  DEFAULT_REFINE_NOOP_SKIP (3); 0 disables the history gate. */
+    refineNoOpSkip?: number;
   };
   /** Classifier model for the cheap gated paths (pi ≥ 0.99): "provider/id" or
    *  a bare id of a classifier catalog entry (e.g. "typesafe/jev-latest" or a
@@ -114,7 +125,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   autoImport: false,
   importRemind: { enabled: true, everyTurns: DEFAULT_IMPORT_REMIND_TURNS },
   remindRefine: { enabled: true, everyTurns: DEFAULT_EVERY_TURNS, detailEvery: DEFAULT_DETAIL_EVERY },
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true },
+  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true, refineNoOpSkip: DEFAULT_REFINE_NOOP_SKIP },
   classifier: { model: undefined },
   virtualBinding: "virtual",
   proposer: "steering",
@@ -159,6 +170,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       commit: over.autoRefine?.commit ?? false,
       gate: over.autoRefine?.gate === true,
       omitStaleDrafts: over.autoRefine?.omitStaleDrafts !== false,
+      refineNoOpSkip:
+        typeof over.autoRefine?.refineNoOpSkip === "number" && Number.isFinite(over.autoRefine.refineNoOpSkip)
+          ? Math.max(0, Math.floor(over.autoRefine.refineNoOpSkip))
+          : DEFAULT_REFINE_NOOP_SKIP,
     },
     classifier: {
       model: typeof over.classifier?.model === "string" && over.classifier.model ? over.classifier.model : undefined,

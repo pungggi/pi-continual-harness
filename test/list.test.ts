@@ -114,6 +114,27 @@ describe("renderListReport", () => {
     );
   });
 
+  it("-f: a support summary line appears only when feedback exists (Harness²)", () => {
+    const withSupport = renderListReport(
+      [
+        item({
+          id: "h_s",
+          kind: "memory",
+          content: "supported",
+          support: { citations: 3, keeps: 1 },
+        }),
+      ],
+      opts({ full: true }),
+    );
+    expect(withSupport).toContain("  support: cited 3×, kept 1×");
+    expect(withSupport).not.toContain("dropped");
+    const without = renderListReport(
+      [item({ id: "h_n", kind: "memory", content: "plain" })],
+      opts({ full: true }),
+    );
+    expect(without).not.toContain("support:");
+  });
+
   it("empty store: zero-state guidance, not a bare zero", () => {
     const out = renderListReport([], opts());
     expect(out.split("\n")[0]).toContain("0 item(s)");

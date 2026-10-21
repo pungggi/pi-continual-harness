@@ -30,6 +30,7 @@
 import type { Delta, HarnessItem, HarnessState } from "./types.js";
 import type { HarnessConfig } from "./config.js";
 import type { ClassifyFn } from "./classify.js";
+import { mergeSupport } from "./store.js";
 
 /** Options for the one-shot model completion injected into ProposeInput. */
 export interface CompleteOptions {
@@ -88,6 +89,12 @@ export interface ProposeInput {
    *  other proposers may use it for cheap gating decisions. Undefined when no
    *  classifier is available — consumers must degrade gracefully. */
   classify?: ClassifyFn;
+  /** Evidence-gated lessons from past refines (harnessing-level recursion,
+   *  Harness² arXiv 2610.14224: the improvement process learns from what past
+   *  improvement yielded). Built by runRefine from support counters + refine
+   *  audit entries; "" when there is nothing supportable to say. Proposers
+   *  SHOULD surface it to whoever reasons about deltas. */
+  lessons?: string;
 }
 
 /** A single delta plus a human-readable reason for the audit trail. */
@@ -119,7 +126,19 @@ export interface DeltaProposer {
 
 // ---- default: steering (delegates reasoning to the agent) ------------------
 
-function buildSteeringPrompt(evidence: string, lookback: number): string {
+/** Scoped-proposal guidance (Harness², arXiv 2610.14224 §2.2: its editors
+ *  propose one INVARIANT candidate — agentic deficiencies that recur across
+ *  domains — and one DOMAIN-SPECIFIC candidate per task; the ablation shows
+ *  scoping is load-bearing). Our translation: every create must declare which
+ *  kind it is, and the durable layer follows from it — invariant → global,
+ *  domain → project. Exported for tests. */
+export function buildSteeringPrompt(evidence: string, lookback: number, lessons?: string): string {
+  const scoped = [
+    "Classify every proposal by scope before creating it:",
+    "- INVARIANT (cross-domain agentic behavior — planning, tool use, context management, delegation): create with scope \"global\".",
+    "- DOMAIN-SPECIFIC (knowledge, procedures, constraints of THIS project): create with scope \"project\" (it is stamped to this session's project).",
+    "A trajectory may justify either, both, or neither — never force a domain fact into a global note.",
+  ].join("\n");
   return [
     `/refine (online self-improvement, last ${lookback} turns as evidence)`,
     "",
@@ -130,7 +149,10 @@ function buildSteeringPrompt(evidence: string, lookback: number): string {
     "2. Call harness_mutate with small, surgical CRUD deltas. Every create MUST include concrete evidence from the trajectory. Prefer updating existing items over creating duplicates; delete items that are wrong, stale, or contradicted.",
     "3. Keep prompt notes terse and behavioral. Memory facts should be specific. Skill/sub-agent entries should describe reusable patterns, not one task.",
     "",
+    scoped,
+    "",
     "Constraints: never rewrite the whole store; ground every change in evidence; if nothing durable is worth recording, say so and do nothing.",
+    ...(lessons ? ["", lessons] : []),
     "",
     "## Trajectory evidence",
     evidence,
@@ -140,8 +162,8 @@ function buildSteeringPrompt(evidence: string, lookback: number): string {
 /** Default proposer: delegates reasoning to the agent via a steering message. */
 export const steeringProposer: DeltaProposer = {
   name: "steering",
-  async propose({ evidence, lookback }): Promise<ProposeResult> {
-    return { steeringMessage: buildSteeringPrompt(evidence, lookback) };
+  async propose({ evidence, lookback, lessons }): Promise<ProposeResult> {
+    return { steeringMessage: buildSteeringPrompt(evidence, lookback, lessons) };
   },
 };
 
@@ -283,11 +305,22 @@ export function deltasFromGroups(groups: DedupeGroup[], opts: DedupeOptions = DE
     if (k.absorbed.length === 0) continue;
     if (opts.merge) {
       const merged = unionEvidence([k.keeper.evidence, ...k.absorbed.map((a) => a.dup.evidence)]);
-      // Skip the no-op: identical evidence → the merge degenerates to a plain
-      // delete for this pair (no update delta).
-      if (merged !== k.keeper.evidence) {
+      // The keeper inherits the absorbed duplicates' support counters
+      // (Harness²: retention evidence must not vanish in a merge).
+      const support = k.absorbed.reduce(
+        (acc, a) => mergeSupport(acc, a.dup.support),
+        k.keeper.support,
+      );
+      // Skip the no-op: identical evidence AND nothing to carry → the merge
+      // degenerates to a plain delete for this pair (no update delta).
+      if (merged !== k.keeper.evidence || support !== k.keeper.support) {
         updates.push({
-          delta: { op: "update", id: k.keeper.id, evidence: merged },
+          delta: {
+            op: "update",
+            id: k.keeper.id,
+            evidence: merged,
+            ...(support !== k.keeper.support ? { support } : {}),
+          },
           rationale: `dedupe: merged ${k.absorbed.length} duplicate(s) (${k.absorbed.map((a) => a.dup.id).join(", ")}) into ${k.keeper.id}; evidence unioned (${k.absorbed.length + 1} sources).`,
         });
       }

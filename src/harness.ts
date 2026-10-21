@@ -62,6 +62,7 @@ import { buildStatusReport, renderStatusReport } from "./status.js";
 import { getInjectionStats } from "./inject.js";
 import { nextHint } from "./hints.js";
 import { preview, renderListReport, type ListScope } from "./list.js";
+import { buildLessonsDigest } from "./lessons.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
@@ -84,6 +85,7 @@ const SUBCOMMANDS: CompletionEntry[] = [
   { name: "adopt", description: "Steer the agent to adopt another model's items (--from <provider/id> [--all])" },
   { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
   { name: "setup", description: "Guided config wizard — presets: quiet | recommended | power (--yes for scripted)" },
+  { name: "lessons", description: "Evidence-gated lessons from past refines (the digest /refine steers with)" },
 ];
 
 const KINDS: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
@@ -307,6 +309,9 @@ export async function runHarnessCommand(
       return;
     case "setup":
       await handleSetup(ctx, rest);
+      return;
+    case "lessons":
+      handleLessons(ctx);
       return;
     case "list":
       await handleList(ctx, rest);
@@ -532,9 +537,15 @@ async function handleBump(
     );
     return;
   }
-  const item = bumpImportance(id, delta, (snapshot, ver) => {
-    pi.appendEntry("harness-state", { state: snapshot, version: ver });
-  });
+  const item = bumpImportance(
+    id,
+    delta,
+    (snapshot, ver) => {
+      pi.appendEntry("harness-state", { state: snapshot, version: ver });
+    },
+    // Record the human signal in the support counters (keep/drop).
+    { support: label === "keep" ? "keep" : "drop" },
+  );
   if (!item) {
     ctx.ui.notify(`No harness item with id ${id}.`, "warning");
     return;
@@ -860,6 +871,21 @@ async function handlePushMem(
   const msg = buildPushMemPrompt(items, scope);
   pi.sendUserMessage(msg, { deliverAs: "followUp" });
   ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
+}
+
+/** `/harness lessons` — print the exact evidence-gated digest the next /refine
+ *  steers with (harnessing-level recursion, Harness² arXiv 2610.14224).
+ *  Read-only; distinct empty state when nothing supportable exists yet. */
+function handleLessons(ctx: ExtensionCommandContext): void {
+  const digest = buildLessonsDigest(getState(), ctx.sessionManager.getBranch() as Iterable<unknown>);
+  if (!digest) {
+    ctx.ui.notify(
+      "No lessons yet — items need citations (outcome loop) or /harness keep|drop feedback, or past refine runs, before anything is evidence-gated.",
+      "info",
+    );
+    return;
+  }
+  ctx.ui.notify(digest, "info");
 }
 
 async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {

@@ -19,7 +19,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
+import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, getState, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
+import { buildLessonsDigest } from "./lessons.js";
 import { getProposer, listProposers, DEFAULT_DEDUPE } from "./proposer.js";
 import type { CompleteOptions, CompleteResult } from "./proposer.js";
 import { REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
@@ -157,6 +158,11 @@ export async function runRefine(
   // Inject the classifier adapter when `classifier.model` is configured and
   // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
   const classify = buildClassify(ctx, config.classifier?.model);
+  // Harnessing-level recursion (Harness² arXiv 2610.14224): the improvement
+  // process learns from what past improvement yielded. The digest is built
+  // from evidence-gated signals only (citations, keeps/drops, refine-run
+  // outcomes) and stays empty when there is nothing supportable to say.
+  const lessons = buildLessonsDigest(getState(), branchEntries(ctx));
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
   const result = await proposer.propose({
@@ -166,6 +172,7 @@ export async function runRefine(
     config: proposerConfig,
     ...(complete ? { complete } : {}),
     ...(classify ? { classify } : {}),
+    ...(lessons ? { lessons } : {}),
   });
   const proposedDeltas = result.deltas ?? [];
   // Stamp direct-apply create deltas with the active model so proposer-authored

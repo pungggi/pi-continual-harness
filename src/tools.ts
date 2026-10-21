@@ -76,6 +76,7 @@ export async function executeHarnessList(params: HarnessListParams): Promise<Age
         ownerModel: i.ownerModel,
         ...(i.scope ? { scope: i.scope } : {}),
         ...(i.project ? { project: i.project } : {}),
+        ...(i.support ? { support: i.support } : {}),
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
       })),

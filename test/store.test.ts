@@ -17,10 +17,13 @@ import {
   importDurableLayers,
   IMPORTANCE_FLOOR,
   listItems,
+  mergeSupport,
   modelKey,
   parseDurable,
+  parseSupport,
   reconstruct,
   reconstructFromDurable,
+  renderSupport,
   setSessionProject,
 } from "../src/store.js";
 import type { Delta } from "../src/types.js";
@@ -278,6 +281,98 @@ describe("bumpImportance", () => {
     expect(down?.importance).toBe(0);
     expect(persist).toHaveBeenCalledTimes(2);
     expect(bumpImportance("nope", 0.1, persist)).toBeUndefined();
+  });
+
+  it("records the support signal source: citation / keep / drop (Harness² retention evidence)", () => {
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "x", evidence: "e" }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    expect(getState().items[0]!.support).toBeUndefined();
+    bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
+    bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
+    bumpImportance(id, 0.1, vi.fn(), { support: "keep" });
+    bumpImportance(id, -0.1, vi.fn(), { support: "drop" });
+    const s = getState().items[0]!.support!;
+    expect(s.citations).toBe(2);
+    expect(s.keeps).toBe(1);
+    expect(s.drops).toBe(1);
+    expect(typeof s.lastCitedAt).toBe("number");
+    // A bare bump (no opts) never fabricates support.
+    const [c2] = applyDeltas([{ op: "create", kind: "memory", content: "y", evidence: "e" }], vi.fn());
+    const id2 = c2!.op === "create" ? c2!.item.id : "";
+    bumpImportance(id2, 0.1, vi.fn());
+    expect(getState().items.find((i) => i.id === id2)!.support).toBeUndefined();
+  });
+});
+
+describe("mergeSupport", () => {
+  it("sums counters and takes the latest citation time; undefined when both empty", () => {
+    expect(mergeSupport(undefined, undefined)).toBeUndefined();
+    expect(mergeSupport({ citations: 1 }, {})).toEqual({ citations: 1 });
+    expect(
+      mergeSupport(
+        { citations: 2, keeps: 1, lastCitedAt: 100 },
+        { citations: 3, drops: 1, lastCitedAt: 50 },
+      ),
+    ).toEqual({ citations: 5, keeps: 1, drops: 1, lastCitedAt: 100 });
+  });
+});
+
+describe("support durable round-trip (renderSupport / parseSupport / durable files)", () => {
+  beforeEach(reset);
+
+  it("renderSupport writes only non-zero counters; parseSupport inverts it tolerantly", () => {
+    expect(renderSupport(undefined)).toBeUndefined();
+    expect(renderSupport({})).toBeUndefined();
+    const line = renderSupport({ citations: 3, keeps: 1, lastCitedAt: Date.UTC(2026, 9, 21) })!;
+    expect(line).toContain("citations=3");
+    expect(line).toContain("keeps=1");
+    expect(line).not.toContain("drops");
+    expect(line).toContain("last-cited=2026-10-21");
+    const parsed = parseSupport(line)!;
+    expect(parsed.citations).toBe(3);
+    expect(parsed.keeps).toBe(1);
+    expect(parsed.drops).toBeUndefined();
+    expect(parsed.lastCitedAt).toBe(Date.UTC(2026, 9, 21));
+    // Tolerant: garbage tokens and zero/negative numbers degrade to omission.
+    expect(parseSupport("citations=abc keeps=0 drops=-2 wat")).toBeUndefined();
+    expect(parseSupport("last-cited=not-a-date")).toBeUndefined();
+  });
+
+  it("export carries a support: sub-line; re-import after delete restores it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-support-"));
+    const file = join(dir, "harness-state.md");
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "supported fact", evidence: "e" }],
+      vi.fn(),
+    );
+    const id = c!.op === "create" ? c!.item.id : "";
+    bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
+    bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
+    bumpImportance(id, 0.1, vi.fn(), { support: "keep" });
+    try {
+      await exportDurable(file);
+      const body = readFileSync(file, "utf8");
+      expect(body).toContain("support: citations=2 keeps=1");
+      // The live item vanishes (another session deleted it) → import recreates
+      // it WITH the durable support counters.
+      applyDeltas([{ op: "delete", id, reason: "gone" }], vi.fn());
+      expect(getState().items).toHaveLength(0);
+      const res = await reconstructFromDurable(file, {}, vi.fn());
+      expect(res.imported).toBe(1);
+      const restored = getState().items[0]!;
+      expect(restored.id).toBe(id);
+      expect(restored.support?.citations).toBe(2);
+      expect(restored.support?.keeps).toBe(1);
+      // Re-importing the unchanged file persists nothing (idempotent).
+      const persist = vi.fn();
+      await reconstructFromDurable(file, {}, persist);
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

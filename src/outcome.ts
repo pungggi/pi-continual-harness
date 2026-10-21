@@ -111,9 +111,16 @@ export async function handleOutcomeTurnEnd(
 
   let bumped = 0;
   for (const id of refs) {
-    const item = bumpImportance(id, bump, (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    });
+    // "citation" records the support signal (Harness²: retention needs
+    // execution evidence, not creation-time enthusiasm).
+    const item = bumpImportance(
+      id,
+      bump,
+      (snapshot, ver) => {
+        pi.appendEntry("harness-state", { state: snapshot, version: ver });
+      },
+      { support: "citation" },
+    );
     if (item) bumped += 1;
   }
   if (bumped > 0) {

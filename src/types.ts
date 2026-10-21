@@ -13,6 +13,24 @@
 /** The four Continual Harness components. */
 export type ComponentKind = "prompt" | "memory" | "skill" | "subagent";
 
+/**
+ * Post-adoption support signals (Harness², arXiv 2610.14224: a lesson should
+ * be retained when supported by execution evidence, not by the mere fact of
+ * creation). Counters accumulate over the item's life and feed the refine
+ * digest (lessons.ts) and `/harness list -f`. Optional everywhere: legacy
+ * snapshots and durable files simply have no support yet.
+ */
+export type SupportInfo = {
+  /** Completed turns in which the agent cited this item's [h_xxxx] tag. */
+  citations?: number;
+  /** Times a human ran `/harness keep` on the item. */
+  keeps?: number;
+  /** Times a human ran `/harness drop` on the item. */
+  drops?: number;
+  /** Last citation time (ms epoch). */
+  lastCitedAt?: number;
+};
+
 /** A single item in the unified harness store. */
 export interface HarnessItem {
   id: string;
@@ -43,6 +61,8 @@ export interface HarnessItem {
   scope?: "global" | "project";
   /** Project slug (see projectSlug in config.ts); set iff scope === "project". */
   project?: string;
+  /** Post-adoption support signals (see SupportInfo). Absent = no feedback yet. */
+  support?: SupportInfo | undefined;
   createdAt: number;
   updatedAt: number;
 }
@@ -83,6 +103,10 @@ export type Delta =
       scope?: "global" | "project";
       /** Explicit project slug for scope:"project" (server-side use). */
       project?: string;
+      /** Replace the support counters (server-side use — NOT exposed on the
+       *  model-facing tool). The dedupe proposer uses this to carry the
+       *  absorbed duplicates' support onto the keeper (see mergeSupport). */
+      support?: SupportInfo | undefined;
     }
   | { op: "delete"; id: string; reason: string };
 

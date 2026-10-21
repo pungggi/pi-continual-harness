@@ -6,6 +6,7 @@ import {
   configMalformed,
   DEFAULT_CONFIG,
   DEFAULT_REF_BUMP,
+  DEFAULT_REFINE_NOOP_SKIP,
   defaultScopeForPath,
   layerFilesFor,
   loadConfig,
@@ -209,6 +210,31 @@ describe("config", () => {
         await writeFile(file, JSON.stringify({ dedupe: { threshold: 0.05 } }), "utf8");
         expect((await loadConfig(file)).dedupe?.threshold).toBe(0.05);
       });
+    });
+  });
+
+  describe("autoRefine.refineNoOpSkip (history gate, harnessing-level recursion)", () => {
+    it("defaults to 3 (DEFAULT_REFINE_NOOP_SKIP) when absent", async () => {
+      expect(DEFAULT_CONFIG.autoRefine?.refineNoOpSkip).toBe(DEFAULT_REFINE_NOOP_SKIP);
+      const cfg = await loadConfig(tempFile());
+      expect(cfg.autoRefine?.refineNoOpSkip).toBe(DEFAULT_REFINE_NOOP_SKIP);
+    });
+
+    it("accepts 0 (gate off) and positive integers; coerces junk to the default", async () => {
+      for (const [input, want] of [
+        [0, 0],
+        [5, 5],
+        [2.9, 2],
+        [-1, 0],
+        ["3", DEFAULT_REFINE_NOOP_SKIP],
+        [NaN, DEFAULT_REFINE_NOOP_SKIP],
+      ] as const) {
+        await withTempDir(async (file) => {
+          resetConfigCache(); // the cache is single-slot; a new file needs a reset
+          await writeFile(file, JSON.stringify({ autoRefine: { refineNoOpSkip: input } }), "utf8");
+          expect((await loadConfig(file)).autoRefine?.refineNoOpSkip).toBe(want);
+        });
+      }
     });
   });
 

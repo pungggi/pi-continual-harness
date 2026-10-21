@@ -101,6 +101,15 @@ const ItemSchema = {
     ownerModel: { type: "string" },
     scope: stringEnum(["global", "project"]),
     project: { type: "string" },
+    support: {
+      type: "object",
+      properties: {
+        citations: { type: "number" },
+        keeps: { type: "number" },
+        drops: { type: "number" },
+        lastCitedAt: { type: "number" },
+      },
+    },
     createdAt: { type: "number" },
     updatedAt: { type: "number" },
   },

@@ -306,6 +306,32 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
 > scope), then move any strays with `/harness move` (or classify the whole
 > store with `/harness split`).
 
+## Lessons and support signals (harnessing-level recursion)
+
+Harness²'s second loop: the improvement process should learn from what past
+improvement actually yielded, and keep a lesson only when execution evidence
+supports it. Four pieces implement this without any extra model calls:
+
+- **Support counters.** Every item accumulates `support` signals: `citations`
+  (the outcome loop saw the agent cite the item's `[h_xxxx]` tag), `keeps` and
+  `drops` (`/harness keep|drop`). Dedupe merges carry the counters onto the
+  keeper, and durable export/import round-trips them (`support:` sub-line), so
+  feedback survives restarts. See them with `/harness list -f`.
+- **Lessons digest.** `/refine` steers with a compact, evidence-gated digest:
+  items proven useful (cited or kept), rejected signals (dropped, never used
+  since), and how productive recent refine runs were. Never-cited items are
+  NOT named: no signal is not a negative signal. `/harness lessons` prints the
+  exact digest the next `/refine` will use. Why: the improver starts from
+  what worked instead of re-deriving it, and stops re-creating rejected notes.
+- **Scoped proposals.** The `/refine` steering prompt classifies every create
+  as **invariant** (cross-domain agentic behavior → `scope: "global"`) or
+  **domain-specific** (this project's knowledge → `scope: "project"`).
+  Harness²'s ablation shows this scoping is load-bearing; here it also keeps
+  the global layer free of project noise.
+- **History gate.** Auto-refine skips a cadenced run when the last
+  `refineNoOpSkip` refine runs all produced nothing durable (see
+  `autoRefine` in [Configuration](#configuration)).
+
 ## How it works
 
 1. `/refine` gathers recent trajectory evidence from the current session branch.
