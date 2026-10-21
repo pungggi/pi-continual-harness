@@ -50,32 +50,50 @@ export interface RefineRun {
   followedByStateChange?: boolean | undefined;
 }
 
-/** Annotate runs with followedByStateChange by co-walking state entries. */
+/** Annotate runs with followedByStateChange by co-walking state entries.
+ *
+ *  Attribution subtlety (review r4341960980): runRefine writes a direct-apply
+ *  run's harness-state snapshot BEFORE that run's own audit entry, so a state
+ *  entry sitting between run k and run k+1 may belong to EITHER. Disambiguate
+ *  by ownership: if run k+1 direct-applied (applied > 0), exactly one of those
+ *  state entries is its own snapshot and must NOT be credited to run k.
+ *  Leftover entries credit run k (its steering mutation — or a human keep/drop
+ *  in between, an acceptable false credit: it only ever LIFTS the gate, never
+ *  makes it skip). */
 export function classifyRuns(entries: Iterable<unknown>): RefineRun[] {
   const runs: RefineRun[] = [];
   let pending: RefineRun | undefined;
-  const flush = (): void => {
-    if (pending) runs.push(pending);
+  // harness-state entries seen since `pending`'s audit entry.
+  let stateAfter = 0;
+  const flush = (nextApplied?: number): void => {
+    if (pending) {
+      const ownedByNext = (nextApplied ?? 0) > 0 ? 1 : 0;
+      pending.followedByStateChange = stateAfter - ownedByNext > 0;
+      runs.push(pending);
+    }
     pending = undefined;
+    stateAfter = 0;
   };
   for (const raw of entries) {
     if (!raw || typeof raw !== "object") continue;
     const e = raw as { type?: string; customType?: string; data?: Record<string, unknown> };
     if (e.type === "custom" && e.customType === STATE_ENTRY) {
-      if (pending) pending.followedByStateChange = true;
+      if (pending) stateAfter += 1;
       continue;
     }
     if (e.type === "custom" && e.customType === REFINE_ENTRY) {
-      flush();
-      pending = {
+      const next: RefineRun = {
         source: e.data?.source as string | undefined,
         proposer: e.data?.proposer as string | undefined,
         applied: e.data?.applied as number | undefined,
         at: e.data?.startedAt as number | undefined,
       };
+      // Flush the previous run knowing whether the new one direct-applied.
+      flush(next.applied);
+      pending = next;
     }
   }
-  flush();
+  flush(); // last run: any state entry after its audit is attributable to it
   return runs;
 }
 
@@ -118,6 +136,13 @@ export interface DigestOptions {
   runsWindow?: number;
   /** Hard character cap on the whole digest (default 1200). */
   maxChars?: number;
+  /** Model-binding key (see vmodel.resolveBindingKey): only items OWNED by
+   *  this model are named (review r4341960955) — the digest must respect the
+   *  same per-model isolation as injection, otherwise a fresh model is fed
+   *  foreign notes and told to delete ids it cannot mutate
+   *  (assertOwnsItem rejects them). Undefined = no owner filter (callers that
+   *  know the actor — runRefine — always pass it, `""` for an unknown model). */
+  ownerKey?: string | undefined;
 }
 
 /** Cap an assembled digest: drop trailing sections until it fits. */
@@ -147,7 +172,9 @@ export function buildLessonsDigest(
   opts: DigestOptions = {},
 ): string {
   const sections: string[] = [];
-  const active = state.items.filter((i) => i.active);
+  const active = state.items.filter(
+    (i) => i.active && (opts.ownerKey === undefined || i.ownerModel === opts.ownerKey),
+  );
 
   // 1. Supported — proven useful since adoption.
   const supported = active
@@ -170,9 +197,13 @@ export function buildLessonsDigest(
     );
   }
 
-  // 2. Struggling — explicit negative signal only (drops, no positive).
+  // 2. Struggling — explicit NEGATIVE net signal only (drops strictly
+  //    outweigh any later use). An item dropped once and then cited again
+  //    (score 0) or cited more than dropped (score > 0) is contested, not
+  //    rejected — later execution evidence outranks the drop (review
+  //    r4341960962). Net-neutral items are never named (no signal ≠ negative).
   const struggling = active
-    .filter((i) => (i.support?.drops ?? 0) > 0 && supportScore(i) <= 0)
+    .filter((i) => (i.support?.drops ?? 0) > 0 && supportScore(i) < 0)
     .sort((a, b) => (b.support!.drops ?? 0) - (a.support!.drops ?? 0))
     .slice(0, opts.maxStruggling ?? 3);
   if (struggling.length > 0) {

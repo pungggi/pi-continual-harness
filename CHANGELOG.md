@@ -23,8 +23,11 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
     show them.
   - **Lessons digest** injected into the `/refine` steering prompt:
     evidence-gated sections for items proven useful (cited/kept), rejected
-    signals (dropped, unused since), and recent refine-run productivity.
-    Never-cited items are never named (no signal ≠ negative signal). Visible
+    signals (drops strictly outweighing later use — a drop followed by
+    re-citations is contested, not rejected), and recent refine-run
+    productivity. Never-cited items are never named (no signal ≠ negative
+    signal); the digest is scoped to the **active model's items** (per-model
+    isolation applies to what the improver is told). Visible
     any time via the new **`/harness lessons`** command.
   - **Scoped refine proposals**: the steering prompt classifies every create
     as invariant (cross-domain agentic behavior → `scope: "global"`) or
@@ -32,10 +35,12 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   - **History gate** for auto-refine: `autoRefine.refineNoOpSkip` (default 3,
     `0` disables) skips a cadenced refine when the last N refine runs all
     produced nothing durable. Runs before the classifier gate and costs
-    nothing; manual `/refine` bypasses it.
+    nothing; **bounded to one consecutive skip** so the gate can never latch
+    shut against later trajectory evidence; manual `/refine` bypasses it.
 - New exports for companion packages: `buildLessonsDigest`, `classifyRuns`,
   `isEffectiveRun`, `recentIneffectiveRuns`, `mergeSupport`, `renderSupport`,
-  `parseSupport`, `buildSteeringPrompt`, `DEFAULT_REFINE_NOOP_SKIP`, and the
+  `parseSupport`, `buildSteeringPrompt`, `DEFAULT_REFINE_NOOP_SKIP`,
+  `HISTORY_GATE_MAX_CONSECUTIVE_SKIPS`, and the
   `SupportInfo` type.
 - **`harness.schema.json`** — published JSON Schema for `harness.json`
   (same pattern as pi ≥ 1.2's published config schemas). Both doc examples

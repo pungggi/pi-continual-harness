@@ -25,6 +25,7 @@ import {
   reconstructFromDurable,
   renderSupport,
   setSessionProject,
+  snapshotState,
 } from "../src/store.js";
 import type { Delta } from "../src/types.js";
 
@@ -373,6 +374,29 @@ describe("support durable round-trip (renderSupport / parseSupport / durable fil
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("snapshotState (defensive copy for proposers)", () => {
+  beforeEach(reset);
+
+  it("clones nested support so a proposer cannot fabricate evidence in live state (review r4341960948)", () => {
+    const [c] = applyDeltas([{ op: "create", kind: "memory", content: "x", evidence: "e" }], vi.fn());
+    const id = c!.op === "create" ? c!.item.id : "";
+    bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
+    const live = getState().items[0]!;
+    expect(live.support?.citations).toBe(1);
+
+    const snap = snapshotState();
+    expect(snap.items[0]!.support).toEqual({ citations: 1, lastCitedAt: live.support!.lastCitedAt });
+    // Mutating the snapshot's nested counters (or adding them) must not leak.
+    snap.items[0]!.support!.citations = 999;
+    snap.items[0]!.support!.keeps = 999;
+    expect(live.support!.citations).toBe(1);
+    expect(live.support!.keeps).toBeUndefined();
+    // Same for plain-field mutation (the pre-existing guarantee).
+    snap.items[0]!.content = "tampered";
+    expect(getState().items[0]!.content).toBe("x");
   });
 });
 

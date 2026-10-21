@@ -155,14 +155,20 @@ export async function runRefine(
   // Inject a one-shot model completion (built from ctx) so dedicated-model
   // proposers can make a hidden LLM call. Undefined when no model is resolvable.
   const complete = buildComplete(ctx);
+  // The actor model (virtualBinding-aware): stamps direct-apply creates AND
+  // scopes the lessons digest (per-model isolation applies to what the
+  // improver is told, not just what it is shown — review r4341960955).
+  const branch = branchEntries(ctx);
+  const ownerKey = resolveBindingKey(ctx.model, branch, config.virtualBinding);
   // Inject the classifier adapter when `classifier.model` is configured and
   // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
   const classify = buildClassify(ctx, config.classifier?.model);
   // Harnessing-level recursion (Harness² arXiv 2610.14224): the improvement
   // process learns from what past improvement yielded. The digest is built
   // from evidence-gated signals only (citations, keeps/drops, refine-run
-  // outcomes) and stays empty when there is nothing supportable to say.
-  const lessons = buildLessonsDigest(getState(), branchEntries(ctx));
+  // outcomes), filtered to the ACTIVE MODEL's items (blank-harness isolation
+  // holds for lessons too), and stays empty when there is nothing to say.
+  const lessons = buildLessonsDigest(getState(), branch, { ownerKey: ownerKey ?? "" });
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
   const result = await proposer.propose({
@@ -178,8 +184,8 @@ export async function runRefine(
   // Stamp direct-apply create deltas with the active model so proposer-authored
   // notes bind to the model driving the turn (the steering path is stamped in
   // the harness_mutate tool instead). Orphans result only when the model is
-  // unknown; before_agent_start adopts them on the next turn.
-  const ownerKey = resolveBindingKey(ctx.model, branchEntries(ctx), config.virtualBinding);
+  // unknown; before_agent_start adopts them on the next turn. (ownerKey is
+  // resolved above, before the digest.)
 
   let applied = 0;
   let appliedDeltas: AppliedDelta[] = [];

@@ -69,6 +69,24 @@ describe("classifyRuns", () => {
     expect(isEffectiveRun(runs[1]!)).toBe(true);
   });
 
+  it("does not mis-credit the next run's direct-apply snapshot to the previous run (review r4341960980)", () => {
+    // runRefine writes a direct-apply run's harness-state snapshot BEFORE its
+    // own audit entry — a no-op steering run followed by a successful dedupe
+    // must count as exactly ONE productive run, not two.
+    const entries = [refineEntry({ applied: 0 }), stateEntry(), refineEntry({ applied: 1 })];
+    const runs = classifyRuns(entries);
+    expect(runs).toHaveLength(2);
+    expect(isEffectiveRun(runs[0]!)).toBe(false); // its window's state entry belongs to run 2
+    expect(isEffectiveRun(runs[1]!)).toBe(true); // applied: 1
+    expect(recentIneffectiveRuns(entries, 1)).toBe(false); // gate stays open on the effective run
+  });
+
+  it("still credits a genuine steering mutation between two no-op runs", () => {
+    const runs = classifyRuns([refineEntry({ applied: 0 }), stateEntry(), refineEntry({ applied: 0 })]);
+    expect(runs[0]!.followedByStateChange).toBe(true); // no direct-apply next → the entry is the steering mutation
+    expect(isEffectiveRun(runs[0]!)).toBe(true);
+  });
+
   it("tolerates malformed entries instead of throwing", () => {
     const runs = classifyRuns([{ type: "custom", customType: "harness-refinement" }, { type: "custom" }, null, 42]);
     expect(runs).toHaveLength(1);
@@ -144,6 +162,32 @@ describe("buildLessonsDigest", () => {
     // h_d's citations outweigh the drop → it belongs on the supported side.
     expect(digest).not.toContain("[h_d] (dropped");
     expect(digest).toContain("[h_d]");
+  });
+
+  it("an item dropped then cited afterwards is contested, not rejected (review r4341960962)", () => {
+    const s = stateOf([
+      item({ id: "h_flip", content: "dropped once, then actually used", support: { drops: 1, citations: 1, lastCitedAt: 99 } }),
+    ]);
+    const digest = buildLessonsDigest(s, []);
+    // Net-neutral: neither proven useful (score 0) nor rejected (not < 0) —
+    // later execution evidence outranks a single stale drop.
+    expect(digest).not.toContain("Rejected signals");
+    expect(digest).not.toContain("[h_flip]");
+    expect(digest).toBe("");
+  });
+
+  it("names only the ACTIVE MODEL's items when ownerKey is given (review r4341960955)", () => {
+    const s = stateOf([
+      item({ id: "h_mine", ownerModel: "test/main", support: { citations: 2 } }),
+      item({ id: "h_foreign", ownerModel: "other/model", support: { citations: 9, drops: 3 } }),
+    ]);
+    const digest = buildLessonsDigest(s, [], { ownerKey: "test/main" });
+    expect(digest).toContain("[h_mine]");
+    expect(digest).not.toContain("h_foreign");
+    // Unknown owner ("" = orphan-only view): foreign + owned items hidden.
+    expect(buildLessonsDigest(s, [], { ownerKey: "" })).toBe("");
+    // No ownerKey → caller opted out of the filter (e.g. /harness lessons).
+    expect(buildLessonsDigest(s, [])).toContain("h_foreign");
   });
 
   it("never names never-cited-never-dropped items (no signal is not a negative signal)", () => {

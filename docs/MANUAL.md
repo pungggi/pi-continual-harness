@@ -700,13 +700,17 @@ with:
 
 - **Proven useful** — active items with organic citations (outcome loop) or
   `/harness keep` feedback, strongest first.
-- **Rejected signals** — items dropped with no use since (candidates to
-  delete or rewrite). Never-cited-never-dropped items are **not** named:
-  no signal is not a negative signal.
+- **Rejected signals** — items whose drops strictly outweigh any later use
+  (candidates to delete or rewrite). A drop followed by re-citations is
+  contested, not rejected, and never-cited-never-dropped items are **not**
+  named: no signal is not a negative signal.
 - **Refine history** — how many of the last refine runs produced durable
   deltas vs. no-ops (the same runs the auto-refine history gate consults).
 
-Nothing to say (fresh store) → one guidance line instead of a blank dump.
+The digest is **scoped to the active model's items** (the same per-model
+isolation as injection — a fresh model is never fed foreign notes or told to
+delete ids it cannot mutate). Nothing to say (fresh store) → one guidance
+line instead of a blank dump.
 
 ---
 
@@ -941,7 +945,7 @@ preserves it.
 | `autoRefine.commit` | `false` | bool | Also flush durable state on each auto-refine. |
 | `autoRefine.gate` | `false` | bool | Classifier gate (pi ≥ 0.99, needs `classifier.model`): when the cadence elapses, one cheap yes/no question — "did the recent trajectory contain a durable, reusable correction?" — decides whether the refine runs. `false`/error → skip/fall back per [the gate contract](#auto-refine-src-auto-refinets). |
 | `autoRefine.omitStaleDrafts` | `true` | bool | Boundary-delivery hygiene (pi ≥ 0.87 context edits): omit prior auto-refine request drafts from future provider context so at most one (the newest) is model-visible. Idempotent; raw history and `/tree` rollback untouched. `false` keeps every draft in context. |
-| `autoRefine.refineNoOpSkip` | `3` | int ≥ 0 | **History gate** (harnessing-level recursion): skip a cadenced refine when the last N refine runs (any source) were ALL ineffective — no deltas applied and no state mutation followed. Runs before the classifier gate; `0` disables; manual `/refine` bypasses it. |
+| `autoRefine.refineNoOpSkip` | `3` | int ≥ 0 | **History gate** (harnessing-level recursion): skip a cadenced refine when the last N refine runs (any source) were ALL ineffective — no deltas applied and no state mutation followed. Runs before the classifier gate; bounded to 1 consecutive skip (the next cadence runs regardless, so the gate can never latch); `0` disables; manual `/refine` bypasses it. |
 | `outcomeImportance.enabled` | `false` | bool | Opt-in **autonomous** importance promotion. Off by default. |
 | `outcomeImportance.bump` | `0.03` | finite number | Per-reference importance bump. Non-numeric → default (coerced; prevents NaN corruption). |
 | `classifier.model` | *(unset)* | `"provider/id"` or bare id | Opt-in **classifier model** (pi ≥ 0.99) from the classifier catalog — e.g. `"typesafe/jev-latest"` or a local llama.cpp classifier. With pi ≥ 1.1.0 the catalog also offers OpenAI's GPT-6 Luna (Decisions API, e.g. `"openai/gpt-6-luna"`, needs `OPENAI_API_KEY`) and the native llama.cpp decision models (Julia-1, Laya, Kev, lev, OpenJev through `/v1/systemone`, llama.cpp ≥ 0.6.0 — listed only as classifiers, ideal as a free local gate). Enables classifier-confirmed dedupe (candidate pairs confirmed by one batched yes/no call; errors fall back to the rule-based plan) and the auto-refine `gate`. Unset/unresolvable → every classifier feature degrades to its no-classifier behavior. |
@@ -1170,7 +1174,11 @@ self-mutation**.
   (no deltas applied and no state mutation followed), the cadenced refine is
   skipped as a likely repeat no-op. This is the harnessing-level signal: a
   quiet trajectory keeps producing quiet refinements, so the gate stops
-  spending steering turns on it. Manual `/refine` bypasses the gate.
+  spending steering turns on it. **Bounded to one consecutive skip**: the
+  predicate only reads refine entries (a skip adds none), so without a bound
+  three no-ops could latch the gate shut forever — the cadence after a skip
+  always runs the refine, giving later trajectory evidence a bounded path in.
+  Manual `/refine` bypasses the gate.
 - First observed turn seeds the baseline (no auto-refine on the seed turn); each
   fired refine resets the counter (so the refine turn can't immediately
   re-trigger).

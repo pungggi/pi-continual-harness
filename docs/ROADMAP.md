@@ -158,7 +158,9 @@ already carries:
   layer from project noise.
 - **History gate**: `autoRefine.refineNoOpSkip` (default 3) skips a cadenced
   auto-refine when the last N refine runs were all ineffective — a free gate
-  that runs before the classifier gate. Manual `/refine` bypasses it.
+  that runs before the classifier gate, bounded to one consecutive skip so it
+  can never latch shut against later trajectory evidence. Manual `/refine`
+  bypasses it.
 
 Deferred by design: Harness²'s true probe step (re-execute under a candidate
 harness and contrast behavior) needs task re-execution infrastructure this

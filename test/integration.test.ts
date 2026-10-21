@@ -266,6 +266,9 @@ describe("/refine command", () => {
             items: [
               { id: "h_sup", kind: "memory", content: "run tests before pushing", evidence: "e", importance: 0.6, active: true, ownerModel: "test/main", support: { citations: 2, lastCitedAt: 1 }, createdAt: 1, updatedAt: 1 },
               { id: "h_quiet", kind: "memory", content: "unsupported note", evidence: "e", importance: 0.6, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
+              // Another model's note: per-model isolation applies to the digest
+              // too (review r4341960955) — never named, never "delete"-steered.
+              { id: "h_foreign", kind: "memory", content: "other models note", evidence: "e", importance: 0.9, active: true, ownerModel: "other/model", support: { citations: 7, lastCitedAt: 1 }, createdAt: 1, updatedAt: 1 },
             ],
           },
         },
@@ -279,10 +282,12 @@ describe("/refine command", () => {
 
     await commands.get("refine")!.handler("25", ctx());
     expect(sentMessages).toHaveLength(1);
-    // Supported item is named; the never-cited one is not (no signal ≠ negative).
+    // Supported OWN item is named; the never-cited one is not (no signal ≠
+    // negative); the foreign model's is not either (blank-harness isolation).
     expect(sentMessages[0]).toContain("## Lessons from past refines");
     expect(sentMessages[0]).toContain("[h_sup] (cited 2×)");
     expect(sentMessages[0]).not.toContain("h_quiet");
+    expect(sentMessages[0]).not.toContain("h_foreign");
   });
 
   it("omits the lessons section entirely when nothing is evidence-gated", async () => {
@@ -875,6 +880,28 @@ describe("/harness command", () => {
     expect(listed.content[0]!.text).toContain("support: kept 1×, dropped 1×");
   });
 
+  it("harness_mutate strips the server-only support field from model deltas (review r4341960971)", async () => {
+    const { pi, tools, ctx } = makeFakePi([]);
+    continualHarness(pi);
+    const mutate = tools.get("harness_mutate")!;
+    const exec = (deltas: unknown[]) =>
+      (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, { deltas }, undefined, undefined, ctx());
+
+    await exec([{ op: "create", kind: "memory", content: "x", evidence: "e" }]);
+    const id = getState().items[0]!.id;
+    // A schema-valid call (additionalProperties tolerated) trying to fabricate
+    // evidence: the field is dropped, not applied.
+    await exec([
+      { op: "update", id, content: "updated", support: { citations: 999, keeps: 999, drops: 999 } },
+    ]);
+    const item = getState().items[0]!;
+    expect(item.content).toBe("updated"); // the legit field applied
+    expect(item.support).toBeUndefined(); // the fabricated evidence did not
+    // Create-side: applyOne never reads support from a create delta either.
+    await exec([{ op: "create", kind: "memory", content: "y", evidence: "e", support: { citations: 42 } }]);
+    expect(getState().items[1]!.support).toBeUndefined();
+  });
+
   it("/harness lessons prints the evidence-gated digest (or a distinct empty state)", async () => {
     const { pi, commands, ctx, notifications } = makeFakePi([]);
     continualHarness(pi);
@@ -1101,7 +1128,52 @@ describe("runRefine + auto-refine", () => {
     }
   });
 
-  it("history gate: one effective run in the window lifts it (refine proceeds)", async () => {
+  it("history gate: BOUNDED — the cadence after a skip always runs the refine (review r4341960942)", async () => {
+    resetAutoRefine();
+    resetConfigCache();
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-histgate-bound-"));
+    const cfgFile = join(dir, "harness.json");
+    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1 } }));
+    await loadConfig(cfgFile);
+    try {
+      const noOpRun = (t: number) => ({
+        type: "custom",
+        customType: "harness-refinement",
+        data: { source: "auto", proposer: "steering", applied: 0, startedAt: t },
+      });
+      // Branch already ends with 3 ineffective runs → the window says "skip".
+      const branch = [
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        noOpRun(1),
+        noOpRun(2),
+        noOpRun(3),
+      ];
+      const { pi, fire, ctx, entries, notifications } = makeFakePi(branch);
+      continualHarness(pi);
+
+      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx()); // seed
+      // Cadence 1: history gate skips (1/1 consecutive).
+      await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx());
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(0);
+      expect(notifications.some((n) => n.msg.includes("history gate"))).toBe(true);
+      // Cadence 2: the SAME still-all-ineffective window cannot skip again —
+      // the refine runs, so later trajectory evidence always gets its turn.
+      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true } }, ctx())) as Array<{
+        continue?: boolean;
+      } | undefined>;
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
+      expect(rets.some((r) => r && r.continue === true)).toBe(true);
+      // Budget spent → cadence 3 can skip again (alternating worst case).
+      await fire("turn_end", { type: "turn_end", turnIndex: 3, entries: [], context: { canContinue: true } }, ctx());
+      expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
+    } finally {
+      resetAutoRefine();
+      resetConfigCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("history gate: ONE effective run in the window lifts it (refine proceeds)", async () => {
     resetAutoRefine();
     resetConfigCache();
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-histgate2-"));

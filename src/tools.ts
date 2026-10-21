@@ -93,12 +93,26 @@ export async function executeHarnessMutate(
   params: HarnessMutateParams,
 ): Promise<AgentToolResult<unknown>> {
   const incoming = params.deltas as Delta[];
+  // `support` is SERVER-ONLY (review r4341960971): the update shape tolerates
+  // additional properties, so a schema-valid call could otherwise carry
+  // `support: { citations: 999 }` and fabricate execution/human-feedback
+  // evidence for the lessons digest. Strip it at the tool boundary — the only
+  // model-facing write path. Internal writers (dedupe merge, keep/drop,
+  // outcome loop) call applyDeltas directly and keep it.
+  const deltas = incoming.map((d): Delta => {
+    if (d.op === "update" && "support" in d) {
+      const copy = { ...d };
+      delete copy.support;
+      return copy;
+    }
+    return d;
+  });
   // The active model is the ACTOR: creates bind to it, and update/delete are
   // scoped to it (per-model isolation). When the active model is unknown (no
   // turn started) there is no actor — creates become orphans, adopted next
   // turn, and update/delete are unscoped (graceful fallback).
   const applied: AppliedDelta[] = applyDeltas(
-    incoming,
+    deltas,
     (snapshot, ver) => {
       pi.appendEntry("harness-state", { state: snapshot, version: ver });
     },

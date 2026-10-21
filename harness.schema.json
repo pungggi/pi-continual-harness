@@ -65,7 +65,7 @@
           "type": "integer",
           "minimum": 0,
           "default": 3,
-          "description": "History gate: skip a cadenced refine when the last N refine runs (any source) were all ineffective (no deltas applied, no state mutation followed). 0 disables. Manual /refine bypasses the gate."
+          "description": "History gate: skip a cadenced refine when the last N refine runs (any source) were all ineffective (no deltas applied, no state mutation followed). Bounded to 1 consecutive skip so the gate can never latch shut against later evidence. 0 disables. Manual /refine bypasses the gate."
         }
       }
     },

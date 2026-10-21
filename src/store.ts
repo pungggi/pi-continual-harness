@@ -84,11 +84,16 @@ export function getState(): HarnessState {
   return state;
 }
 
-/** A defensive deep-enough copy of current state (items are flat). Use when
- *  handing state to untrusted/external code (e.g. a DeltaProposer) so it cannot
- *  mutate the live store outside applyDeltas. */
+/** A defensive deep-enough copy of current state. Use when handing state to
+ *  untrusted/external code (e.g. a DeltaProposer) so it cannot mutate the
+ *  live store outside applyDeltas. Items are flat EXCEPT the nested
+ *  `support` counters — those are cloned too, or a proposer could fabricate
+ *  citation/keep/drop evidence by mutating `items[0].support` in place
+ *  (review r4341960948). */
 export function snapshotState(): HarnessState {
-  return { items: state.items.map((i) => ({ ...i })) };
+  return {
+    items: state.items.map((i) => (i.support ? { ...i, support: { ...i.support } } : { ...i })),
+  };
 }
 
 export function listItems(kind?: ComponentKind): HarnessItem[] {

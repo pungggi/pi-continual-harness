@@ -271,7 +271,14 @@ schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
   also flushes durable state on each run. `gate: true` (needs `classifier.model`)
   asks the classifier first whether the recent trajectory contains a durable,
   reusable correction and skips the refine when it does not — cadence becomes
-  signal, not just time (errors fall back to the plain cadence). The steering
+  signal, not just time (errors fall back to the plain cadence).
+  `refineNoOpSkip` (default 3, `0` disables) is a free **history gate** that
+  runs first: when the last N refine runs (any source) all produced nothing
+  durable, the cadenced refine is skipped as a likely repeat no-op. It is
+  **bounded**: at most one consecutive cadence is skipped on history grounds,
+  so the gate can never latch shut — later trajectory evidence always gets a
+  refine within one cadence (and manual `/refine` never consults the gate).
+  The steering
   prompt is delivered via the pi ≥ 0.87 actionable `turn_end` boundary (a
   structural `harness.auto-refine-request` entry + `continue: true`), not a
   synthetic user message. Aborted/error turns (pi `turn_end`
@@ -331,10 +338,13 @@ supports it. Four pieces implement this without any extra model calls:
   keeper, and durable export/import round-trips them (`support:` sub-line), so
   feedback survives restarts. See them with `/harness list -f`.
 - **Lessons digest.** `/refine` steers with a compact, evidence-gated digest:
-  items proven useful (cited or kept), rejected signals (dropped, never used
-  since), and how productive recent refine runs were. Never-cited items are
-  NOT named: no signal is not a negative signal. `/harness lessons` prints the
-  exact digest the next `/refine` will use. Why: the improver starts from
+  items proven useful (cited or kept), rejected signals (drops that strictly
+  outweigh any later use — a drop followed by re-citations is contested, not
+  rejected), and how productive recent refine runs were. Never-cited items are
+  NOT named: no signal is not a negative signal. The digest is **scoped to the
+  active model's items** — per-model isolation applies to what the improver is
+  told, not just what it is shown. `/harness lessons` prints the exact digest
+  the next `/refine` will use. Why: the improver starts from
   what worked instead of re-deriving it, and stops re-creating rejected notes.
 - **Scoped proposals.** The `/refine` steering prompt classifies every create
   as **invariant** (cross-domain agentic behavior → `scope: "global"`) or
@@ -342,7 +352,8 @@ supports it. Four pieces implement this without any extra model calls:
   Harness²'s ablation shows this scoping is load-bearing; here it also keeps
   the global layer free of project noise.
 - **History gate.** Auto-refine skips a cadenced run when the last
-  `refineNoOpSkip` refine runs all produced nothing durable (see
+  `refineNoOpSkip` refine runs all produced nothing durable, **bounded to one
+  consecutive skip** so later evidence always gets a chance (see
   `autoRefine` in [Configuration](#configuration)).
 
 ## How it works
