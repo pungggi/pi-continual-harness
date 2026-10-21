@@ -129,6 +129,11 @@ The model-facing tools:
   project slug is stamped server-side from the session cwd — used by
   `/harness split`; normally managed via `/harness move`).
 
+In **codemode** (pi ≥ 1.2), these tools' input constraints render as `@`
+tags on property comments — `importance` shows `@minimum 0 @maximum 1`, the
+batch cap shows `@maxItems 20` — because the tool schemas already declare
+them. Scripts see the limits without the descriptions repeating them.
+
 Active items are injected into the system prompt each turn as a structured
 block, appended to (never replacing) the base prompt.
 
@@ -180,18 +185,26 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
   "autoImport": false,
   "importRemind": { "enabled": true, "everyTurns": 25 },
   "proposer": "steering",
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
   "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
-  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false },
+  "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "classifier": { "model": "typesafe/jev-latest" },
   "virtualBinding": "virtual"
 }
 ```
+
+**Editor validation**: add `"$schema":
+"https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json"`
+to the file for completion and validation in editors that support JSON
+schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
+`models.json`). The loader ignores unknown keys — `$schema` included — and a
+`/harness setup` rewrite preserves it.
 
 - **`autoImport`** — opt-in **durable sync** (off by default). `true` bundles
   both directions: on `session_start` the durable layers are imported

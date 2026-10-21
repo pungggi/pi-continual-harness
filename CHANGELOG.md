@@ -37,6 +37,19 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `isEffectiveRun`, `recentIneffectiveRuns`, `mergeSupport`, `renderSupport`,
   `parseSupport`, `buildSteeringPrompt`, `DEFAULT_REFINE_NOOP_SKIP`, and the
   `SupportInfo` type.
+- **`harness.schema.json`** — published JSON Schema for `harness.json`
+  (same pattern as pi ≥ 1.2's published config schemas). Both doc examples
+  now start with a `$schema` line pointing at the raw GitHub URL; the schema
+  also ships inside the npm package (`files`). The loader already ignores
+  unknown keys — `$schema` included — and `/harness setup` rewrites preserve
+  it; a new test pins both behaviors.
+
+### Changed
+
+- README: noted that codemode (pi ≥ 1.2) renders the harness tools' input
+  constraints as `@` tags on property comments (`@minimum 0 @maximum 1` on
+  `importance`, `@maxItems 20` on the batch cap) — already declared by the
+  tool schemas, so scripts see the limits for free.
 
 ## [0.19.0] — 2026-10-16
 
