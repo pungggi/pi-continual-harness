@@ -17,6 +17,7 @@ import {
   type HarnessMutateParams,
 } from "./schemas.js";
 import { applyDeltas, getActiveModelKey, getState, listItems } from "./store.js";
+import { supportSummary } from "./list.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
 export type { HarnessListParams, HarnessMutateParams };
@@ -56,10 +57,12 @@ export async function executeHarnessList(params: HarnessListParams): Promise<Age
           items.length === 0
             ? emptyListMessage(kind, ownerKey)
             : items
-                .map(
-                  (i) =>
-                    `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}, model ${i.ownerModel || "(orphan)"}) ${i.content}\n  evidence: ${i.evidence}`,
-                )
+                .map((i) => {
+                  // Same support line as /harness list -f: feedback signals the
+                  // agent should see when grounding its next deltas.
+                  const sup = supportSummary(i.support);
+                  return `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}, model ${i.ownerModel || "(orphan)"}) ${i.content}\n  evidence: ${i.evidence}${sup ? `\n  ${sup}` : ""}`;
+                })
                 .join("\n"),
       },
     ],

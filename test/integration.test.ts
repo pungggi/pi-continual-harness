@@ -864,6 +864,15 @@ describe("/harness command", () => {
     expect(getState().items[0]!.importance).toBeCloseTo(0.5);
     // The human signals land in the support counters (Harness² retention evidence).
     expect(getState().items[0]!.support).toEqual({ keeps: 1, drops: 1 });
+    // harness_list text surfaces the support line for the agent (like list -f).
+    const listed = (await (tools.get("harness_list")!.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      ctx(),
+    )) as { content: Array<{ text: string }> };
+    expect(listed.content[0]!.text).toContain("support: kept 1×, dropped 1×");
   });
 
   it("/harness lessons prints the evidence-gated digest (or a distinct empty state)", async () => {
