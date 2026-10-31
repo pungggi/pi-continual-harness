@@ -29,7 +29,6 @@
 // harness.json { "autoImport": true } (see durable.ts).
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { HARNESS_COMMAND_DESCRIPTION } from "./command-meta.js";
 import { stat } from "node:fs/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -43,9 +42,10 @@ import {
   getActiveModelKey,
   getState,
   importDurableLayers,
+  makePersist,
   modelKey,
-  PROJECT_DURABLE_DIR,
   reconstructFromDurable,
+  type DurableImportResult,
 } from "./store.js";
 import {
   defaultScopeForPath,
@@ -54,8 +54,9 @@ import {
   projectDurablePath,
   projectSlug,
 } from "./config.js";
-import { KIND_LABEL } from "./types.js";
+import { KEEP_DROP_BUMP, KIND_LABEL, KIND_ORDER } from "./types.js";
 import type { ComponentKind, Delta, HarnessItem } from "./types.js";
+import { MAX_DELTAS } from "./schemas.js";
 import { branchEntries, resolveBindingKey } from "./vmodel.js";
 import { buildCorpus } from "./corpus.js";
 import { buildStatusReport, renderStatusReport } from "./status.js";
@@ -63,6 +64,7 @@ import { getInjectionStats } from "./inject.js";
 import { nextHint } from "./hints.js";
 import { preview, renderListReport, type ListScope } from "./list.js";
 import { buildLessonsDigest } from "./lessons.js";
+import { defaultLayerPaths } from "./durable.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
@@ -73,22 +75,44 @@ interface CompletionEntry {
 
 const SUBCOMMANDS: CompletionEntry[] = [
   { name: "import", description: "Import durable state, layered (--prune to prune stale items)" },
-  { name: "export", description: "Export active items to durable layers (or one file with a path)" },
-  { name: "export-corpus", description: "Export calibration corpus JSONL for pi-reflex (dedupe pairs + lifecycle)" },
-  { name: "status", description: "Show harness status (counts, audit-trail impact, injection stats, durable layers)" },
-  { name: "list", description: "Read items — compact rows, -f for full text (--kind/--scope filter)" },
+  {
+    name: "export",
+    description: "Export active items to durable layers (or one file with a path)",
+  },
+  {
+    name: "export-corpus",
+    description: "Export calibration corpus JSONL for pi-reflex (dedupe pairs + lifecycle)",
+  },
+  {
+    name: "status",
+    description:
+      "Show harness status (counts, audit-trail impact, injection stats, durable layers)",
+  },
+  {
+    name: "list",
+    description: "Read items — compact rows, -f for full text (--kind/--scope filter)",
+  },
   { name: "prune", description: "Decay & prune inactive items (--decay <days>)" },
   { name: "keep", description: "Bump item importance (+0.1)" },
   { name: "drop", description: "Lower item importance (−0.1)" },
   { name: "move", description: "Move an item between durable scopes (global | project)" },
   { name: "split", description: "Steer the agent to classify every item global vs project" },
-  { name: "adopt", description: "Steer the agent to adopt another model's items (--from <provider/id> [--all])" },
+  {
+    name: "adopt",
+    description: "Steer the agent to adopt another model's items (--from <provider/id> [--all])",
+  },
   { name: "push-mem", description: "Persist active items to pi-mem (--all, --kind, --model)" },
-  { name: "setup", description: "Guided config wizard — presets: quiet | recommended | power (--yes for scripted)" },
-  { name: "lessons", description: "Evidence-gated lessons from past refines (the digest /refine steers with)" },
+  {
+    name: "setup",
+    description: "Guided config wizard — presets: quiet | recommended | power (--yes for scripted)",
+  },
+  {
+    name: "lessons",
+    description: "Evidence-gated lessons from past refines (the digest /refine steers with)",
+  },
 ];
 
-const KINDS: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
+// KIND_ORDER (types.ts) is the one kind list; KIND_LABEL supplies menu labels.
 
 /** `--scope` values /harness list offers (semantics in src/list.ts). */
 const LIST_SCOPES: Array<{ value: ListScope; description: string }> = [
@@ -103,16 +127,19 @@ const FLAGS: Record<string, CompletionEntry[]> = {
   prune: [{ name: "--decay", description: "Decay items not updated for <days> before pruning" }],
   "push-mem": [
     { name: "--all", description: "Push every active item, not just memories" },
-    { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
-    { name: "--model", description: "Limit to one owner model (provider/id or \"active\")" },
+    { name: "--kind", description: `Limit to one kind (${KIND_ORDER.join("|")})` },
+    { name: "--model", description: 'Limit to one owner model (provider/id or "active")' },
   ],
   adopt: [
-    { name: "--from", description: "Source model (provider/id) whose active items are up for adoption" },
+    {
+      name: "--from",
+      description: "Source model (provider/id) whose active items are up for adoption",
+    },
     { name: "--all", description: "Adopt everything; skip the generalizes-vs-stays filter" },
   ],
   list: [
     { name: "-f", description: "Full item text + evidence instead of the compact preview rows" },
-    { name: "--kind", description: `Limit to one kind (${KINDS.join("|")})` },
+    { name: "--kind", description: `Limit to one kind (${KIND_ORDER.join("|")})` },
     { name: "--scope", description: "global | project | all (default: global + this project)" },
   ],
   setup: [
@@ -154,17 +181,36 @@ function completions(argumentPrefix: string) {
   if (before.length === 0) return filterSubcommands(last.toLowerCase());
 
   const sub = before[0]!.toLowerCase();
-  // Flag-value completion: the token right before the one being typed.
-  const prev = before.at(-1)!;
+  const values = completeFlagValue(sub, before.at(-1)!, last, before, fresh);
+  if (values !== null) return values;
+  return completePositional(sub, last, before);
+}
+
+/** Flag-VALUE completion: the token right before the one being typed names a
+ *  value flag (--kind/--model/--preset/--scope/--from). Returns the matching
+ *  value menu, or null when the previous token is not a value flag. */
+function completeFlagValue(
+  sub: string,
+  prev: string,
+  last: string,
+  before: string[],
+  fresh: boolean,
+): ReturnType<typeof filterValues> {
   if (prev === "--kind" && (sub === "push-mem" || sub === "list")) {
     return filterValues(
-      KINDS.map((k) => ({ value: k, description: KIND_LABEL[k] })),
+      KIND_ORDER.map((k) => ({ value: k, description: KIND_LABEL[k] })),
       last,
       before,
     );
   }
   if (prev === "--model" && sub === "push-mem") {
-    const owners = [...new Set(getState().items.filter((i) => i.active && i.ownerModel).map((i) => i.ownerModel))];
+    const owners = [
+      ...new Set(
+        getState()
+          .items.filter((i) => i.active && i.ownerModel)
+          .map((i) => i.ownerModel),
+      ),
+    ];
     return filterValues(
       [
         { value: "active", description: "The model driving this command" },
@@ -185,15 +231,16 @@ function completions(argumentPrefix: string) {
   // line — the same store-backed completion style as --model above.
   if (prev === "--from" && sub === "adopt") {
     return filterValues(
-      [...activeOwnerCounts().entries()].map(
-        ([m, n]) => ({ value: m, description: `${n} active item(s) owned by this model` }),
-      ),
+      [...activeOwnerCounts().entries()].map(([m, n]) => ({
+        value: m,
+        description: `${n} active item(s) owned by this model`,
+      })),
       last,
       before,
     );
   }
 
-  // Flag completion ("-" prefix, or a fresh token for flag-taking subs —
+  // Flag NAME completion ("-" prefix, or a fresh token for flag-taking subs —
   // the "-" prefix also matches short flags like list's -f). A fresh
   // --kind/--scope/--model value was already completed above (early
   // return), so a fresh token here means "offer the remaining flags".
@@ -207,11 +254,24 @@ function completions(argumentPrefix: string) {
     const rows = (Object.hasOwn(FLAGS, sub) ? FLAGS[sub]! : []).filter((f) => !used.has(f.name));
     const items = rows
       .filter((f) => f.name.startsWith(last))
-      .map((f) => ({ value: [...before, f.name].join(" "), label: f.name, description: f.description }));
+      .map((f) => ({
+        value: [...before, f.name].join(" "),
+        label: f.name,
+        description: f.description,
+      }));
     return items.length > 0 ? items : null;
   }
+  return null;
+}
 
-  // Positional id completion for keep/drop/move: the first argument they take.
+/** Positional completion: item ids for keep/drop/move (and the target scope
+ *  for move's second positional). Returns null for path/number/free-text
+ *  arguments — no menu is better than a wrong one. */
+function completePositional(
+  sub: string,
+  last: string,
+  before: string[],
+): ReturnType<typeof filterValues> {
   if (sub === "keep" || sub === "drop" || sub === "move") {
     const positionals = before.slice(1).filter((t) => !t.startsWith("--"));
     // move takes a second positional: the target scope.
@@ -220,8 +280,14 @@ function completions(argumentPrefix: string) {
       if (positionals.length === 1) {
         return filterValues(
           [
-            { value: "global", description: "The shared durable file (~/.pi/agent/harness-state.md)" },
-            { value: "project", description: "This project's durable file (harness-state/<slug>.md)" },
+            {
+              value: "global",
+              description: "The shared durable file (~/.pi/agent/harness-state.md)",
+            },
+            {
+              value: "project",
+              description: "This project's durable file (harness-state/<slug>.md)",
+            },
           ],
           last,
           before,
@@ -239,7 +305,6 @@ function completions(argumentPrefix: string) {
       }));
     return items.length > 0 ? items : null;
   }
-
   // Everything else is a path/number/free-text argument — no menu.
   return null;
 }
@@ -261,7 +326,11 @@ function filterValues(
 ) {
   const items = rows
     .filter((r) => r.value.startsWith(prefix))
-    .map((r) => ({ value: [...before, r.value].join(" "), label: r.value, description: r.description }));
+    .map((r) => ({
+      value: [...before, r.value].join(" "),
+      label: r.value,
+      description: r.description,
+    }));
   return items.length > 0 ? items : null;
 }
 
@@ -290,10 +359,10 @@ export async function runHarnessCommand(
       await handlePrune(pi, ctx, rest);
       return;
     case "keep":
-      await handleBump(pi, ctx, rest, 0.1, "keep");
+      await handleBump(pi, ctx, rest, KEEP_DROP_BUMP, "keep");
       return;
     case "drop":
-      await handleBump(pi, ctx, rest, -0.1, "drop");
+      await handleBump(pi, ctx, rest, -KEEP_DROP_BUMP, "drop");
       return;
     case "move":
       await handleMove(pi, ctx, rest);
@@ -316,7 +385,6 @@ export async function runHarnessCommand(
     case "list":
       await handleList(ctx, rest);
       return;
-    case "status":
     default:
       await handleStatus(ctx);
       return;
@@ -328,17 +396,60 @@ export function harnessCompletions(argumentPrefix: string) {
   return completions(argumentPrefix);
 }
 
-export function registerHarness(pi: ExtensionAPI): void {
-  pi.registerCommand("harness", {
-    description: HARNESS_COMMAND_DESCRIPTION,
-    handler: (args, ctx) => runHarnessCommand(pi, args, ctx),
-    getArgumentCompletions: (argumentPrefix) => completions(argumentPrefix),
-  });
-}
-
 /** Explicit path argument, if any (flags like --prune are skipped). */
 function explicitPath(rest: string[]): string | undefined {
   return rest.find((a) => !a.startsWith("-"));
+}
+
+// ---- strict flag parsing (the no-silent-fallback rule) ----------------------
+//
+// handleList documents the rule: "invalid flag values AND unexpected arguments
+// warn instead of silently falling back — a filter that quietly ignores its
+// own argument would make the listing lie." These helpers give every other
+// subcommand the same semantics.
+
+/** Read `--flag <value>` where the value must be one of `values`.
+ *  Returns the value, undefined when the flag is absent, or "invalid" when it
+ *  is present but its value is missing, looks like another flag, or is not
+ *  allowed — the caller warns and aborts on "invalid", never guesses. */
+function enumFlagValue(
+  rest: string[],
+  flag: string,
+  values: readonly string[],
+): string | undefined | "invalid" {
+  const i = rest.indexOf(flag);
+  if (i < 0) return undefined;
+  const v = rest[i + 1];
+  return v !== undefined && !v.startsWith("-") && values.includes(v) ? v : "invalid";
+}
+
+/** Read `--flag <number>` where the number must be finite and > 0. Same
+ *  absent / invalid contract as enumFlagValue. */
+function positiveNumberFlagValue(rest: string[], flag: string): number | undefined | "invalid" {
+  const i = rest.indexOf(flag);
+  if (i < 0) return undefined;
+  const v = rest[i + 1];
+  const n = Number(v);
+  return v !== undefined && !v.startsWith("-") && Number.isFinite(n) && n > 0 ? n : "invalid";
+}
+
+/** Read `--flag <freeform-value>` (e.g. --model, whose values are not
+ *  enumerable). Same absent / invalid contract; any non-flag token is valid. */
+function stringFlagValue(rest: string[], flag: string): string | undefined | "invalid" {
+  const i = rest.indexOf(flag);
+  if (i < 0) return undefined;
+  const v = rest[i + 1];
+  return v !== undefined && !v.startsWith("-") ? v : "invalid";
+}
+
+/** Non-flag tokens in `rest` (flag VALUES are excluded by name). */
+function positionals(rest: string[], valueFlags: string[] = []): string[] {
+  const skip = new Set<string>();
+  for (const f of valueFlags) {
+    const i = rest.indexOf(f);
+    if (i >= 0) skip.add(rest[i + 1] ?? "");
+  }
+  return rest.filter((t) => !t.startsWith("-") && !skip.has(t));
 }
 
 /** `/harness list [-f] [--kind <kind>] [--scope <global|project|all>]`
@@ -353,8 +464,8 @@ async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise
   const kindIdx = rest.indexOf("--kind");
   if (kindIdx >= 0) {
     const k = kindIdx + 1 < rest.length ? rest[kindIdx + 1]! : undefined;
-    if (!k || k.startsWith("-") || !KINDS.includes(k as ComponentKind)) {
-      ctx.ui.notify(`/harness list: --kind expects one of ${KINDS.join("|")}.`, "warning");
+    if (!k || k.startsWith("-") || !KIND_ORDER.includes(k as ComponentKind)) {
+      ctx.ui.notify(`/harness list: --kind expects one of ${KIND_ORDER.join("|")}.`, "warning");
       return;
     }
     kind = k as ComponentKind;
@@ -373,8 +484,14 @@ async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise
   // repeated flags) warn too — the same no-silent-fallback rule as invalid
   // values. Anything but -f, --kind <value>, --scope <value> is refused.
   const consumed = new Set<number>();
-  if (kindIdx >= 0) { consumed.add(kindIdx); consumed.add(kindIdx + 1); }
-  if (scopeIdx >= 0) { consumed.add(scopeIdx); consumed.add(scopeIdx + 1); }
+  if (kindIdx >= 0) {
+    consumed.add(kindIdx);
+    consumed.add(kindIdx + 1);
+  }
+  if (scopeIdx >= 0) {
+    consumed.add(scopeIdx);
+    consumed.add(scopeIdx + 1);
+  }
   const unexpected = rest.filter((t, idx) => t !== "-f" && !consumed.has(idx));
   if (unexpected.length > 0) {
     ctx.ui.notify(
@@ -403,24 +520,28 @@ async function handleImport(
   const explicit = explicitPath(rest);
   ctx.ui.setStatus("harness", `Importing durable state${prune ? " (prune)" : ""}…`);
   try {
-    let res;
+    let res: DurableImportResult;
     if (explicit) {
       // Single-file semantics; untagged items adopt the layer the path
-      // represents (global file → global; project dir → that project).
-      const defaultScope = defaultScopeForPath(explicit);
-      res = await reconstructFromDurable(explicit, { prune }, (snapshot, ver) => {
-        pi.appendEntry("harness-state", { state: snapshot, version: ver });
-      }).then((r) => ({ ...r, path: explicit }));
+      // represents (global file → global; project dir → that project). The
+      // defaultScope used to be computed here and never threaded through —
+      // every explicit-path import silently defaulted to global instead.
+      res = await reconstructFromDurable(
+        explicit,
+        { prune, defaultScope: defaultScopeForPath(explicit) },
+        makePersist(pi),
+      ).then((r) => ({ ...r, path: explicit }));
       if (res.missingFile) {
-        ctx.ui.notify(`No durable file at ${explicit}. Run /refine --commit or /harness export first.`, "warning");
+        ctx.ui.notify(
+          `No durable file at ${explicit}. Run /refine --commit or /harness export first.`,
+          "warning",
+        );
         return;
       }
     } else {
       // Layered: global always + the current project's file, merged in one
       // pass (project wins id collisions; --prune is union-scoped).
-      res = await importDurableLayers(layerFilesFor(ctx.cwd), { prune }, (snapshot, ver) => {
-        pi.appendEntry("harness-state", { state: snapshot, version: ver });
-      });
+      res = await importDurableLayers(layerFilesFor(ctx.cwd), { prune }, makePersist(pi));
       if (res.missingFile) {
         ctx.ui.notify(
           `No durable files at ${DEFAULT_DURABLE_PATH} (or ${projectDurablePath(ctx.cwd)}). Run /refine --commit or /harness export first.`,
@@ -450,12 +571,12 @@ async function handleExport(ctx: ExtensionCommandContext, rest: string[]): Promi
       ctx.ui.notify(`Exported ${n} active item(s) to ${written}`, "info");
     } else {
       // Layered: partition by each item's own scope.
-      const written = await exportDurableLayers(
-        { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR },
-        projectSlug(ctx.cwd),
-      );
+      const written = await exportDurableLayers(defaultLayerPaths(), projectSlug(ctx.cwd));
       const n = getState().items.filter((i) => i.active).length;
-      ctx.ui.notify(`Exported ${n} active item(s) to ${written.length} layer file(s): ${written.join(", ")}`, "info");
+      ctx.ui.notify(
+        `Exported ${n} active item(s) to ${written.length} layer file(s): ${written.join(", ")}`,
+        "info",
+      );
     }
   } catch (err) {
     ctx.ui.notify(`Harness export failed: ${(err as Error).message}`, "error");
@@ -500,19 +621,17 @@ async function handlePrune(
   ctx: ExtensionCommandContext,
   rest: string[],
 ): Promise<void> {
-  let decayAfterDays: number | undefined;
-  const idx = rest.indexOf("--decay");
-  if (idx >= 0) {
-    const n = Number(rest[idx + 1]);
-    decayAfterDays = Number.isFinite(n) && n > 0 ? n : undefined;
+  const decay = positiveNumberFlagValue(rest, "--decay");
+  if (decay === "invalid") {
+    ctx.ui.notify("/harness prune: --decay expects a positive number of days.", "warning");
+    return;
   }
+  const decayAfterDays = decay;
   ctx.ui.setStatus("harness", "Pruning…");
   try {
     const options: { decayAfterDays?: number; decayStep?: number } = { decayStep: 0.1 };
     if (decayAfterDays !== undefined) options.decayAfterDays = decayAfterDays;
-    const res = decayAndPrune(options, (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    });
+    const res = decayAndPrune(options, makePersist(pi));
     const bits = [`${res.pruned} pruned`];
     if (decayAfterDays !== undefined) bits.push(`${res.decayed} decayed (>${decayAfterDays}d)`);
     ctx.ui.notify(`Harness: ${bits.join(", ")}.`, "info");
@@ -529,7 +648,8 @@ async function handleBump(
   delta: number,
   label: string,
 ): Promise<void> {
-  const id = rest.find((a) => a && !a.startsWith("-"));
+  const args = positionals(rest);
+  const id = args[0];
   if (!id) {
     ctx.ui.notify(
       `/harness ${label} requires an item id (see /harness status or harness_list).`,
@@ -537,12 +657,17 @@ async function handleBump(
     );
     return;
   }
+  if (args.length > 1) {
+    ctx.ui.notify(
+      `/harness ${label}: unexpected argument(s): ${args.slice(1).join(" ")} — it takes exactly one item id.`,
+      "warning",
+    );
+    return;
+  }
   const item = bumpImportance(
     id,
     delta,
-    (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    },
+    makePersist(pi),
     // Record the human signal in the support counters (keep/drop).
     { support: label === "keep" ? "keep" : "drop" },
   );
@@ -550,8 +675,10 @@ async function handleBump(
     ctx.ui.notify(`No harness item with id ${id}.`, "warning");
     return;
   }
-  const preview = item.content.length > 60 ? `${item.content.slice(0, 60)}…` : item.content;
-  ctx.ui.notify(`${label}: "${preview}" → importance ${item.importance.toFixed(2)}`, "info");
+  ctx.ui.notify(
+    `${label}: "${preview(item.content)}" → importance ${item.importance.toFixed(2)}`,
+    "info",
+  );
 }
 
 /** /harness move <id> <global|project> — flip an item's durable layer.
@@ -563,11 +690,21 @@ async function handleMove(
   ctx: ExtensionCommandContext,
   rest: string[],
 ): Promise<void> {
-  const positionals = rest.filter((a) => a && !a.startsWith("-"));
-  const id = positionals[0];
-  const scope = positionals[1];
+  const args = positionals(rest);
+  const id = args[0];
+  const scope = args[1];
   if (!id || (scope !== "global" && scope !== "project")) {
-    ctx.ui.notify(`/harness move requires: <id> <global|project> (ids via /harness status).`, "warning");
+    ctx.ui.notify(
+      `/harness move requires: <id> <global|project> (ids via /harness status).`,
+      "warning",
+    );
+    return;
+  }
+  if (args.length > 2) {
+    ctx.ui.notify(
+      `/harness move: unexpected argument(s): ${args.slice(2).join(" ")} — it takes <id> <global|project>.`,
+      "warning",
+    );
     return;
   }
   const delta: Delta =
@@ -575,14 +712,9 @@ async function handleMove(
       ? { op: "update", id, scope, project: projectSlug(ctx.cwd) }
       : { op: "update", id, scope };
   try {
-    const [applied] = applyDeltas([delta], (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    });
+    const [applied] = applyDeltas([delta], makePersist(pi));
     if (applied?.op === "update") {
-      const target =
-        scope === "project"
-          ? `project "${applied.after.project ?? ""}"`
-          : "global";
+      const target = scope === "project" ? `project "${applied.after.project ?? ""}"` : "global";
       ctx.ui.notify(
         `Moved ${id} → ${target}: "${preview(applied.after.content)}" (run /harness export to update the layer files).`,
         "info",
@@ -636,8 +768,13 @@ async function handleSplit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Prom
   }
   // deliverAs "followUp": queue behind any in-flight run (pi ≥ 1.2 busy window
   // starts at run start; a bare send would throw) rather than steering mid-task.
-  pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd), { deliverAs: "followUp" });
-  ctx.ui.notify(`Steering agent to classify ${items.length} item(s) global vs project "${projectSlug(ctx.cwd)}".`, "info");
+  pi.sendUserMessage(buildSplitPrompt(items, projectSlug(ctx.cwd), ctx.cwd), {
+    deliverAs: "followUp",
+  });
+  ctx.ui.notify(
+    `Steering agent to classify ${items.length} item(s) global vs project "${projectSlug(ctx.cwd)}".`,
+    "info",
+  );
 }
 
 /** Active items grouped by owning model key ("provider/id" → count). The
@@ -652,11 +789,11 @@ function activeOwnerCounts(): Map<string, number> {
   return counts;
 }
 
-/** Upper bound on one adoption batch. Matches harness_mutate's per-call delta
- *  cap (maxItems: 20 in tools.ts) so the steered agent can land the WHOLE
- *  adoption in ONE audited, rollback-able batch — the property /tree rollback
- *  and the audit story rely on. Keep the two constants in sync. */
-export const ADOPT_BATCH_CAP = 20;
+/** Upper bound on one adoption batch: harness_mutate's per-call delta cap
+ *  (MAX_DELTAS in schemas.ts), derived rather than hand-synced, so the steered
+ *  agent can land the WHOLE adoption in ONE audited, rollback-able batch —
+ *  the property /tree rollback and the audit story rely on. */
+export const ADOPT_BATCH_CAP = MAX_DELTAS;
 
 /** Select a source model's active items for adoption: importance desc (ties
  *  keep store order — the same stable policy as injection selection), capped
@@ -687,10 +824,7 @@ export function buildAdoptPrompt(
     "",
   ];
   if (opts.all) {
-    lines.push(
-      "`--all` skips the filter: adopt EVERY item below.",
-      "",
-    );
+    lines.push("`--all` skips the filter: adopt EVERY item below.", "");
   } else {
     lines.push(
       "For EACH item below, decide whether it transfers into YOUR harness:",
@@ -705,9 +839,11 @@ export function buildAdoptPrompt(
     "Apply the adoption in ONE harness_mutate call of create deltas ONLY (a create per adopted item), e.g.",
     `{ "op": "create", "kind": "memory", "content": "<source content, copied verbatim>", "evidence": "<source evidence> (adopted from ${fromKey})", "importance": <exact source importance> }`,
     "Rules:",
-    "- This is COPY, not move — never update or delete the source items (they belong to " + fromKey + ").",
+    "- This is COPY, not move — never update or delete the source items (they belong to " +
+      fromKey +
+      ").",
     "- Never set ownerModel — creates stamp to the active model automatically.",
-    "- Copy content VERBATIM and carry over kind, importance (full precision, exactly as listed per item), and durable scope (a project item keeps { \"scope\": \"project\" }, stamped to THIS session's slug).",
+    '- Copy content VERBATIM and carry over kind, importance (full precision, exactly as listed per item), and durable scope (a project item keeps { "scope": "project" }, stamped to THIS session\'s slug).',
     "- Skip an item whose content you already own; overlaps clean up later with `/refine --proposer dedupe`.",
     opts.all
       ? "- Summarize at the end: adopted N item(s), skipped any you already owned."
@@ -731,13 +867,25 @@ async function handleAdopt(
   ctx: ExtensionCommandContext,
   rest: string[],
 ): Promise<void> {
-  const fromIdx = rest.indexOf("--from");
-  const from = fromIdx >= 0 && fromIdx + 1 < rest.length && !rest[fromIdx + 1]!.startsWith("--")
-    ? rest[fromIdx + 1]!
-    : undefined;
+  const from = stringFlagValue(rest, "--from");
+  if (from === "invalid") {
+    ctx.ui.notify(
+      "/harness adopt: --from expects a value (the source model, provider/id — values complete from the models in the store).",
+      "warning",
+    );
+    return;
+  }
   if (!from) {
     ctx.ui.notify(
       "/harness adopt requires --from <provider/id> (the source model; values complete from the models in the store).",
+      "warning",
+    );
+    return;
+  }
+  const extra = positionals(rest, ["--from"]);
+  if (extra.length > 0) {
+    ctx.ui.notify(
+      `/harness adopt: unexpected argument(s): ${extra.join(" ")} — it takes no positional arguments.`,
       "warning",
     );
     return;
@@ -748,7 +896,8 @@ async function handleAdopt(
   // and the already-owned filter below must see the same key as
   // create-stamping (review #25).
   const { virtualBinding } = await loadConfig();
-  const active = resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ?? getActiveModelKey();
+  const active =
+    resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ?? getActiveModelKey();
   if (from === active) {
     ctx.ui.notify(
       `${from} is already the active model's harness — adopt copies from ANOTHER model (see /harness status for the models in the store).`,
@@ -779,7 +928,9 @@ async function handleAdopt(
   // highest-ranked items forever and the prompt's "skip what you own" never
   // gets past them, stranding the rest of the source (review #25).
   const owned = new Set(
-    getState().items.filter((i) => i.ownerModel === active).map((i) => i.content),
+    getState()
+      .items.filter((i) => i.ownerModel === active)
+      .map((i) => i.content),
   );
   const pool = adoptable.filter((i) => !owned.has(i.content));
   const ownedSkipped = adoptable.length - pool.length;
@@ -795,16 +946,22 @@ async function handleAdopt(
   }
   const items = selectAdoptSource(pool);
   const bits: string[] = [];
-  if (items.length < pool.length) bits.push(`capped to the ${items.length} highest-importance of ${pool.length}`);
+  if (items.length < pool.length)
+    bits.push(`capped to the ${items.length} highest-importance of ${pool.length}`);
   if (ownedSkipped > 0) bits.push(`${ownedSkipped} already owned`);
   if (foreign > 0) bits.push(`${foreign} foreign-project skipped`);
   const suffix = bits.length > 0 ? ` (${bits.join("; ")})` : "";
-  pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }), { deliverAs: "followUp" });
+  pi.sendUserMessage(buildAdoptPrompt(items, from, { all: rest.includes("--all") }), {
+    deliverAs: "followUp",
+  });
   ctx.ui.notify(
     `Steering agent to ${rest.includes("--all") ? "adopt" : "review for adoption"} ${items.length} item(s) from ${from}${suffix}.`,
     "info",
   );
 }
+
+/** Char cap for a push-mem memory title (pi-mem titles stay one line). */
+const PUSH_MEM_TITLE_CHARS = 48;
 
 /** Compose a steering message that asks the agent to persist the given active
  *  items to long-term memory via a memory tool (pi-mem's save_memory).
@@ -820,7 +977,7 @@ function buildPushMemPrompt(items: HarnessItem[], scope: string): string {
     "",
   ];
   items.forEach((i, n) => {
-    const title = `${i.id} ${i.content.slice(0, 48)}`;
+    const title = `${i.id} ${i.content.slice(0, PUSH_MEM_TITLE_CHARS)}`;
     const text = `${i.content} (evidence: ${i.evidence})`;
     lines.push(
       `${n + 1}. [${i.id}] ${i.content}`,
@@ -838,20 +995,25 @@ async function handlePushMem(
   rest: string[],
 ): Promise<void> {
   const all = rest.includes("--all");
-  const kindIdx = rest.indexOf("--kind");
-  let kind: ComponentKind | undefined;
-  if (kindIdx >= 0 && kindIdx + 1 < rest.length) {
-    const k = rest[kindIdx + 1]!;
-    if (k === "prompt" || k === "memory" || k === "skill" || k === "subagent") kind = k;
+  // No silent fallbacks (the handleList rule): an invalid --kind/--model value
+  // warns and aborts instead of quietly pushing a different scope than asked.
+  const kind = enumFlagValue(rest, "--kind", KIND_ORDER);
+  if (kind === "invalid") {
+    ctx.ui.notify(`/harness push-mem: --kind expects one of ${KIND_ORDER.join("|")}.`, "warning");
+    return;
   }
   // --model scopes the push to one owner model (default: every model). "active"
   // resolves to the model driving this command, so you don't have to name it.
-  const modelIdx = rest.indexOf("--model");
-  let modelFilter: string | undefined;
-  if (modelIdx >= 0 && modelIdx + 1 < rest.length) {
-    const m = rest[modelIdx + 1]!;
-    modelFilter = m === "active" ? (modelKey(ctx.model) ?? "") : m;
+  const model = stringFlagValue(rest, "--model");
+  if (model === "invalid") {
+    ctx.ui.notify(
+      '/harness push-mem: --model expects a value (provider/id or "active").',
+      "warning",
+    );
+    return;
   }
+  const modelFilter =
+    model === undefined ? undefined : model === "active" ? (modelKey(ctx.model) ?? "") : model;
   // Default: memory kind (the clean 1:1 mapping). --all or --kind override.
   const items = getState().items.filter(
     (i) =>
@@ -870,14 +1032,20 @@ async function handlePushMem(
   const modelNote = modelFilter !== undefined ? ` [model ${modelFilter || "(orphan)"}]` : "";
   const msg = buildPushMemPrompt(items, scope);
   pi.sendUserMessage(msg, { deliverAs: "followUp" });
-  ctx.ui.notify(`Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`, "info");
+  ctx.ui.notify(
+    `Steering agent to persist ${items.length} ${scope}${modelNote} to pi-mem.`,
+    "info",
+  );
 }
 
 /** `/harness lessons` — print the exact evidence-gated digest the next /refine
  *  steers with (harnessing-level recursion, Harness² arXiv 2610.14224).
  *  Read-only; distinct empty state when nothing supportable exists yet. */
 function handleLessons(ctx: ExtensionCommandContext): void {
-  const digest = buildLessonsDigest(getState(), ctx.sessionManager.getBranch() as Iterable<unknown>);
+  const digest = buildLessonsDigest(
+    getState(),
+    ctx.sessionManager.getBranch() as Iterable<unknown>,
+  );
   if (!digest) {
     ctx.ui.notify(
       "No lessons yet — items need citations (outcome loop) or /harness keep|drop feedback, or past refine runs, before anything is evidence-gated.",
@@ -909,11 +1077,15 @@ async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
     ` Durable: global ${await layerState(DEFAULT_DURABLE_PATH)};` +
     ` project ${await layerState(projectDurablePath(ctx.cwd))}.`;
   const injection = getInjectionStats();
-  const report = buildStatusReport(getState(), ctx.sessionManager.getBranch() as Iterable<unknown>, {
-    config,
-    ...(key ? { modelKey: key } : {}),
-    ...(injection ? { injection } : {}),
-  });
+  const report = buildStatusReport(
+    getState(),
+    ctx.sessionManager.getBranch() as Iterable<unknown>,
+    {
+      config,
+      ...(key ? { modelKey: key } : {}),
+      ...(injection ? { injection } : {}),
+    },
+  );
   const hint = nextHint(report.hints);
   ctx.ui.setStatus("harness", undefined);
   ctx.ui.notify(renderStatusReport(report, { durable, ...(hint ? { hint } : {}) }), "info");

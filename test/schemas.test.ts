@@ -7,10 +7,20 @@
 
 import { describe, it, expect } from "vitest";
 import { Type } from "typebox";
-import { harnessListTool, harnessMutateTool, KIND_VALUES } from "../src/schemas.js";
+import {
+  harnessListTool,
+  harnessMutateTool,
+  KIND_VALUES,
+  MAX_CONTENT_CHARS,
+  MAX_DELTAS,
+  MAX_EVIDENCE_CHARS,
+  MAX_REASON_CHARS,
+} from "../src/schemas.js";
 
 // The historical TypeBox definitions, copied verbatim from the pre-#36
-// tools.ts (which itself mirrored pi-ai's StringEnum helper).
+// tools.ts (which itself mirrored pi-ai's StringEnum helper) — extended with
+// the length caps (maxLength) and the MAX_DELTAS cap the shipped schemas now
+// declare.
 function StringEnum<T extends readonly string[]>(values: T, options?: { description?: string }) {
   return Type.Unsafe<T[number]>({
     type: "string",
@@ -22,15 +32,19 @@ function StringEnum<T extends readonly string[]>(values: T, options?: { descript
 const CreateShape = Type.Object({
   op: Type.Literal("create"),
   kind: StringEnum(KIND_VALUES),
-  content: Type.String({ description: "The note/fact/description/spec text." }),
+  content: Type.String({
+    maxLength: MAX_CONTENT_CHARS,
+    description: "The note/fact/description/spec text.",
+  }),
   evidence: Type.String({
+    maxLength: MAX_EVIDENCE_CHARS,
     description: "Why this belongs in the harness state, grounded in trajectory evidence.",
   }),
   importance: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   scope: Type.Optional(
     StringEnum(["global", "project"], {
       description:
-        "Durable-layer scope (default global). \"project\" binds the item to this session's project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.",
+        'Durable-layer scope (default global). "project" binds the item to this session\'s project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.',
     }),
   ),
 });
@@ -38,8 +52,8 @@ const CreateShape = Type.Object({
 const UpdateShape = Type.Object({
   op: Type.Literal("update"),
   id: Type.String({ description: "Existing item id, e.g. h_..." }),
-  content: Type.Optional(Type.String()),
-  evidence: Type.Optional(Type.String()),
+  content: Type.Optional(Type.String({ maxLength: MAX_CONTENT_CHARS })),
+  evidence: Type.Optional(Type.String({ maxLength: MAX_EVIDENCE_CHARS })),
   importance: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   active: Type.Optional(Type.Boolean()),
   scope: Type.Optional(
@@ -53,7 +67,10 @@ const UpdateShape = Type.Object({
 const DeleteShape = Type.Object({
   op: Type.Literal("delete"),
   id: Type.String(),
-  reason: Type.String({ description: "Why this item is being removed." }),
+  reason: Type.String({
+    maxLength: MAX_REASON_CHARS,
+    description: "Why this item is being removed.",
+  }),
 });
 
 const DeltaShape = Type.Union([CreateShape, UpdateShape, DeleteShape]);
@@ -103,7 +120,7 @@ const ListParams = Type.Object({
 });
 
 const MutateParams = Type.Object({
-  deltas: Type.Array(DeltaShape, { minItems: 1, maxItems: 20 }),
+  deltas: Type.Array(DeltaShape, { minItems: 1, maxItems: MAX_DELTAS }),
 });
 
 const stub = async () => ({ content: [], details: undefined });

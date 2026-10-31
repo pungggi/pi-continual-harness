@@ -17,39 +17,47 @@
 // registry; the dedicated-model variant is intentionally not shipped (hidden
 // model spend is a tradeoff the roadmap keeps as a separate decision).
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Context, Model, TextContent } from "@earendil-works/pi-ai";
-import { applyDeltas, DEFAULT_DURABLE_PATH, exportDurableLayers, getState, PROJECT_DURABLE_DIR, REFINE_ENTRY, snapshotState } from "./store.js";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import type { Api, Context, Model, TextContent } from "@earendil-works/pi-ai";
+import {
+  applyDeltas,
+  exportDurableLayers,
+  getState,
+  makePersist,
+  REFINE_ENTRY,
+  snapshotState,
+} from "./store.js";
 import { buildLessonsDigest } from "./lessons.js";
 import { getProposer, listProposers, DEFAULT_DEDUPE } from "./proposer.js";
-import type { CompleteOptions, CompleteResult } from "./proposer.js";
+import type {
+  CompleteOptions,
+  CompleteResult,
+  DeltaProposer,
+  ProposeInput,
+  ProposedDelta,
+} from "./proposer.js";
 import { REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
 import { buildClassify } from "./classify.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
-import type { AppliedDelta } from "./types.js";
+import type { AnyEntry, AppliedDelta } from "./types.js";
 import { loadConfig, projectSlug } from "./config.js";
+import { defaultLayerPaths } from "./durable.js";
 
 const DEFAULT_EVIDENCE_BYTES = 16000;
 export const DEFAULT_LOOKBACK_TURNS = 25;
-
-// Minimal entry shape for trajectory walking; kept loose to avoid coupling to
-// pi's internal session entry types. NOTE: message content is a plain string
-// OR a block array depending on the message source — never assume either.
-type AnyEntry = {
-  type?: string;
-  customType?: string;
-  message?: {
-    role?: string;
-    content?: string | Array<{ type?: string; text?: string }>;
-  };
-};
 
 /**
  * Flatten a pi message content to plain text. Pi messages carry content as a
  * plain string or as an array of content blocks (text blocks carry `.text`);
  * anything else degrades to "" instead of throwing. Pure.
  */
-export function messageText(content: string | Array<{ type?: string; text?: string }> | undefined): string {
+export function messageText(
+  content: string | Array<{ type?: string; text?: string }> | undefined,
+): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.map((c) => c?.text ?? "").join(" ");
@@ -95,7 +103,7 @@ export interface RefineOptions {
    *  `dedupe` proposer; ignored by others. */
   threshold?: number;
   /** How a steering message is delivered (pi ≥ 0.87 actionable boundaries).
- *  "steer" (default): send it as a user message via sendUserMessage — the
+   *  "steer" (default): send it as a user message via sendUserMessage — the
    *  manual /refine path. "boundary": do NOT send; return it in RefineResult
    *  so a turn_end caller can persist it as a structural entry and guarantee
    *  one next provider request with `{ entries, continue: true }` — no
@@ -118,6 +126,128 @@ export interface RefineResult {
   steeringMessage?: string;
 }
 
+/** Everything the propose stage needs, resolved once. Built by
+ *  buildProposeInput and consumed by proposer.propose(). */
+interface ProposeContext {
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  complete: ReturnType<typeof buildComplete>;
+  classify: ReturnType<typeof buildClassify>;
+  ownerKey: string | undefined;
+  lessons: string;
+}
+
+/** Resolve the proposer and warn on an explicit-but-unknown name: it must not
+ *  silently run steering (review finding #7) — name the fallback so a typo is
+ *  visible. */
+function resolveProposer(ctx: ExtensionContext, name: string | undefined): DeltaProposer {
+  const proposer = getProposer(name);
+  if (name && proposer.name !== name) {
+    ctx.ui.notify(
+      `Unknown proposer "${name}" — falling back to steering. Registered: ${listProposers().join(", ")}.`,
+      "warning",
+    );
+  }
+  return proposer;
+}
+
+/** Build the full ProposeInput for the chosen proposer (minus `state`, which
+ *  the caller adds as a defensive copy): loaded config (an explicit
+ *  --threshold overrides the dedupe threshold for this run), the one-shot
+ *  model completion, the classifier adapter, and the evidence-gated lessons
+ *  digest scoped to the active model's items. */
+async function buildProposeInput(
+  ctx: ExtensionContext,
+  evidence: string,
+  lookback: number,
+  options: RefineOptions,
+): Promise<ProposeContext & Omit<ProposeInput, "state">> {
+  const config = await loadConfig();
+  const proposerConfig =
+    options.threshold !== undefined
+      ? {
+          ...config,
+          dedupe: { ...(config.dedupe ?? DEFAULT_DEDUPE), threshold: options.threshold },
+        }
+      : config;
+  // The actor model (virtualBinding-aware): stamps direct-apply creates AND
+  // scopes the lessons digest (per-model isolation applies to what the
+  // improver is told, not just what it is shown — review r4341960955).
+  const branch = branchEntries(ctx);
+  const ownerKey = resolveBindingKey(ctx.model, branch, config.virtualBinding);
+  // Harnessing-level recursion (Harness² arXiv 2610.14224): the improvement
+  // process learns from what past improvement yielded. The digest is built
+  // from evidence-gated signals only (citations, keeps/drops, refine-run
+  // outcomes), filtered to the ACTIVE MODEL's items (blank-harness isolation
+  // holds for lessons too), and stays empty when there is nothing to say.
+  const lessons = buildLessonsDigest(getState(), branch, { ownerKey: ownerKey ?? "" });
+  return {
+    config: proposerConfig,
+    // Inject a one-shot model completion (built from ctx) so dedicated-model
+    // proposers can make a hidden LLM call. Undefined when no model is resolvable.
+    complete: buildComplete(ctx),
+    // Inject the classifier adapter when `classifier.model` is configured and
+    // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
+    classify: buildClassify(ctx, config.classifier?.model),
+    ownerKey,
+    lessons,
+    evidence,
+    lookback,
+  };
+}
+
+/** Apply a direct-apply proposer's deltas (rule-based / model proposers):
+ *  persist each batch the same way harness_mutate does, so /tree rollback
+ *  covers these too. applyDeltas is all-or-nothing and re-throws on a bad
+ *  delta — e.g. a model proposer's delete-then-update of the same id, or an
+ *  id removed by a prune race during the await above. It rolls back in-memory
+ *  state before throwing, so we surface the failure as an audited no-op
+ *  rather than crashing /refine. Creates are stamped with the active model so
+ *  proposer-authored notes bind to the model driving the turn (the steering
+ *  path is stamped in the harness_mutate tool instead). */
+function applyProposedDeltas(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  proposerName: string,
+  proposed: ProposedDelta[],
+  ownerKey: string | undefined,
+): { applied: number; appliedDeltas: AppliedDelta[]; applyError?: string } {
+  try {
+    const appliedDeltas = applyDeltas(
+      proposed.map((d) => {
+        const delta = d.delta;
+        return ownerKey !== undefined && delta.op === "create"
+          ? { ...delta, ownerModel: ownerKey }
+          : delta;
+      }),
+      makePersist(pi),
+    );
+    ctx.ui.notify(
+      `Proposer "${proposerName}" applied ${appliedDeltas.length} delta(s) directly.`,
+      "info",
+    );
+    return { applied: appliedDeltas.length, appliedDeltas };
+  } catch (err) {
+    const applyError = (err as Error).message;
+    ctx.ui.notify(
+      `Proposer "${proposerName}" batch failed: ${applyError} (0 applied, rolled back).`,
+      "warning",
+    );
+    return { applied: 0, appliedDeltas: [], applyError };
+  }
+}
+
+/** /refine --commit's durable flush: export current state to the layers first
+ *  so the agent refines against the same view pi-reflect / pi-mem would see
+ *  (layered: items land in the file their own scope selects). */
+async function commitDurable(ctx: ExtensionContext): Promise<void> {
+  try {
+    const written = await exportDurableLayers(defaultLayerPaths(), projectSlug(ctx.cwd));
+    ctx.ui.notify(`Durable state exported to ${written.length} layer file(s)`, "info");
+  } catch (err) {
+    ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
+  }
+}
+
 /**
  * Core refine routine shared by /refine (manual) and turn_end auto-refine.
  * Resolves a proposer, gathers evidence, lets the proposer decide what to do,
@@ -132,91 +262,23 @@ export async function runRefine(
 ): Promise<RefineResult> {
   const lookback = options.lookback ?? DEFAULT_LOOKBACK_TURNS;
   const commit = options.commit ?? false;
-  const proposer = getProposer(options.proposer);
-  // An explicit but unknown --proposer must not silently run steering
-  // (review finding #7): name the fallback so a typo is visible.
-  if (options.proposer && proposer.name !== options.proposer) {
-    ctx.ui.notify(
-      `Unknown proposer "${options.proposer}" — falling back to steering. Registered: ${listProposers().join(", ")}.`,
-      "warning",
-    );
-  }
+  const proposer = resolveProposer(ctx, options.proposer);
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
 
   const evidence = gatherEvidence(ctx, lookback);
-  // Load the (cached) config and thread it into ProposeInput so proposers read
-  // tuned knobs (e.g. the dedupe threshold/merge policy) without file I/O. An
-  // explicit --threshold overrides the configured dedupe threshold for this run.
-  const config = await loadConfig();
-  const proposerConfig =
-    options.threshold !== undefined
-      ? { ...config, dedupe: { ...(config.dedupe ?? DEFAULT_DEDUPE), threshold: options.threshold } }
-      : config;
-  // Inject a one-shot model completion (built from ctx) so dedicated-model
-  // proposers can make a hidden LLM call. Undefined when no model is resolvable.
-  const complete = buildComplete(ctx);
-  // The actor model (virtualBinding-aware): stamps direct-apply creates AND
-  // scopes the lessons digest (per-model isolation applies to what the
-  // improver is told, not just what it is shown — review r4341960955).
-  const branch = branchEntries(ctx);
-  const ownerKey = resolveBindingKey(ctx.model, branch, config.virtualBinding);
-  // Inject the classifier adapter when `classifier.model` is configured and
-  // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
-  const classify = buildClassify(ctx, config.classifier?.model);
-  // Harnessing-level recursion (Harness² arXiv 2610.14224): the improvement
-  // process learns from what past improvement yielded. The digest is built
-  // from evidence-gated signals only (citations, keeps/drops, refine-run
-  // outcomes), filtered to the ACTIVE MODEL's items (blank-harness isolation
-  // holds for lessons too), and stays empty when there is nothing to say.
-  const lessons = buildLessonsDigest(getState(), branch, { ownerKey: ownerKey ?? "" });
+  const proposeCtx = await buildProposeInput(ctx, evidence, lookback, options);
   // Pass a defensive copy: proposers are a public extension point and must not
   // be able to mutate the live store outside applyDeltas (no audit / no rollback).
   const result = await proposer.propose({
-    evidence,
+    ...proposeCtx,
     state: snapshotState(),
-    lookback,
-    config: proposerConfig,
-    ...(complete ? { complete } : {}),
-    ...(classify ? { classify } : {}),
-    ...(lessons ? { lessons } : {}),
   });
   const proposedDeltas = result.deltas ?? [];
-  // Stamp direct-apply create deltas with the active model so proposer-authored
-  // notes bind to the model driving the turn (the steering path is stamped in
-  // the harness_mutate tool instead). Orphans result only when the model is
-  // unknown; before_agent_start adopts them on the next turn. (ownerKey is
-  // resolved above, before the digest.)
 
-  let applied = 0;
-  let appliedDeltas: AppliedDelta[] = [];
-  let applyError: string | undefined;
-  if (proposedDeltas.length > 0) {
-    // Direct-apply path (rule-based / model proposers): persist each batch the
-    // same way harness_mutate does, so /tree rollback covers these too.
-    // applyDeltas is all-or-nothing and re-throws on a bad delta — e.g. a model
-    // proposer's delete-then-update of the same id, or an id removed by a prune
-    // race during the await above. It rolls back in-memory state before throwing,
-    // so we surface the failure as an audited no-op rather than crashing /refine.
-    try {
-      appliedDeltas = applyDeltas(
-        proposedDeltas.map((d) => {
-          const delta = d.delta;
-          return ownerKey !== undefined && delta.op === "create"
-            ? { ...delta, ownerModel: ownerKey }
-            : delta;
-        }),
-        (snapshot, ver) => pi.appendEntry("harness-state", { state: snapshot, version: ver }),
-      );
-      applied = appliedDeltas.length;
-      ctx.ui.notify(`Proposer "${proposer.name}" applied ${applied} delta(s) directly.`, "info");
-    } catch (err) {
-      applyError = (err as Error).message;
-      ctx.ui.notify(
-        `Proposer "${proposer.name}" batch failed: ${applyError} (0 applied, rolled back).`,
-        "warning",
-      );
-    }
-  }
+  const { applied, appliedDeltas, applyError } =
+    proposedDeltas.length > 0
+      ? applyProposedDeltas(pi, ctx, proposer.name, proposedDeltas, proposeCtx.ownerKey)
+      : { applied: 0, appliedDeltas: [] as AppliedDelta[], applyError: undefined };
 
   // Audit trail (branchable via /tree). `source` distinguishes manual /refine
   // from opt-in auto-refine; `proposer` records WHICH strategy ran; the
@@ -240,20 +302,7 @@ export async function runRefine(
     ...(applyError ? { applyError } : {}),
   });
 
-  if (commit) {
-    // Flush current state to the durable layers first so the agent refines
-    // against the same view pi-reflect / pi-mem would see (layered: items land
-    // in the file their own scope selects).
-    try {
-      const written = await exportDurableLayers(
-        { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR },
-        projectSlug(ctx.cwd),
-      );
-      ctx.ui.notify(`Durable state exported to ${written.length} layer file(s)`, "info");
-    } catch (err) {
-      ctx.ui.notify(`Durable export failed: ${(err as Error).message}`, "warning");
-    }
-  }
+  if (commit) await commitDurable(ctx);
 
   if (result.steeringMessage) {
     if (options.delivery === "boundary") {
@@ -274,7 +323,9 @@ export async function runRefine(
     source,
     proposer: proposer.name,
     applied,
-    ...(options.delivery === "boundary" && result.steeringMessage ? { steeringMessage: result.steeringMessage } : {}),
+    ...(options.delivery === "boundary" && result.steeringMessage
+      ? { steeringMessage: result.steeringMessage }
+      : {}),
   };
 }
 
@@ -321,9 +372,7 @@ export function gatherEvidence(ctx: ExtensionContext, lookback: number): string 
   let bytes = 0;
   for (const e of recent) {
     const role = e.message?.role ?? "?";
-    const text = messageText(e.message?.content)
-      .replace(/\s+/g, " ")
-      .trim();
+    const text = messageText(e.message?.content).replace(/\s+/g, " ").trim();
     if (!text) continue;
     const line = `[${role}] ${text}`;
     if (bytes + line.length > DEFAULT_EVIDENCE_BYTES) {
@@ -345,8 +394,10 @@ export function gatherEvidence(ctx: ExtensionContext, lookback: number): string 
 // visible. Rule-based/steering proposers ignore it.
 
 /** Resolve a model id ("provider/id" or a bare id) against the registry, falling
- *  back to the active session model. Returns undefined if nothing resolves. */
-function resolveModel(ctx: ExtensionContext, modelId?: string): Model<any> | undefined {
+ *  back to the active session model. Returns undefined if nothing resolves.
+ *  Model<Api> (not Model<any>): the registry's complete() is generic over the
+ *  Api string union, and Api is the safe common supertype. */
+function resolveModel(ctx: ExtensionContext, modelId?: string): Model<Api> | undefined {
   const registry = ctx.modelRegistry;
   if (modelId && registry) {
     const slash = modelId.indexOf("/");

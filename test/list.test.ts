@@ -8,7 +8,9 @@ import { describe, it, expect } from "vitest";
 import type { HarnessItem } from "../src/types.js";
 import { preview, renderListReport, selectListItems, type ListOptions } from "../src/list.js";
 
-function item(over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">): HarnessItem {
+function item(
+  over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">,
+): HarnessItem {
   const now = 10_000;
   return {
     evidence: "e",
@@ -28,8 +30,22 @@ const SLUG = "app";
 function fixture(): HarnessItem[] {
   return [
     item({ id: "h_g1", kind: "memory", content: "global fact", importance: 0.4 }),
-    item({ id: "h_p1", kind: "prompt", content: "app note", importance: 0.9, scope: "project", project: SLUG }),
-    item({ id: "h_f1", kind: "memory", content: "foreign fact", importance: 0.8, scope: "project", project: "other" }),
+    item({
+      id: "h_p1",
+      kind: "prompt",
+      content: "app note",
+      importance: 0.9,
+      scope: "project",
+      project: SLUG,
+    }),
+    item({
+      id: "h_f1",
+      kind: "memory",
+      content: "foreign fact",
+      importance: 0.8,
+      scope: "project",
+      project: "other",
+    }),
     item({ id: "h_g2", kind: "skill", content: "global skill", importance: 0.6 }),
     item({ id: "h_i1", kind: "memory", content: "old fact", importance: 0.1, active: false }),
   ];
@@ -59,12 +75,13 @@ describe("selectListItems", () => {
   });
 
   it("kind filter composes with every scope", () => {
-    expect(selectListItems(fixture(), opts({ kind: "memory" })).map((i) => i.id)).toEqual(["h_g1", "h_i1"]);
-    expect(selectListItems(fixture(), opts({ kind: "memory", scope: "all" })).map((i) => i.id)).toEqual([
-      "h_f1",
+    expect(selectListItems(fixture(), opts({ kind: "memory" })).map((i) => i.id)).toEqual([
       "h_g1",
       "h_i1",
     ]);
+    expect(
+      selectListItems(fixture(), opts({ kind: "memory", scope: "all" })).map((i) => i.id),
+    ).toEqual(["h_f1", "h_g1", "h_i1"]);
   });
 
   it("inactive items stay selectable (rows mark them)", () => {
@@ -78,7 +95,14 @@ describe("renderListReport", () => {
     const long = "x".repeat(80);
     const items = [
       item({ id: "h_a", kind: "memory", content: long, importance: 0.42 }),
-      item({ id: "h_b", kind: "prompt", content: "app note", importance: 0.9, scope: "project", project: SLUG }),
+      item({
+        id: "h_b",
+        kind: "prompt",
+        content: "app note",
+        importance: 0.9,
+        scope: "project",
+        project: SLUG,
+      }),
     ];
     const out = renderListReport(items, opts());
     const lines = out.split("\n");
@@ -89,7 +113,10 @@ describe("renderListReport", () => {
   });
 
   it("inactive items carry an (inactive) marker in the row", () => {
-    const out = renderListReport([item({ id: "h_a", kind: "memory", content: "old", active: false })], opts());
+    const out = renderListReport(
+      [item({ id: "h_a", kind: "memory", content: "old", active: false })],
+      opts(),
+    );
     expect(out.split("\n")[1]).toBe("[h_a] memory   0.50 global (inactive) old");
   });
 
@@ -151,10 +178,23 @@ describe("renderListReport", () => {
   });
 
   it("foreign-only results keep the hidden note, empty or not (review #32)", () => {
-    const foreignOnly = [item({ id: "h_f1", kind: "memory", content: "foreign fact", importance: 0.8, scope: "project", project: "other" })];
+    const foreignOnly = [
+      item({
+        id: "h_f1",
+        kind: "memory",
+        content: "foreign fact",
+        importance: 0.8,
+        scope: "project",
+        project: "other",
+      }),
+    ];
     // Listed result: the note rides along as before.
-    expect(renderListReport([...foreignOnly, item({ id: "h_g", kind: "memory", content: "g", importance: 0.5 })], opts()))
-      .toContain("1 foreign-project item(s) hidden");
+    expect(
+      renderListReport(
+        [...foreignOnly, item({ id: "h_g", kind: "memory", content: "g", importance: 0.5 })],
+        opts(),
+      ),
+    ).toContain("1 foreign-project item(s) hidden");
     // Foreign-only store, default scope: the empty result still explains
     // WHERE the items went instead of generic filter guidance alone.
     const out = renderListReport(foreignOnly, opts());
@@ -162,23 +202,35 @@ describe("renderListReport", () => {
     expect(out).toContain("Nothing matches");
     expect(out).toContain("1 foreign-project item(s) hidden");
     // Same through a kind filter that matches only the foreign item.
-    expect(renderListReport(foreignOnly, opts({ kind: "memory" }))).toContain("1 foreign-project item(s) hidden");
+    expect(renderListReport(foreignOnly, opts({ kind: "memory" }))).toContain(
+      "1 foreign-project item(s) hidden",
+    );
     // An explicit --scope suppresses the note (the user chose that scope).
-    expect(renderListReport(foreignOnly, opts({ scope: "global" }))).not.toContain("foreign-project item(s) hidden");
+    expect(renderListReport(foreignOnly, opts({ scope: "global" }))).not.toContain(
+      "foreign-project item(s) hidden",
+    );
   });
 
   it("default view notes hidden foreign-project items; explicit scopes do not", () => {
     const base = renderListReport(fixture(), opts());
     expect(base).toContain("1 foreign-project item(s) hidden");
-    expect(renderListReport(fixture(), opts({ scope: "all" }))).not.toContain("foreign-project item(s) hidden");
-    expect(renderListReport(fixture(), opts({ scope: "project" }))).not.toContain("foreign-project item(s) hidden");
+    expect(renderListReport(fixture(), opts({ scope: "all" }))).not.toContain(
+      "foreign-project item(s) hidden",
+    );
+    expect(renderListReport(fixture(), opts({ scope: "project" }))).not.toContain(
+      "foreign-project item(s) hidden",
+    );
   });
 
   it("foreign note respects the kind filter (only counts what --kind matches)", () => {
     // No foreign prompt exists → no note under --kind prompt.
-    expect(renderListReport(fixture(), opts({ kind: "prompt" }))).not.toContain("foreign-project item(s) hidden");
+    expect(renderListReport(fixture(), opts({ kind: "prompt" }))).not.toContain(
+      "foreign-project item(s) hidden",
+    );
     // A foreign memory exists → the note counts it.
-    expect(renderListReport(fixture(), opts({ kind: "memory" }))).toContain("1 foreign-project item(s) hidden");
+    expect(renderListReport(fixture(), opts({ kind: "memory" }))).toContain(
+      "1 foreign-project item(s) hidden",
+    );
   });
 });
 

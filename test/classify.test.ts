@@ -15,18 +15,25 @@ const jev = { provider: "typesafe", id: "jev-latest" };
 
 type FakeRegistry = Parameters<typeof makeClassifyFn>[0];
 
-function registryWith(models: unknown[], classify?: (model: unknown, context: unknown, options?: unknown) => Promise<unknown>): FakeRegistry {
+function registryWith(
+  models: unknown[],
+  classify?: (model: unknown, context: unknown, options?: unknown) => Promise<unknown>,
+): FakeRegistry {
   return {
     ...(classify ? { classify } : {}),
     findOfType: (_t: "classifier", provider: string, id: string) =>
-      models.find((m) => (m as { provider: string }).provider === provider && (m as { id: string }).id === id),
+      models.find(
+        (m) => (m as { provider: string }).provider === provider && (m as { id: string }).id === id,
+      ),
     getModelsOfType: () => models,
   } as FakeRegistry;
 }
 
 describe("resolveClassifierModel", () => {
   it("resolves provider/id via findOfType and bare ids via the catalog", () => {
-    expect(resolveClassifierModel(registryWith([jev]) as never, "typesafe/jev-latest")).toEqual(jev);
+    expect(resolveClassifierModel(registryWith([jev]) as never, "typesafe/jev-latest")).toEqual(
+      jev,
+    );
     expect(resolveClassifierModel(registryWith([jev]) as never, "jev-latest")).toEqual(jev);
   });
 
@@ -43,7 +50,11 @@ describe("makeClassifyFn", () => {
   };
 
   it("maps bool answers (probability of true) with confidence, and passes usage through", async () => {
-    const raw = { stopReason: "stop", answers: { gate: { type: "bool", probability: 0.82 } }, usage: { input: 10, output: 2 } };
+    const raw = {
+      stopReason: "stop",
+      answers: { gate: { type: "bool", probability: 0.82 } },
+      usage: { input: 10, output: 2 },
+    };
     const reg = registryWith([jev], async () => raw);
     const fn = makeClassifyFn(reg, jev);
     const res = await fn({ state: {}, questions });
@@ -100,8 +111,14 @@ describe("gate decision + request", () => {
   });
 
   it("a NO skips; errors and missing answers fall back to proceeding", () => {
-    const no: ClassifyBoolResult = { ok: true, answers: { gate: { value: false, confidence: 0.9 } } };
-    expect(gateDecision(no)).toEqual({ proceed: false, because: "classifier: no durable correction (confidence 0.9)" });
+    const no: ClassifyBoolResult = {
+      ok: true,
+      answers: { gate: { value: false, confidence: 0.9 } },
+    };
+    expect(gateDecision(no)).toEqual({
+      proceed: false,
+      because: "classifier: no durable correction (confidence 0.9)",
+    });
     const yes: ClassifyBoolResult = { ok: true, answers: { gate: { value: true } } };
     expect(gateDecision(yes).proceed).toBe(true);
     const err: ClassifyBoolResult = { ok: false, answers: {}, error: "boom" };

@@ -8,6 +8,83 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+### Added
+
+- **CI on every push/PR** (`.github/workflows/ci.yml`): typecheck + lint +
+  tests with coverage + build, so breakage is caught before a release tag —
+  previously verification only ran at publish time in `release.yml`.
+- **Biome** for lint + format (`biome.json`, `npm run lint` / `npm run
+  format`), with `noExplicitAny` and unused-code checks on; the codebase is
+  clean against it (the one `Model<any>` in `refine.ts` became `Model<Api>`).
+- **Coverage measurement** (`npm run test:coverage`, `vitest.config.ts`):
+  v8 provider with thresholds — 95% statements package-wide, and 100% for the
+  pure policy modules (`select.ts`, `lessons.ts`, `cadence.ts`, `vmodel.ts`)
+  whose "pure, deterministic, unit-tested" property the README advertises.
+- **`makePersist(pi)`** (store.ts): the one factory for the
+  `appendEntry("harness-state", …)` snapshot callback every mutation path
+  uses. The entry-type literal and persist closure were previously
+  copy-pasted at ~10 call sites — a typo in any one silently broke `/tree`
+  restore for that path.
+- **`validateDeltas`** boundary guard (tools.ts) plus `maxLength` caps on
+  `content`/`evidence`/`reason` in the tool schemas: a model could previously
+  create unbounded-size items that flowed verbatim into the durable files.
+- `test/entry.test.ts` pins the **turn_end registration order** (durable
+  sync's export before outcome/auto-refine) via the new exported
+  `TURN_END_CHAIN`; the invariant used to live only in a comment.
+- `test/hardening.test.ts` covers the new hardening behaviors (corrupt
+  snapshot coercion, ENOENT vs real read errors, flag validation, the
+  boundary guard).
+
+### Fixed
+
+- **Explicit-path `/harness import` now honors the path's layer scope**: the
+  `defaultScope` from `defaultScopeForPath` was computed and then never
+  threaded through `reconstructFromDurable`, so importing a project-dir file
+  by path silently defaulted untagged items to the global scope (contradicting
+  the documented behavior; surfaced by the new unused-variable lint).
+- Only `ENOENT` counts as "no durable file": a real read error (EACCES,
+  EISDIR, …) now surfaces as the import failure it is instead of the
+  misleading "No durable files — run /refine --commit" advice.
+- **Corrupt-snapshot field types are coerced at `reconstruct`** instead of
+  crashing far-away renders later (`importance: "high"` died at `toFixed(2)`,
+  an unknown `kind` at per-kind tallies).
+- The `session_start` durable auto-import is wrapped in the same soft-fail
+  try/catch as its `turn_end` counterpart — a throw can no longer escape the
+  session_start handler.
+- `/harness push-mem`, `prune`, `adopt`, `keep|drop`, and `move` now **warn
+  on invalid/extra flags** instead of silently falling back (the rule
+  `/harness list` already documented): an invalid `--kind` used to quietly
+  push memories, a bad `--decay` to prune without decay.
+- Under `virtualBinding: "physical"`, a mid-run route change re-caches the
+  binding key at `context_with_system`, so `harness_mutate` creates stamp
+  with the same key injection renders (previously they could diverge until
+  the next agent start).
+- `loadConfig` is single-flight (concurrent cold callers share one read)
+  with an epoch guard, so a read that raced a cache reset can no longer
+  repopulate the cache with a stale result.
+
+### Changed
+
+- Internal consolidation, no behavior change: shared constants in
+  `types.ts` (`KIND_VALUES`/`KIND_ORDER`/`KIND_LABEL`, `KEEP_DROP_BUMP`) and
+  `schemas.ts` (`MAX_DELTAS`, which `ADOPT_BATCH_CAP` now derives from instead
+  of a hand-synced copy); `tally`/`AnyEntry`/`preview` deduplicated across
+  modules; the audit-trail walk extracted into one `walkAuditTrail` shared by
+  `status.ts` and `corpus.ts`; `layerPaths` exported as `defaultLayerPaths`
+  and reused; `runRefine`, `mergeParsed`, `handleSetup`, and the `/harness`
+  completions split into focused helpers; dead exports `registerHarness` /
+  `registerAutoRefine` removed.
+- README: the long per-key Configuration reference moved to
+  **[docs/CONFIG.md](docs/CONFIG.md)**; the README keeps the shape, a key
+  table, and the link. Status section updated to 0.20.x. ROADMAP phases
+  reordered chronologically (8 → 13).
+- `ProposeInput`'s optional fields are now explicitly `| undefined`-tolerant
+  (matches the package's `exactOptionalPropertyTypes` convention; type-level
+  only).
+
+
 ## [0.20.0] — 2026-10-21
 
 ### Added

@@ -77,24 +77,24 @@ export interface ProposeInput {
    *  can read tuned knobs (e.g. the dedupe threshold / merge policy) without
    *  file I/O. Optional — direct/legacy callers omit it and proposers fall
    *  back to their built-in defaults. */
-  config?: HarnessConfig;
+  config?: HarnessConfig | undefined;
   /** One-shot model completion, injected by runRefine when a model is available.
    *  Dedicated-model proposers call this to make a hidden completion; rule-based
    *  and steering proposers ignore it. Undefined when no model is resolvable, so
    *  a model proposer can no-op (and record an audited failure) rather than throw. */
-  complete?: (prompt: string, opts?: CompleteOptions) => Promise<CompleteResult>;
+  complete?: ((prompt: string, opts?: CompleteOptions) => Promise<CompleteResult>) | undefined;
   /** Batched yes/no classification (pi ≥ 0.99 classifier models), injected by
    *  runRefine when `classifier.model` is configured and resolvable. The shipped
    *  `dedupe` proposer uses it as a precision filter on candidate merge pairs;
    *  other proposers may use it for cheap gating decisions. Undefined when no
    *  classifier is available — consumers must degrade gracefully. */
-  classify?: ClassifyFn;
+  classify?: ClassifyFn | undefined;
   /** Evidence-gated lessons from past refines (harnessing-level recursion,
    *  Harness² arXiv 2610.14224: the improvement process learns from what past
    *  improvement yielded). Built by runRefine from support counters + refine
    *  audit entries; "" when there is nothing supportable to say. Proposers
    *  SHOULD surface it to whoever reasons about deltas. */
-  lessons?: string;
+  lessons?: string | undefined;
 }
 
 /** A single delta plus a human-readable reason for the audit trail. */
@@ -135,8 +135,8 @@ export interface DeltaProposer {
 export function buildSteeringPrompt(evidence: string, lookback: number, lessons?: string): string {
   const scoped = [
     "Classify every proposal by scope before creating it:",
-    "- INVARIANT (cross-domain agentic behavior — planning, tool use, context management, delegation): create with scope \"global\".",
-    "- DOMAIN-SPECIFIC (knowledge, procedures, constraints of THIS project): create with scope \"project\" (it is stamped to this session's project).",
+    '- INVARIANT (cross-domain agentic behavior — planning, tool use, context management, delegation): create with scope "global".',
+    '- DOMAIN-SPECIFIC (knowledge, procedures, constraints of THIS project): create with scope "project" (it is stamped to this session\'s project).',
     "A trajectory may justify either, both, or neither — never force a domain fact into a global note.",
   ].join("\n");
   return [
@@ -207,7 +207,11 @@ export const EVIDENCE_MERGE_CAP = 2000;
 
 /** Tokenize for overlap comparison: lowercase alnum tokens. */
 export function tokenize(text: string): string[] {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 /** Jaccard token overlap in [0,1]. 0 if either side has no tokens. */
@@ -268,11 +272,12 @@ export interface DedupeGroup {
   absorbed: Array<{ dup: HarnessItem; overlap: number }>;
 }
 
-export function planDedupePairs(state: HarnessState, opts: DedupeOptions = DEFAULT_DEDUPE): DedupeGroup[] {
+export function planDedupePairs(
+  state: HarnessState,
+  opts: DedupeOptions = DEFAULT_DEDUPE,
+): DedupeGroup[] {
   const similarity = opts.similarity ?? tokenOverlap;
-  const ordered = state.items
-    .filter((i) => i.active)
-    .sort((a, b) => b.importance - a.importance);
+  const ordered = state.items.filter((i) => i.active).sort((a, b) => b.importance - a.importance);
   const keepers: DedupeGroup[] = [];
   for (const cand of ordered) {
     let target: DedupeGroup | undefined;
@@ -298,7 +303,10 @@ export function planDedupePairs(state: HarnessState, opts: DedupeOptions = DEFAU
 }
 
 /** Build the update/delete deltas from keeper groups (see planDedupe). */
-export function deltasFromGroups(groups: DedupeGroup[], opts: DedupeOptions = DEFAULT_DEDUPE): ProposedDelta[] {
+export function deltasFromGroups(
+  groups: DedupeGroup[],
+  opts: DedupeOptions = DEFAULT_DEDUPE,
+): ProposedDelta[] {
   const updates: ProposedDelta[] = [];
   const deletes: ProposedDelta[] = [];
   for (const k of groups) {
@@ -362,7 +370,10 @@ export function deltasFromGroups(groups: DedupeGroup[], opts: DedupeOptions = DE
  * subsequently dropped. A duplicate matching several keepers joins the
  * best-overlap one.
  */
-export function planDedupe(state: HarnessState, opts: DedupeOptions = DEFAULT_DEDUPE): ProposedDelta[] {
+export function planDedupe(
+  state: HarnessState,
+  opts: DedupeOptions = DEFAULT_DEDUPE,
+): ProposedDelta[] {
   return deltasFromGroups(planDedupePairs(state, opts), opts);
 }
 
@@ -377,10 +388,14 @@ export const CLASSIFIER_RECALL_FLOOR = 0.35;
 export const CLASSIFIER_MAX_PAIRS = 20;
 
 /** Build the batched pair-confirmation request. Pure — unit-testable. */
-export function buildPairQuestions(
-  pairs: Array<{ keeper: HarnessItem; dup: HarnessItem }>,
-): { state: Record<string, unknown>; questions: Record<string, { instructions: string; trueCriteria: string; falseCriteria: string }> } {
-  const questions: Record<string, { instructions: string; trueCriteria: string; falseCriteria: string }> = {};
+export function buildPairQuestions(pairs: Array<{ keeper: HarnessItem; dup: HarnessItem }>): {
+  state: Record<string, unknown>;
+  questions: Record<string, { instructions: string; trueCriteria: string; falseCriteria: string }>;
+} {
+  const questions: Record<
+    string,
+    { instructions: string; trueCriteria: string; falseCriteria: string }
+  > = {};
   const state = {
     pairs: pairs.map((p, i) => ({ index: i, keeper: p.keeper.content, duplicate: p.dup.content })),
   };
@@ -388,7 +403,8 @@ export function buildPairQuestions(
     questions[`p${i}`] = {
       instructions:
         "You are confirming dedupe candidates for a coding agent's self-improvement store. Each pair holds two items (a keeper and a candidate duplicate). Do the two items state the SAME durable lesson, fact, or instruction — such that keeping both is redundant?",
-      trueCriteria: "The two items express the same reusable information; one merged copy loses nothing.",
+      trueCriteria:
+        "The two items express the same reusable information; one merged copy loses nothing.",
       falseCriteria:
         "The items differ in scope, condition, or meaning — both must be kept, or the token overlap is only superficial.",
     };

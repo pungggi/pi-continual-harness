@@ -21,21 +21,25 @@
 // Both paths are visible (one notify line) and use the same persisted
 // harness-state entries as every other mutation (/tree rollback covers them).
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  TurnEndEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState } from "./store.js";
+import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState, makePersist } from "./store.js";
 import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js";
 import type { LayerFile, LayerPaths } from "./store.js";
 import type { HarnessItem } from "./types.js";
-import { DEFAULT_IMPORT_REMIND_TURNS, layerFilesFor, loadConfig, projectSlug, type HarnessConfig } from "./config.js";
+import {
+  DEFAULT_IMPORT_REMIND_TURNS,
+  layerFilesFor,
+  loadConfig,
+  projectSlug,
+  type HarnessConfig,
+} from "./config.js";
 import { makeTurnCadence } from "./cadence.js";
 
-/** Real (homedir-based) layer paths. Tests inject their own. */
-function layerPaths(): LayerPaths {
+/** Real (homedir-based) layer paths — the ONE definition shared by the auto
+ *  export path here, /harness export, and /refine --commit. Tests inject
+ *  their own. */
+export function defaultLayerPaths(): LayerPaths {
   return { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR };
 }
 
@@ -87,13 +91,20 @@ export function getImportedThisSession(): ImportedRef[] {
   return importedThisSession;
 }
 
+/** Char cap on one imported-item listing line (bounded summary rows). */
+const IMPORT_SUMMARY_CHARS = 70;
+
 /** One listing line per imported item, bounded: `• [id] (kind) content…`. */
-export function summarizeImported(items: ImportedRef[], max = 5): string[] {
+function summarizeImported(items: ImportedRef[], max = 5): string[] {
   const lines = items.slice(0, max).map((i) => {
-    const c = i.content.length > 70 ? `${i.content.slice(0, 69)}…` : i.content;
+    const c =
+      i.content.length > IMPORT_SUMMARY_CHARS
+        ? `${i.content.slice(0, IMPORT_SUMMARY_CHARS - 1)}…`
+        : i.content;
     return `• [${i.id}] (${i.kind}) ${c}`;
   });
-  if (items.length > max) lines.push(`(+${items.length - max} more — full list via the agent's harness_list tool)`);
+  if (items.length > max)
+    lines.push(`(+${items.length - max} more — full list via the agent's harness_list tool)`);
   return lines;
 }
 
@@ -109,9 +120,7 @@ export async function syncDurableOnStart(
   const config = await loadConfig();
   if (!config.autoImport) return;
   const layers = files ?? layerFilesFor(ctx.cwd);
-  const res = await importDurableLayers(layers, {}, (snapshot, ver) => {
-    pi.appendEntry("harness-state", { state: snapshot, version: ver });
-  });
+  const res = await importDurableLayers(layers, {}, makePersist(pi));
   // The start-sync completed (a throw above leaves it false, so the turn_end
   // catch-up retries before any export; missing layers are a completed no-op).
   startSyncRan = true;
@@ -131,7 +140,9 @@ export async function syncDurableOnStart(
   if (res.pruned > 0) bits.push(`${res.pruned} pruned`);
   // WHAT arrived, not just counts: silently-injected instructions must be
   // visible at the moment they enter the session.
-  const lines = [`Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`];
+  const lines = [
+    `Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`,
+  ];
   if (importedThisSession.length > 0) {
     lines.push("New instructions now active:", ...summarizeImported(importedThisSession));
   }
@@ -171,9 +182,7 @@ function reconcileImported(): void {
   importedThisSession = importedThisSession
     .map((ref): ImportedRef | undefined => {
       const live = getState().items.find((i) => i.id === ref.id);
-      return live && live.active
-        ? { id: live.id, kind: live.kind, content: live.content }
-        : undefined;
+      return live?.active ? { id: live.id, kind: live.kind, content: live.content } : undefined;
     })
     .filter((r): r is ImportedRef => Boolean(r));
 }
@@ -217,7 +226,10 @@ function startFilesFor(cwd: string, injected?: LayerPaths): LayerFile[] | undefi
   const slug = projectSlug(cwd);
   return [
     { path: injected.globalPath, defaultScope: { scope: "global" } },
-    { path: join(injected.projectDir, `${slug}.md`), defaultScope: { scope: "project", project: slug } },
+    {
+      path: join(injected.projectDir, `${slug}.md`),
+      defaultScope: { scope: "project", project: slug },
+    },
   ];
 }
 
@@ -247,15 +259,9 @@ export async function handleAutoExportTurnEnd(
   }
   if (getVersion() === lastExportedVersion) return;
   try {
-    const written = await exportDurableLayers(
-      paths ?? layerPaths(),
-      projectSlug(ctx.cwd),
-    );
+    const written = await exportDurableLayers(paths ?? defaultLayerPaths(), projectSlug(ctx.cwd));
     lastExportedVersion = getVersion();
-    ctx.ui.notify(
-      `Continual Harness: durable state exported (${written.length} file(s)).`,
-      "info",
-    );
+    ctx.ui.notify(`Continual Harness: durable state exported (${written.length} file(s)).`, "info");
   } catch (err) {
     // Soft-fail but leave lastExportedVersion stale → retried next turn.
     ctx.ui.notify(`Durable auto-export failed: ${(err as Error).message}`, "warning");

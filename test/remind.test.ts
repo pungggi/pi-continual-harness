@@ -89,9 +89,16 @@ describe("evaluateReminder", () => {
     const fired = completed(c, 10).filter((d) => d.fire);
     expect(fired.map((d) => d.fires)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(fired.map((d) => d.detail)).toEqual([
-      false, false, false, true, // fire 4 → detail ordinal 1
-      false, false, false, true, // fire 8 → detail ordinal 2
-      false, false,
+      false,
+      false,
+      false,
+      true, // fire 4 → detail ordinal 1
+      false,
+      false,
+      false,
+      true, // fire 8 → detail ordinal 2
+      false,
+      false,
     ]);
     expect(fired.filter((d) => d.detail).map((d) => d.detailOrdinal)).toEqual([1, 2]);
   });
@@ -215,10 +222,7 @@ describe("reminderState (store-derived facts)", () => {
     // (createdAt/updatedAt share millisecond precision).
     await new Promise((r) => setTimeout(r, 3));
     // Touch the second item so updatedAt > createdAt (a citation would too).
-    applyDeltas(
-      [{ op: "update", id: getState().items[1]!.id, importance: 0.6 }],
-      () => {},
-    );
+    applyDeltas([{ op: "update", id: getState().items[1]!.id, importance: 0.6 }], () => {});
     const state = reminderState({ ...DEFAULT_CONFIG });
     expect(state.activeItems).toBe(2);
     expect(state.neverCited).toBe(1);
@@ -260,7 +264,9 @@ describe("registerReminder end-to-end", () => {
       // Synthetic events carry no outcome → treated as completed (0.14.0).
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
-    const nudges = notifications.filter((n) => /turns since the last check|still empty/.test(n.msg));
+    const nudges = notifications.filter((n) =>
+      /turns since the last check|still empty/.test(n.msg),
+    );
     const guides = notifications.filter((n) => /guide 1\/\d+/.test(n.msg));
     expect(nudges).toHaveLength(3); // turns 25, 50, 75
     expect(guides).toHaveLength(1); // turn 100 = 4th fire

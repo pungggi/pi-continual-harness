@@ -3,7 +3,12 @@
 // policy-aware resolution — the seams model-binding.test.ts drives end-to-end.
 
 import { describe, it, expect } from "vitest";
-import { isVirtualModel, physicalKeyFromBranch, resolveBindingKey, VIRTUAL_MODEL_API } from "../src/vmodel.js";
+import {
+  isVirtualModel,
+  physicalKeyFromBranch,
+  resolveBindingKey,
+  VIRTUAL_MODEL_API,
+} from "../src/vmodel.js";
 
 describe("isVirtualModel", () => {
   it("matches pi's virtual catalog api id", () => {
@@ -34,7 +39,10 @@ describe("physicalKeyFromBranch", () => {
     expect(physicalKeyFromBranch([entry("user")])).toBeUndefined();
     expect(physicalKeyFromBranch([])).toBeUndefined();
     expect(
-      physicalKeyFromBranch([entry("assistant", { provider: "x", model: "y" }), entry("assistant")]),
+      physicalKeyFromBranch([
+        entry("assistant", { provider: "x", model: "y" }),
+        entry("assistant"),
+      ]),
     ).toBe("x/y"); // falls back to the last assistant message WITH a model
   });
 });
@@ -43,7 +51,10 @@ describe("resolveBindingKey", () => {
   const physical = { provider: "anthropic", id: "claude-x", api: "anthropic" };
   const virtual = { provider: "openai-codex", id: "auto", api: "pi-virtual" };
   const branch = [
-    { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [] } },
+    {
+      type: "message",
+      message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [] },
+    },
   ];
 
   it("default (virtual) policy: plain provider/id, virtual or physical", () => {

@@ -28,6 +28,9 @@ import type { HarnessItem, HarnessState } from "./types.js";
 import { preview } from "./list.js";
 import { REFINE_ENTRY, STATE_ENTRY } from "./store.js";
 
+/** Char cap on one item line inside the digest (bounded prompt block). */
+const DIGEST_PREVIEW_CHARS = 90;
+
 /** One-line, whitespace-flattened preview (shared style with list rows). */
 function flat(text: string, max: number): string {
   return preview(text, max);
@@ -191,7 +194,7 @@ export function buildLessonsDigest(
             s.citations ? `cited ${s.citations}×` : "",
             s.keeps ? `kept ${s.keeps}×` : "",
           ].filter(Boolean);
-          return `- [${i.id}] (${bits.join(", ")}): ${flat(i.content, 90)}`;
+          return `- [${i.id}] (${bits.join(", ")}): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`;
         }),
       ].join("\n"),
     );
@@ -210,7 +213,10 @@ export function buildLessonsDigest(
     sections.push(
       [
         `Rejected signals (candidates to delete or rewrite — past drops, no use since):`,
-        ...struggling.map((i) => `- [${i.id}] (dropped ${i.support!.drops}×): ${flat(i.content, 90)}`),
+        ...struggling.map(
+          (i) =>
+            `- [${i.id}] (dropped ${i.support!.drops}×): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`,
+        ),
       ].join("\n"),
     );
   }

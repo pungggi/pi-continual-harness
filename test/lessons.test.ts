@@ -82,13 +82,22 @@ describe("classifyRuns", () => {
   });
 
   it("still credits a genuine steering mutation between two no-op runs", () => {
-    const runs = classifyRuns([refineEntry({ applied: 0 }), stateEntry(), refineEntry({ applied: 0 })]);
+    const runs = classifyRuns([
+      refineEntry({ applied: 0 }),
+      stateEntry(),
+      refineEntry({ applied: 0 }),
+    ]);
     expect(runs[0]!.followedByStateChange).toBe(true); // no direct-apply next → the entry is the steering mutation
     expect(isEffectiveRun(runs[0]!)).toBe(true);
   });
 
   it("tolerates malformed entries instead of throwing", () => {
-    const runs = classifyRuns([{ type: "custom", customType: "harness-refinement" }, { type: "custom" }, null, 42]);
+    const runs = classifyRuns([
+      { type: "custom", customType: "harness-refinement" },
+      { type: "custom" },
+      null,
+      42,
+    ]);
     expect(runs).toHaveLength(1);
     expect(isEffectiveRun(runs[0]!)).toBe(false);
   });
@@ -137,7 +146,11 @@ describe("buildLessonsDigest", () => {
 
   it("lists cited items as proven useful (organic signal)", () => {
     const s = stateOf([
-      item({ id: "h_a", content: "always run tests before pushing", support: { citations: 3, lastCitedAt: 2 } }),
+      item({
+        id: "h_a",
+        content: "always run tests before pushing",
+        support: { citations: 3, lastCitedAt: 2 },
+      }),
     ]);
     const digest = buildLessonsDigest(s, []);
     expect(digest).toContain("## Lessons from past refines");
@@ -154,7 +167,11 @@ describe("buildLessonsDigest", () => {
   it("names dropped-without-use items as rejected signals", () => {
     const s = stateOf([
       item({ id: "h_c", content: "use the staging endpoint", support: { drops: 2 } }),
-      item({ id: "h_d", content: "neutral item with drops but more citations", support: { drops: 1, citations: 2 } }),
+      item({
+        id: "h_d",
+        content: "neutral item with drops but more citations",
+        support: { drops: 1, citations: 2 },
+      }),
     ]);
     const digest = buildLessonsDigest(s, []);
     expect(digest).toContain("Rejected signals");
@@ -166,7 +183,11 @@ describe("buildLessonsDigest", () => {
 
   it("an item dropped then cited afterwards is contested, not rejected (review r4341960962)", () => {
     const s = stateOf([
-      item({ id: "h_flip", content: "dropped once, then actually used", support: { drops: 1, citations: 1, lastCitedAt: 99 } }),
+      item({
+        id: "h_flip",
+        content: "dropped once, then actually used",
+        support: { drops: 1, citations: 1, lastCitedAt: 99 },
+      }),
     ]);
     const digest = buildLessonsDigest(s, []);
     // Net-neutral: neither proven useful (score 0) nor rejected (not < 0) —
@@ -201,9 +222,16 @@ describe("buildLessonsDigest", () => {
   });
 
   it("summarizes refine history: all-effective vs. no-op-heavy", () => {
-    const effective = buildLessonsDigest(stateOf([]), [refineEntry({ applied: 1 }), refineEntry({ applied: 2 })]);
+    const effective = buildLessonsDigest(stateOf([]), [
+      refineEntry({ applied: 1 }),
+      refineEntry({ applied: 2 }),
+    ]);
     expect(effective).toContain("all 2 recent run(s) produced durable deltas");
-    const noisy = buildLessonsDigest(stateOf([]), [refineEntry({ applied: 1 }), refineEntry(), refineEntry()]);
+    const noisy = buildLessonsDigest(stateOf([]), [
+      refineEntry({ applied: 1 }),
+      refineEntry(),
+      refineEntry(),
+    ]);
     expect(noisy).toContain("2 of the last 3 run(s) proposed nothing durable");
   });
 

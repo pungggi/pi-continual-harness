@@ -12,8 +12,7 @@
 // handleStatus (harness.ts) stays thin glue: config load, the durable-layer
 // stat() I/O, hint selection, one ctx.ui.notify.
 
-import { classifyTransition, parseDedupeDelete } from "./corpus.js";
-import { REFINE_ENTRY, STATE_ENTRY } from "./store.js";
+import { classifyTransition, parseDedupeDelete, walkAuditTrail } from "./corpus.js";
 import { DEFAULT_REF_BUMP, type HarnessConfig } from "./config.js";
 import type { InjectionStats } from "./inject.js";
 import type { StatusHint } from "./hints.js";
@@ -66,22 +65,9 @@ function emptyImpact(): ImpactCounts {
   };
 }
 
-/** Loose entry shape, decoupled from pi's internal session types (corpus.ts
- *  uses the same pattern). */
-type AnyEntry = {
-  type?: string;
-  customType?: string;
-  data?: {
-    state?: HarnessState;
-    source?: string;
-    proposer?: string;
-    applied?: unknown;
-    appliedDeltas?: unknown[];
-  };
-};
-
-/** Aggregate the audit trail into whole-store impact plus per-owner lifecycle
- *  counts (the per-model annotation mirrors the counts band). Pure. */
+/** Aggregate the audit trail (via the shared walkAuditTrail in corpus.ts)
+ *  into whole-store impact plus per-owner lifecycle counts (the per-model
+ *  annotation mirrors the counts band). Pure. */
 function aggregateImpact(
   entries: Iterable<unknown>,
   citeBump: number,
@@ -97,16 +83,8 @@ function aggregateImpact(
     return c;
   };
 
-  const snapshots: HarnessState[] = [];
-  for (const raw of entries) {
-    const entry = raw as AnyEntry;
-    if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
-      const next = entry.data.state;
-      // Implicit EMPTY baseline before the branch's first snapshot (review
-      // #27): a fresh session persists no empty harness-state entry, so the
-      // first create batch / auto-import IS the first snapshot — without this
-      // it was skipped entirely and reported `created 0`.
-      const prev = snapshots.at(-1) ?? { items: [] };
+  walkAuditTrail(entries, {
+    onTransition: (prev, next) => {
       for (const t of classifyTransition(prev, next, citeBump)) {
         const key = t.item.ownerModel || "(orphan)";
         const o = owner(key);
@@ -142,25 +120,21 @@ function aggregateImpact(
             break; // unknown future event: ignore, never mislabel
         }
       }
-      snapshots.push(next);
-      continue;
-    }
-    if (entry.type === "custom" && entry.customType === REFINE_ENTRY && entry.data) {
-      if (entry.data.source === "auto") whole.autoRuns += 1;
+    },
+    onRefine: (step) => {
+      if (step.source === "auto") whole.autoRuns += 1;
       else whole.manualRuns += 1; // manual by default (legacy entries predate `source`)
-      const deltas = Array.isArray(entry.data.appliedDeltas) ? entry.data.appliedDeltas : [];
       // Owner attribution for direct-apply ops (review #27): at an audit entry
       // the last snapshot is the post-run state and the one before it is
       // pre-run — an update target lives post-run; a merged duplicate only
       // pre-run. Dedupe plans same-owner pairs, so either lookup attributes
       // the same model.
-      const current = snapshots.at(-1);
-      const pre = snapshots.at(-2);
       const ownerOf = (id: string): string | undefined => {
-        const item = current?.items.find((i) => i.id === id) ?? pre?.items.find((i) => i.id === id);
+        const item =
+          step.current?.items.find((i) => i.id === id) ?? step.pre?.items.find((i) => i.id === id);
         return item ? item.ownerModel || "(orphan)" : undefined;
       };
-      for (const d of deltas as Array<{ op?: string; id?: string; reason?: string }>) {
+      for (const d of step.appliedDeltas as Array<{ op?: string; id?: string; reason?: string }>) {
         if (!d || typeof d !== "object") continue;
         if (d.op === "update") {
           whole.updated += 1;
@@ -178,8 +152,8 @@ function aggregateImpact(
           }
         }
       }
-    }
-  }
+    },
+  });
   return { whole, byOwner };
 }
 
@@ -232,7 +206,7 @@ function applicableHints(
   if (!config.classifier?.model || config.autoRefine?.gate !== true) {
     hints.push({
       id: "classifier-gate",
-      text: "the auto-refine gate is available: set `classifier.model` and `autoRefine: { \"gate\": true }` in harness.json so cadenced refines skip when nothing durable happened",
+      text: 'the auto-refine gate is available: set `classifier.model` and `autoRefine: { "gate": true }` in harness.json so cadenced refines skip when nothing durable happened',
     });
   }
   // Zero citations ever and the loop is off → the outcome half of the fitness
@@ -245,7 +219,10 @@ function applicableHints(
   }
   // Memory items present → the pi-mem composition is one command away.
   if (active.some((i) => i.kind === "memory")) {
-    hints.push({ id: "push-mem", text: "`/harness push-mem` copies these memory items to pi-mem so they outlive the harness" });
+    hints.push({
+      id: "push-mem",
+      text: "`/harness push-mem` copies these memory items to pi-mem so they outlive the harness",
+    });
   }
   // Reminder off → the /refine habit has no support (companion nudge of #19).
   if (!config.remindRefine?.enabled) {
@@ -256,7 +233,10 @@ function applicableHints(
   }
   // Mixed durable scopes → /harness split classifies the whole store at once.
   if (active.some((i) => i.scope === "project") && active.some((i) => i.scope !== "project")) {
-    hints.push({ id: "split-scopes", text: "`/harness split` classifies items global vs project in one audited batch" });
+    hints.push({
+      id: "split-scopes",
+      text: "`/harness split` classifies items global vs project in one audited batch",
+    });
   }
   return hints;
 }
@@ -268,7 +248,8 @@ function zeroStateGuidance(total: number): string[] {
     "- Run `/refine` after a working session to capture your first lessons (evidence-backed, reviewable).",
     "- See the Quick start (§3) of the MANUAL — docs/MANUAL.md in the pi-continual-harness repo — for the three-step loop.",
   ];
-  if (total > 0) lines.push(`- ${total} inactive item(s) exist — restore or prune them via /harness.`);
+  if (total > 0)
+    lines.push(`- ${total} inactive item(s) exist — restore or prune them via /harness.`);
   return lines;
 }
 
@@ -287,7 +268,9 @@ export function buildStatusReport(
   for (const i of active) perKind[i.kind] += 1;
   const scopeProject = active.filter((i) => i.scope === "project").length;
   const owners = [...new Set(active.map((i) => i.ownerModel).filter(Boolean))];
-  const mine = opts.modelKey ? active.filter((i) => i.ownerModel === opts.modelKey).length : active.length;
+  const mine = opts.modelKey
+    ? active.filter((i) => i.ownerModel === opts.modelKey).length
+    : active.length;
 
   const citeBump = opts.config.outcomeImportance?.bump ?? DEFAULT_REF_BUMP;
   const { whole, byOwner } = aggregateImpact(branchEntries, citeBump);
@@ -308,9 +291,19 @@ export function buildStatusReport(
 }
 
 function impactLine(c: ImpactCounts): string {
-  const parts = [`created ${c.created}`, `updated ${c.updated}`, `kept ${c.kept}`, `cited ${c.cited}`];
+  const parts = [
+    `created ${c.created}`,
+    `updated ${c.updated}`,
+    `kept ${c.kept}`,
+    `cited ${c.cited}`,
+  ];
   if (c.dropped || c.pruned || c.deleted || c.merged) {
-    parts.push(`dropped ${c.dropped}`, `pruned ${c.pruned}`, `deleted ${c.deleted}`, `merged ${c.merged}`);
+    parts.push(
+      `dropped ${c.dropped}`,
+      `pruned ${c.pruned}`,
+      `deleted ${c.deleted}`,
+      `merged ${c.merged}`,
+    );
   }
   return parts.join(", ");
 }
@@ -327,7 +320,9 @@ export function renderStatusReport(
     `Harness: ${r.active} active / ${r.total} total — ` +
       `prompt ${r.perKind.prompt}, memory ${r.perKind.memory}, skill ${r.perKind.skill}, subagent ${r.perKind.subagent}` +
       ` — scope ${r.scopeGlobal} global / ${r.scopeProject} project.` +
-      (r.model.key ? ` ${r.model.mine} active for [${r.model.key}] across ${r.model.models} model(s).` : ""),
+      (r.model.key
+        ? ` ${r.model.mine} active for [${r.model.key}] across ${r.model.models} model(s).`
+        : ""),
   );
   if (r.zeroState) lines.push(...r.zeroState);
   // Band 1 — impact (derived from the audit trail; nothing persisted).

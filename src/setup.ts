@@ -86,7 +86,8 @@ function recommendedDeltas(): PresetDelta[] {
     {
       path: "autoImport",
       value: true,
-      rationale: "Durable sync: refinements survive into new sessions (session_start layered import + turn_end layered export when the store changed).",
+      rationale:
+        "Durable sync: refinements survive into new sessions (session_start layered import + turn_end layered export when the store changed).",
       safety:
         "This lets the harness write durable state files on a cadence (turn_end auto-export) — autonomous file mutation. " +
         "Every run is visible (one notify line) and /tree-rollback-able.",
@@ -113,17 +114,39 @@ export const PRESETS: Record<PresetName, Preset> = {
       "Pins the opt-in feature keys to their shipped defaults so nothing autonomous ever runs — an explicit no rather than an absent file. The one exception: the default-on /refine nudge is notify-only, and quiet silences it too.",
     notes: [],
     deltas: [
-      { path: "autoImport", value: DEFAULT_CONFIG.autoImport, rationale: "Durable sync stays off: /harness import and /harness export remain manual." },
-      { path: "importRemind", value: clone(DEFAULT_CONFIG.importRemind), rationale: "Reminder defaults pinned (only effective with autoImport on)." },
-      { path: "remindRefine", value: { ...clone(DEFAULT_CONFIG.remindRefine), enabled: false }, rationale: "The /refine activation nudge is on by default (notify-only, never mutates); quiet silences it explicitly." },
-      { path: "autoRefine", value: clone(DEFAULT_CONFIG.autoRefine), rationale: "Autonomous refinement stays off." },
-      { path: "outcomeImportance", value: clone(DEFAULT_CONFIG.outcomeImportance), rationale: "Autonomous importance promotion stays off." },
+      {
+        path: "autoImport",
+        value: DEFAULT_CONFIG.autoImport,
+        rationale: "Durable sync stays off: /harness import and /harness export remain manual.",
+      },
+      {
+        path: "importRemind",
+        value: clone(DEFAULT_CONFIG.importRemind),
+        rationale: "Reminder defaults pinned (only effective with autoImport on).",
+      },
+      {
+        path: "remindRefine",
+        value: { ...clone(DEFAULT_CONFIG.remindRefine), enabled: false },
+        rationale:
+          "The /refine activation nudge is on by default (notify-only, never mutates); quiet silences it explicitly.",
+      },
+      {
+        path: "autoRefine",
+        value: clone(DEFAULT_CONFIG.autoRefine),
+        rationale: "Autonomous refinement stays off.",
+      },
+      {
+        path: "outcomeImportance",
+        value: clone(DEFAULT_CONFIG.outcomeImportance),
+        rationale: "Autonomous importance promotion stays off.",
+      },
     ],
   },
   recommended: {
     name: "recommended",
     title: "durable sync + awareness reminders",
-    description: "autoImport on (refinements survive into new sessions) paired with the importRemind awareness reminders.",
+    description:
+      "autoImport on (refinements survive into new sessions) paired with the importRemind awareness reminders.",
     notes: [
       "Gate-ready: to make refinement signal-driven later, set classifier.model + autoRefine.gate (pi >= 0.99). This preset leaves the gate off.",
     ],
@@ -132,7 +155,8 @@ export const PRESETS: Record<PresetName, Preset> = {
   power: {
     name: "power",
     title: "recommended + autonomous refinement",
-    description: "Everything in recommended, plus autoRefine: the agent runs /refine itself on a cadence.",
+    description:
+      "Everything in recommended, plus autoRefine: the agent runs /refine itself on a cadence.",
     notes: [],
     deltas: [
       ...recommendedDeltas(),
@@ -151,7 +175,10 @@ export const PRESETS: Record<PresetName, Preset> = {
 
 /** Menu rows for the TUI's --preset value completion (harness.ts). */
 export const PRESET_COMPLETIONS: Array<{ value: string; description: string }> = [
-  { value: "quiet", description: "Everything manual: opt-ins off, the default-on /refine nudge silenced" },
+  {
+    value: "quiet",
+    description: "Everything manual: opt-ins off, the default-on /refine nudge silenced",
+  },
   { value: "recommended", description: "autoImport + importRemind awareness reminders" },
   { value: "power", description: "recommended + autoRefine (autonomous, own confirm)" },
 ];
@@ -166,7 +193,11 @@ export function expandPreset(name: string): Preset | undefined {
 
 /** Pure dotted-path setter: returns a clone of `obj` with `path` set to
  *  `value` (missing intermediate objects are created). Never mutates. */
-export function setPath(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
+export function setPath(
+  obj: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): Record<string, unknown> {
   const keys = path.split(".");
   const out: Record<string, unknown> = { ...obj };
   let cur: Record<string, unknown> = out;
@@ -230,6 +261,63 @@ function flagValue(rest: string[], flag: string): string | undefined {
   return v && !v.startsWith("--") ? v : undefined;
 }
 
+/** Phase 2: pick the preset. A `--preset` flag wins; otherwise drive pi's
+ *  blocking menu (cancel / dismissal → undefined → no write). */
+async function choosePreset(
+  ctx: ExtensionCommandContext,
+  flagPreset: string | undefined,
+): Promise<Preset | undefined> {
+  if (flagPreset !== undefined) return expandPreset(flagPreset);
+  ctx.ui.notify(
+    [
+      "Presets:",
+      `  quiet        — ${PRESETS.quiet.title}`,
+      `  recommended  — ${PRESETS.recommended.title}`,
+      `  power        — ${PRESETS.power.title}`,
+    ].join("\n"),
+    "info",
+  );
+  const choice = await ctx.ui.select("Continual Harness setup — choose a preset", [
+    "recommended",
+    "power",
+    "quiet",
+    "cancel",
+  ]);
+  if (choice === undefined || choice === "cancel") {
+    ctx.ui.notify(
+      "Setup cancelled — nothing written. Scripted form: /harness setup --preset <quiet|recommended|power> [--yes].",
+      "info",
+    );
+    return undefined;
+  }
+  return expandPreset(choice); // menu values are preset names
+}
+
+/** Phase 3: the per-feature confirm loop. Returns the declined paths; the
+ *  caller aborts when EVERY delta was declined. `--yes` (scripted consent)
+ *  skips every prompt INCLUDING the autonomous confirms — that is its point. */
+async function confirmDeltas(
+  ctx: ExtensionCommandContext,
+  preset: Preset,
+  current: HarnessConfig,
+): Promise<Set<string> | undefined> {
+  const declined = new Set<string>();
+  for (const d of preset.deltas) {
+    const cur = getPath(current, d.path);
+    if (jsonEq(cur, d.value)) continue; // already effective — nothing to ask
+    const ok = await ctx.ui.confirm(
+      d.autonomous === true ? `Enable ${d.path}? (autonomous)` : `Set ${d.path}?`,
+      `${d.path}: ${fmt(cur)} → ${fmt(d.value)}\n\n${d.rationale}${d.safety ? `\n\n${d.safety}` : ""}`,
+    );
+    if (!ok) declined.add(d.path);
+  }
+  if (preset.deltas.every((d) => declined.has(d.path))) {
+    ctx.ui.notify("Every change declined — nothing written.", "info");
+    return undefined;
+  }
+  return declined;
+}
+
 /**
  * The /harness setup handler. `path` is injectable for tests; production
  * always targets CONFIG_PATH. Drives pi's native blocking prompts
@@ -244,11 +332,17 @@ export async function handleSetup(
   const flagPreset = flagValue(rest, "--preset");
   const yes = rest.includes("--yes");
   if (rest.includes("--preset") && flagPreset === undefined) {
-    ctx.ui.notify("/harness setup: --preset needs a value (quiet | recommended | power).", "warning");
+    ctx.ui.notify(
+      "/harness setup: --preset needs a value (quiet | recommended | power).",
+      "warning",
+    );
     return;
   }
   if (flagPreset !== undefined && expandPreset(flagPreset) === undefined) {
-    ctx.ui.notify(`Unknown preset "${flagPreset}" — available: quiet, recommended, power. Nothing written.`, "warning");
+    ctx.ui.notify(
+      `Unknown preset "${flagPreset}" — available: quiet, recommended, power. Nothing written.`,
+      "warning",
+    );
     return;
   }
 
@@ -266,55 +360,15 @@ export async function handleSetup(
   );
 
   // 2. Preset: flag wins; otherwise the interactive menu (cancel → no write).
-  let preset: Preset | undefined = flagPreset !== undefined ? expandPreset(flagPreset) : undefined;
-  if (preset === undefined) {
-    ctx.ui.notify(
-      [
-        "Presets:",
-        `  quiet        — ${PRESETS.quiet.title}`,
-        `  recommended  — ${PRESETS.recommended.title}`,
-        `  power        — ${PRESETS.power.title}`,
-      ].join("\n"),
-      "info",
-    );
-    const choice = await ctx.ui.select("Continual Harness setup — choose a preset", [
-      "recommended",
-      "power",
-      "quiet",
-      "cancel",
-    ]);
-    if (choice === undefined || choice === "cancel") {
-      ctx.ui.notify(
-        "Setup cancelled — nothing written. Scripted form: /harness setup --preset <quiet|recommended|power> [--yes].",
-        "info",
-      );
-      return;
-    }
-    preset = expandPreset(choice);
-    if (preset === undefined) return; // unreachable: menu values are preset names
-  }
+  const preset = await choosePreset(ctx, flagPreset);
+  if (preset === undefined) return;
   if (preset.notes.length > 0) ctx.ui.notify(preset.notes.join("\n"), "info");
 
-  // 3. Per-feature confirm loop. `--yes` is the scripted consent: it skips
-  //    every prompt INCLUDING the autonomous confirms (that is its point).
-  //    Without it, each delta gets its own confirm — autonomous ones with an
-  //    explicit "this lets the agent mutate state on a cadence" safety note.
-  const declined = new Set<string>();
-  if (!yes) {
-    for (const d of preset.deltas) {
-      const cur = getPath(current, d.path);
-      if (jsonEq(cur, d.value)) continue; // already effective — nothing to ask
-      const ok = await ctx.ui.confirm(
-        d.autonomous === true ? `Enable ${d.path}? (autonomous)` : `Set ${d.path}?`,
-        `${d.path}: ${fmt(cur)} → ${fmt(d.value)}\n\n${d.rationale}${d.safety ? `\n\n${d.safety}` : ""}`,
-      );
-      if (!ok) declined.add(d.path);
-    }
-    if (preset.deltas.every((d) => declined.has(d.path))) {
-      ctx.ui.notify("Every change declined — nothing written.", "info");
-      return;
-    }
-  }
+  // 3. Per-feature confirm loop. Without --yes, each delta gets its own
+  //    confirm — autonomous ones with an explicit "this lets the agent mutate
+  //    state on a cadence" safety note.
+  const declined = yes ? new Set<string>() : await confirmDeltas(ctx, preset, current);
+  if (declined === undefined) return;
 
   // 4. Reviewed write: plan over the RAW file (unknown keys preserved), show
   //    the final diff + the exact JSON, confirm, then one saveConfig (backup +
@@ -326,9 +380,15 @@ export async function handleSetup(
       ? `  ${d.path}: ${fmt(getPath(current, d.path))}  (skipped — declined)`
       : `  ${d.path}: ${fmt(getPath(current, d.path))} → ${fmt(d.value)}`,
   );
-  ctx.ui.notify([`Planned ${path}:`, ...diff, "", JSON.stringify(planned, null, 2)].join("\n"), "info");
+  ctx.ui.notify(
+    [`Planned ${path}:`, ...diff, "", JSON.stringify(planned, null, 2)].join("\n"),
+    "info",
+  );
   if (!yes) {
-    const ok = await ctx.ui.confirm("Write harness.json?", `Back up (if present) and write ${path} exactly as shown, then reload the effective config.`);
+    const ok = await ctx.ui.confirm(
+      "Write harness.json?",
+      `Back up (if present) and write ${path} exactly as shown, then reload the effective config.`,
+    );
     if (!ok) {
       ctx.ui.notify("Declined — nothing written.", "info");
       return;
@@ -345,6 +405,9 @@ export async function handleSetup(
       "info",
     );
   } catch (err) {
-    ctx.ui.notify(`/harness setup failed — config file not replaced: ${(err as Error).message}`, "error");
+    ctx.ui.notify(
+      `/harness setup failed — config file not replaced: ${(err as Error).message}`,
+      "error",
+    );
   }
 }

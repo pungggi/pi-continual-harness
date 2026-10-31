@@ -117,11 +117,7 @@ describe("continualHarness autoImport wiring (fake HOME)", () => {
   it("session_start imports both layers and turn_end exports after a mutation", async () => {
     // opt in via the (fake-HOME) config file
     mkdirSync(dirname(config.CONFIG_PATH), { recursive: true });
-    writeFileSync(
-      config.CONFIG_PATH,
-      JSON.stringify({ autoImport: true }),
-      "utf8",
-    );
+    writeFileSync(config.CONFIG_PATH, JSON.stringify({ autoImport: true }), "utf8");
     config.resetConfigCache(); // force a re-read of the fake config
 
     writeLayer(GLOBAL_FILE, [
@@ -136,7 +132,10 @@ describe("continualHarness autoImport wiring (fake HOME)", () => {
     expect(notifications.some((n) => /durable sync imported 1 item\(s\)/.test(n.msg))).toBe(true);
 
     // a mutation → the durable layers are refreshed on turn_end
-    store.applyDeltas([{ op: "create", kind: "memory", content: "live fact", evidence: "e" }], () => {});
+    store.applyDeltas(
+      [{ op: "create", kind: "memory", content: "live fact", evidence: "e" }],
+      () => {},
+    );
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     expect(readFileSync(GLOBAL_FILE, "utf8")).toContain("live fact");
     expect(notifications.some((n) => /durable state exported/.test(n.msg))).toBe(true);

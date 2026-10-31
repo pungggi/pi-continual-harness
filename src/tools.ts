@@ -13,40 +13,113 @@ import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-ag
 import {
   harnessListTool,
   harnessMutateTool,
+  KIND_VALUES,
+  MAX_CONTENT_CHARS,
+  MAX_DELTAS,
+  MAX_EVIDENCE_CHARS,
+  MAX_REASON_CHARS,
   type HarnessListParams,
   type HarnessMutateParams,
 } from "./schemas.js";
-import { applyDeltas, getActiveModelKey, getState, listItems } from "./store.js";
-import { supportSummary } from "./list.js";
+import { applyDeltas, getActiveModelKey, getState, listItems, makePersist } from "./store.js";
+import { supportSummary, tally } from "./list.js";
 import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 
 export type { HarnessListParams, HarnessMutateParams };
 
 export function registerTools(pi: ExtensionAPI): void {
   pi.registerTool(
-    harnessListTool(
-      async (_toolCallId, params) => executeHarnessList(params as HarnessListParams),
-    ),
+    harnessListTool(async (_toolCallId, params) => executeHarnessList(params as HarnessListParams)),
   );
   pi.registerTool(
-    harnessMutateTool(
-      async (_toolCallId, params) => executeHarnessMutate(pi, params as HarnessMutateParams),
+    harnessMutateTool(async (_toolCallId, params) =>
+      executeHarnessMutate(pi, params as HarnessMutateParams),
     ),
   );
 }
 
+// ---- boundary validation (the model-facing write path) -----------------------
+//
+// pi schema-validates tool input against schemas.ts before execute runs, but
+// this is the one write path into persisted state — the guard is cheap
+// insurance against schema/tool-host drift and non-pi hosts (ctx.executeTool
+// callers). Every rule here mirrors a declared schema constraint.
+
+/** A string field within its declared cap (and a string at all). */
+function validText(v: unknown, max: number, field: string, where: string): string | undefined {
+  if (typeof v !== "string") return `${where}: ${field} must be a string`;
+  if (v.length > max) return `${where}: ${field} exceeds maxLength ${max}`;
+  return undefined;
+}
+
+/** Validate a raw deltas array against the mutate schema's constraints.
+ *  Returns the first violation found, or undefined when the batch is sound. */
+export function validateDeltas(raw: unknown): string | undefined {
+  if (!Array.isArray(raw)) return "deltas must be an array";
+  if (raw.length < 1 || raw.length > MAX_DELTAS) {
+    return `deltas must carry between 1 and ${MAX_DELTAS} items`;
+  }
+  for (const [n, d] of raw.entries()) {
+    const where = `delta ${n + 1}`;
+    if (!d || typeof d !== "object" || typeof (d as { op?: unknown }).op !== "string") {
+      return `${where}: missing op`;
+    }
+    const delta = d as Record<string, unknown>;
+    if (delta.op === "create") {
+      if (!KIND_VALUES.includes(delta.kind as never)) return `${where}: unknown kind`;
+      const content = validText(delta.content, MAX_CONTENT_CHARS, "content", where);
+      if (content) return content;
+      const evidence = validText(delta.evidence, MAX_EVIDENCE_CHARS, "evidence", where);
+      if (evidence) return evidence;
+      if (delta.content === "") return `${where}: content must not be empty`;
+      if (delta.evidence === "") return `${where}: evidence must not be empty`;
+    } else if (delta.op === "update") {
+      const id = validText(delta.id, 200, "id", where);
+      if (id) return id;
+      for (const field of ["content", "evidence"] as const) {
+        if (delta[field] !== undefined) {
+          const err = validText(
+            delta[field],
+            field === "content" ? MAX_CONTENT_CHARS : MAX_EVIDENCE_CHARS,
+            field,
+            where,
+          );
+          if (err) return err;
+        }
+      }
+      const imp = delta.importance;
+      if (imp !== undefined && (typeof imp !== "number" || imp < 0 || imp > 1)) {
+        return `${where}: importance must be a number in [0,1]`;
+      }
+      if (delta.active !== undefined && typeof delta.active !== "boolean") {
+        return `${where}: active must be a boolean`;
+      }
+      if (delta.scope !== undefined && delta.scope !== "global" && delta.scope !== "project") {
+        return `${where}: scope must be global|project`;
+      }
+    } else if (delta.op === "delete") {
+      const id = validText(delta.id, 200, "id", where);
+      if (id) return id;
+      const reason = validText(delta.reason, MAX_REASON_CHARS, "reason", where);
+      if (reason) return reason;
+    } else {
+      return `${where}: unknown op "${String(delta.op)}"`;
+    }
+  }
+  return undefined;
+}
+
 /** harness_list execute: list items, optionally filtered. */
-export async function executeHarnessList(params: HarnessListParams): Promise<AgentToolResult<unknown>> {
+export async function executeHarnessList(
+  params: HarnessListParams,
+): Promise<AgentToolResult<unknown>> {
   const kind = params.kind as ComponentKind | undefined;
   const modelFilter = params.model as string | undefined;
   // Default scope = the active model's items (what gets injected this turn).
   // "*" = every model; an explicit id = that model. When no active model is
   // known (no turn started) and no filter is given, return all so the agent
   // is never silently shown an empty store during setup.
-  const ownerKey =
-    modelFilter === "*"
-      ? undefined
-      : modelFilter ?? getActiveModelKey();
+  const ownerKey = modelFilter === "*" ? undefined : (modelFilter ?? getActiveModelKey());
   let items = listItems(kind);
   if (ownerKey !== undefined) items = items.filter((i) => i.ownerModel === ownerKey);
   return {
@@ -92,6 +165,14 @@ export async function executeHarnessMutate(
   pi: ExtensionAPI,
   params: HarnessMutateParams,
 ): Promise<AgentToolResult<unknown>> {
+  const invalid = validateDeltas(params.deltas);
+  if (invalid !== undefined) {
+    return {
+      content: [{ type: "text", text: `Rejected: ${invalid}. Nothing was applied.` }],
+      details: { rejected: true, error: invalid },
+      structuredContent: { applied: 0, created: 0, updated: 0, deleted: 0 },
+    };
+  }
   const incoming = params.deltas as Delta[];
   // `support` is SERVER-ONLY (review r4341960971): the update shape tolerates
   // additional properties, so a schema-valid call could otherwise carry
@@ -111,13 +192,7 @@ export async function executeHarnessMutate(
   // scoped to it (per-model isolation). When the active model is unknown (no
   // turn started) there is no actor — creates become orphans, adopted next
   // turn, and update/delete are unscoped (graceful fallback).
-  const applied: AppliedDelta[] = applyDeltas(
-    deltas,
-    (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    },
-    getActiveModelKey(),
-  );
+  const applied: AppliedDelta[] = applyDeltas(deltas, makePersist(pi), getActiveModelKey());
   const created = applied.filter((a) => a.op === "create").length;
   const updated = applied.filter((a) => a.op === "update").length;
   const deleted = applied.filter((a) => a.op === "delete").length;
@@ -131,13 +206,6 @@ export async function executeHarnessMutate(
     details: { applied, version: getState().items.length },
     structuredContent: { applied: applied.length, created, updated, deleted },
   };
-}
-
-/** Tally `items` by a string key, rendered as "key (n), key (n)". */
-function tally<T>(items: T[], key: (i: T) => string): string {
-  const counts = new Map<string, number>();
-  for (const i of items) counts.set(key(i), (counts.get(key(i)) ?? 0) + 1);
-  return [...counts.entries()].map(([k, n]) => `${k} (${n})`).join(", ");
 }
 
 /** Diagnostic message for an empty (filtered) harness_list result.
@@ -194,10 +262,10 @@ function emptyListMessage(kind: ComponentKind | undefined, ownerKey: string | un
       kind !== undefined ? all.filter((i) => i.kind === kind && i.ownerModel !== ownerKey) : [];
     return (
       `No ${kind} items for model ${ownerKey}; it owns ${owned.length} item(s) in other kinds: ` +
-        `${tally(owned, (i) => i.kind)}.` +
-        (kindElsewhere.length > 0
-          ? ` (${kindElsewhere.length} ${kind} item(s) exist for other models — re-run with model:"*" to see them.)`
-          : "")
+      `${tally(owned, (i) => i.kind)}.` +
+      (kindElsewhere.length > 0
+        ? ` (${kindElsewhere.length} ${kind} item(s) exist for other models — re-run with model:"*" to see them.)`
+        : "")
     );
   }
   // No owner filter: only a kind filter can have emptied the result.

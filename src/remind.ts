@@ -195,7 +195,7 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
   ({ state }) =>
     [
       "Continual Harness: a recommended starter config (~/.pi/agent/harness.json)",
-      '{',
+      "{",
       '  "autoImport": true,',
       '  "importRemind": { "enabled": true, "everyTurns": 25 },',
       '  "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },',
@@ -210,7 +210,7 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
 /** Rotation slot for the ordinal-th detailed reminder (1-based, pure). */
 export function detailSlot(ordinal: number): number {
   const n = DETAIL_GUIDES.length;
-  return ((Math.trunc(ordinal) - 1) % n + n) % n;
+  return (((Math.trunc(ordinal) - 1) % n) + n) % n;
 }
 
 /** Variant index for the loop slot: advances once per full library cycle,

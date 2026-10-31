@@ -50,7 +50,9 @@ describe("normalizeInjection", () => {
   });
 
   it("coerces bad numeric values back to defaults (no NaN / no <=0 leaks)", () => {
-    expect(normalizeInjection({ maxTokens: "big" as unknown as number })).toEqual(DEFAULT_INJECTION);
+    expect(normalizeInjection({ maxTokens: "big" as unknown as number })).toEqual(
+      DEFAULT_INJECTION,
+    );
     expect(normalizeInjection({ maxTokens: NaN })).toEqual(DEFAULT_INJECTION);
     expect(normalizeInjection({ maxTokens: 0 })).toEqual(DEFAULT_INJECTION);
     expect(normalizeInjection({ maxTokens: -10 })).toEqual(DEFAULT_INJECTION);

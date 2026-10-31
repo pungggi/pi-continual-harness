@@ -35,8 +35,18 @@
 // gate decision) appear in the transcript. The decision logic is factored into
 // evaluateAutoRefine() so it is unit-testable without a live pi runtime.
 
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_AUTO_EVERY_TURNS, DEFAULT_REFINE_NOOP_SKIP, type HarnessConfig, loadConfig } from "./config.js";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  TurnEndEvent,
+  TurnEndEventResult,
+} from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_AUTO_EVERY_TURNS,
+  DEFAULT_REFINE_NOOP_SKIP,
+  type HarnessConfig,
+  loadConfig,
+} from "./config.js";
 import { runRefine, gatherEvidence, DEFAULT_LOOKBACK_TURNS } from "./refine.js";
 import { buildClassify, buildGateRequest, gateDecision } from "./classify.js";
 import { recentIneffectiveRuns } from "./lessons.js";
@@ -93,7 +103,12 @@ export function buildRefineDraft(steeringMessage: string): {
   content: string;
   display: boolean;
 } {
-  return { type: "custom_message", customType: AUTO_REFINE_ENTRY, content: steeringMessage, display: true };
+  return {
+    type: "custom_message",
+    customType: AUTO_REFINE_ENTRY,
+    content: steeringMessage,
+    display: true,
+  };
 }
 
 /** Structural slice of pi's ProjectedSessionEntry (sourceEntry + messages). */
@@ -124,7 +139,8 @@ export function buildOmissionDrafts(projected: Iterable<ProjectedLike>): Omissio
     const src = p.sourceEntry;
     if (src?.type !== "custom_message" || src.customType !== AUTO_REFINE_ENTRY) continue;
     if ((p.messages?.length ?? 0) === 0) continue; // already omitted → skip
-    if (typeof src.id === "string") drafts.push({ type: "context_edit", targetId: src.id, replacement: null });
+    if (typeof src.id === "string")
+      drafts.push({ type: "context_edit", targetId: src.id, replacement: null });
   }
   return drafts;
 }
@@ -149,7 +165,10 @@ export async function handleAutoRefineTurnEnd(
   // gate can never latch shut against later, richer trajectory evidence
   // (review r4341960942) — the run after a skip always happens.
   const noOpSkip = config.autoRefine?.refineNoOpSkip ?? DEFAULT_REFINE_NOOP_SKIP;
-  if (historyGateSkips < HISTORY_GATE_MAX_CONSECUTIVE_SKIPS && recentIneffectiveRuns(ctx.sessionManager.getBranch(), noOpSkip)) {
+  if (
+    historyGateSkips < HISTORY_GATE_MAX_CONSECUTIVE_SKIPS &&
+    recentIneffectiveRuns(ctx.sessionManager.getBranch(), noOpSkip)
+  ) {
     historyGateSkips += 1;
     ctx.ui.notify(
       `Auto-refine: skipped — the last ${noOpSkip} refine run(s) produced nothing durable (history gate, ${historyGateSkips}/${HISTORY_GATE_MAX_CONSECUTIVE_SKIPS} consecutive skip; the next cadence runs regardless; refineNoOpSkip: 0 disables).`,
@@ -218,9 +237,4 @@ export async function handleAutoRefineTurnEnd(
   } catch (err) {
     ctx.ui.notify(`Auto-refine failed: ${(err as Error).message}`, "error");
   }
-}
-
-/** Subscribe to turn_end and run /refine on the configured cadence. */
-export function registerAutoRefine(pi: ExtensionAPI): void {
-  pi.on("turn_end", (event, ctx) => handleAutoRefineTurnEnd(pi, event, ctx));
 }

@@ -70,7 +70,9 @@ function plainKey(m?: ModelLike): string | undefined {
 
 /** Defensive branch access: test fakes build minimal ctx without a session
  *  manager; production always has one. */
-export function branchEntries(ctx: { sessionManager?: { getBranch?: () => unknown[] } }): unknown[] {
+export function branchEntries(ctx: {
+  sessionManager?: { getBranch?: () => unknown[] };
+}): unknown[] {
   return ctx.sessionManager?.getBranch?.() ?? [];
 }
 

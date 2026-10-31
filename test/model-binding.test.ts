@@ -37,12 +37,17 @@ function fakePi(): {
   const pi = {
     on: (ev: string, h: Handler) => handlers.set(ev, h),
     registerTool: (def: Record<string, unknown>) => tools.set(def.name as string, def),
-    appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+    appendEntry: (customType: string, data: unknown) =>
+      entries.push({ type: "custom", customType, data }),
   };
   return { pi: pi as unknown as ExtensionAPI, handlers, tools, entries };
 }
 
-function ctxWithModel(provider: string, id: string, api?: string): {
+function ctxWithModel(
+  provider: string,
+  id: string,
+  api?: string,
+): {
   model: { provider: string; id: string; api?: string };
   sessionManager?: { getBranch: () => unknown[] };
 } {
@@ -63,8 +68,20 @@ describe("renderHarnessBlock — strict per-model isolation", () => {
   it("shows only the active model's items; a new model id sees a blank block", () => {
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "sonnet note", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "prompt", content: "gemini note", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "sonnet note",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "gemini note",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ],
       () => {},
     );
@@ -76,7 +93,10 @@ describe("renderHarnessBlock — strict per-model isolation", () => {
   });
 
   it("renders nothing when the model is unknown (undefined)", () => {
-    applyDeltas([{ op: "create", kind: "prompt", content: "x", evidence: "e", ownerModel: "a/b" }], () => {});
+    applyDeltas(
+      [{ op: "create", kind: "prompt", content: "x", evidence: "e", ownerModel: "a/b" }],
+      () => {},
+    );
     expect(renderHarnessBlock(undefined)).toBe("");
   });
 });
@@ -89,7 +109,10 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
     handlers: Map<string, Handler>,
     ctx: { model: { provider: string; id: string; api?: string } },
   ): Promise<string | undefined> {
-    await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
+    await handlers.get("before_agent_start")!(
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx,
+    );
     const ret = (await handlers.get("context_with_system")!(
       { messages: [{ role: "system", content: "BASE" }] },
       ctx,
@@ -102,7 +125,13 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
     applyDeltas(
       [
         { op: "create", kind: "prompt", content: "legacy orphan", evidence: "e" },
-        { op: "create", kind: "prompt", content: "other model", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "other model",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ],
       () => {},
     );
@@ -123,7 +152,15 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
 
   it("does not persist when there is nothing to adopt", async () => {
     applyDeltas(
-      [{ op: "create", kind: "prompt", content: "owned", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      [
+        {
+          op: "create",
+          kind: "prompt",
+          content: "owned",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
       () => {},
     );
     const { pi, handlers, entries } = fakePi();
@@ -134,7 +171,15 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
 
   it("re-scopes on model switch: model B's turn injects none of model A's items", async () => {
     applyDeltas(
-      [{ op: "create", kind: "prompt", content: "A only", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      [
+        {
+          op: "create",
+          kind: "prompt",
+          content: "A only",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
       () => {},
     );
     const { pi, handlers } = fakePi();
@@ -168,7 +213,11 @@ describe("before_agent_start bridge + context_with_system render — adopt + cac
         type: "before_agent_start",
         messageType: "custom",
         systemPrompt: "BASE",
-        message: { role: "custom", customType: "pi-schedule/task", content: "run the daily review" },
+        message: {
+          role: "custom",
+          customType: "pi-schedule/task",
+          content: "run the daily review",
+        },
       },
       ctx,
     );
@@ -190,21 +239,45 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
   const virtualCtx = ctxWithModel("openai-codex", "auto", "pi-virtual");
   const branchWithResponse = [
     { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
-    { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [{ type: "text", text: "ok" }] } },
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-x",
+        content: [{ type: "text", text: "ok" }],
+      },
+    },
   ];
 
   it("default policy (virtual) keys the virtual selection itself", async () => {
     applyDeltas(
-      [{ op: "create", kind: "prompt", content: "virtual note", evidence: "e", ownerModel: "openai-codex/auto" }],
+      [
+        {
+          op: "create",
+          kind: "prompt",
+          content: "virtual note",
+          evidence: "e",
+          ownerModel: "openai-codex/auto",
+        },
+      ],
       () => {},
     );
     const { pi, handlers } = fakePi();
     registerInjection(pi);
     const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
-    await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
-    const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
-      messages?: Array<{ role: string; content: string }>;
-    } | undefined;
+    await handlers.get("before_agent_start")!(
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx,
+    );
+    const ret = (await handlers.get("context_with_system")!(
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx,
+    )) as
+      | {
+          messages?: Array<{ role: string; content: string }>;
+        }
+      | undefined;
     expect(ret?.messages?.[0]?.content).toContain("virtual note");
   });
 
@@ -216,16 +289,32 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
     await loadConfig(cfgFile);
     try {
       applyDeltas(
-        [{ op: "create", kind: "prompt", content: "physical note", evidence: "e", ownerModel: "anthropic/claude-x" }],
+        [
+          {
+            op: "create",
+            kind: "prompt",
+            content: "physical note",
+            evidence: "e",
+            ownerModel: "anthropic/claude-x",
+          },
+        ],
         () => {},
       );
       const { pi, handlers } = fakePi();
       registerInjection(pi);
       const ctx = { ...virtualCtx, sessionManager: { getBranch: () => branchWithResponse } };
-      await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx);
-      const ret = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
-        messages?: Array<{ role: string; content: string }>;
-      } | undefined;
+      await handlers.get("before_agent_start")!(
+        { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+        ctx,
+      );
+      const ret = (await handlers.get("context_with_system")!(
+        { messages: [{ role: "system", content: "BASE" }] },
+        ctx,
+      )) as
+        | {
+            messages?: Array<{ role: string; content: string }>;
+          }
+        | undefined;
       expect(ret?.messages?.[0]?.content).toContain("physical note");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -243,11 +332,19 @@ describe("virtual-model binding policy (pi ≥ 0.99)", () => {
       const { pi, handlers, entries } = fakePi();
       registerInjection(pi);
       const ctx = { ...virtualCtx, sessionManager: { getBranch: () => [] } };
-      const ret = (await handlers.get("before_agent_start")!({ type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx)) as { systemPrompt?: string };
+      const ret = (await handlers.get("before_agent_start")!(
+        { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+        ctx,
+      )) as { systemPrompt?: string };
       expect(ret?.systemPrompt).toBeUndefined();
-      const rendered = (await handlers.get("context_with_system")!({ messages: [{ role: "system", content: "BASE" }] }, ctx)) as {
-        messages?: Array<{ role: string; content: string }>;
-      } | undefined;
+      const rendered = (await handlers.get("context_with_system")!(
+        { messages: [{ role: "system", content: "BASE" }] },
+        ctx,
+      )) as
+        | {
+            messages?: Array<{ role: string; content: string }>;
+          }
+        | undefined;
       expect(rendered).toBeUndefined(); // unknown key → inject nothing
       expect(entries).toHaveLength(0); // nothing to adopt either
     } finally {
@@ -287,7 +384,15 @@ describe("harness_mutate — isolation enforces update/delete on the active mode
 
   it("rejects an update targeting another model's item (atomic rollback)", async () => {
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "theirs",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
+      ],
       () => {},
     );
     const id = getState().items[0]!.id;
@@ -305,7 +410,15 @@ describe("harness_mutate — isolation enforces update/delete on the active mode
 
   it("rejects a delete targeting another model's item", async () => {
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "theirs",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
+      ],
       () => {},
     );
     const id = getState().items[0]!.id;
@@ -323,7 +436,15 @@ describe("harness_mutate — isolation enforces update/delete on the active mode
 
   it("allows update of the active model's own items", async () => {
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "mine",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
       () => {},
     );
     const id = getState().items[0]!.id;
@@ -341,16 +462,34 @@ describe("harness_mutate — isolation enforces update/delete on the active mode
 describe("harness_list — model filtering", () => {
   beforeEach(reset);
 
-  async function list(tool: Record<string, unknown>, params: Record<string, unknown>): Promise<string> {
-    const res = (await (tool.execute as (...a: unknown[]) => Promise<unknown>)(undefined, params)) as ExecResult;
+  async function list(
+    tool: Record<string, unknown>,
+    params: Record<string, unknown>,
+  ): Promise<string> {
+    const res = (await (tool.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      params,
+    )) as ExecResult;
     return res.content[0]!.text;
   }
 
   it("defaults to the active model; '*' returns all; an explicit id filters", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "mine",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "theirs",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ],
       () => {},
     );
@@ -391,8 +530,20 @@ describe("harness_list — model filtering", () => {
     //    point at model:"*" instead of reading as "broken".
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "theirs", evidence: "e", ownerModel: "google/gemini" },
-        { op: "create", kind: "skill", content: "also theirs", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "theirs",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
+        {
+          op: "create",
+          kind: "skill",
+          content: "also theirs",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ],
       () => {},
     );
@@ -418,7 +569,15 @@ describe("harness_list — model filtering", () => {
     //    the diagnosis must be kind-scoped — never "No items for model" — and
     //    the model:"*" pointer appears only because skills exist elsewhere.
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "mine",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
       () => {},
     );
     setActiveModelKey("anthropic/sonnet");

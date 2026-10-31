@@ -63,7 +63,10 @@ interface RegistryLike {
 
 /** Raw pi-ai ClassifierResult slice (never rejects, but stopReason may be error). */
 interface ClassifyRawResult {
-  answers?: Record<string, { type?: string; choice?: unknown; score?: number; probability?: number; confidence?: number }>;
+  answers?: Record<
+    string,
+    { type?: string; choice?: unknown; score?: number; probability?: number; confidence?: number }
+  >;
   stopReason?: string;
   errorMessage?: string;
 }
@@ -86,7 +89,11 @@ export function resolveClassifierModel(
   if (!configured || !registry) return undefined;
   const slash = configured.indexOf("/");
   if (slash > 0 && typeof registry.findOfType === "function") {
-    const byPair = registry.findOfType("classifier", configured.slice(0, slash), configured.slice(slash + 1));
+    const byPair = registry.findOfType(
+      "classifier",
+      configured.slice(0, slash),
+      configured.slice(slash + 1),
+    );
     if (byPair) return byPair as ClassifierModelLike;
   }
   const all =
@@ -121,7 +128,11 @@ export function makeClassifyFn(
     }
     let raw: ClassifyRawResult;
     try {
-      raw = (await registry.classify(model, { state, questions: piQuestions }, signal ? { signal } : undefined)) as ClassifyRawResult;
+      raw = (await registry.classify(
+        model,
+        { state, questions: piQuestions },
+        signal ? { signal } : undefined,
+      )) as ClassifyRawResult;
     } catch (err) {
       // classify "never rejects", but stay defensive around transport edges.
       return { ok: false, answers: {}, model: label, error: (err as Error).message };
@@ -211,10 +222,17 @@ export function buildGateRequest(evidence: string): {
  * can only SKIP work, never block it.
  */
 export function gateDecision(result: ClassifyBoolResult): { proceed: boolean; because: string } {
-  if (!result.ok) return { proceed: true, because: `classifier error (${result.error ?? "unknown"}); falling back to cadence` };
+  if (!result.ok)
+    return {
+      proceed: true,
+      because: `classifier error (${result.error ?? "unknown"}); falling back to cadence`,
+    };
   const a = result.answers.gate;
   if (!a) return { proceed: true, because: "no gate answer; falling back to cadence" };
   return a.value
     ? { proceed: true, because: `classifier: yes (confidence ${a.confidence ?? "?"})` }
-    : { proceed: false, because: `classifier: no durable correction (confidence ${a.confidence ?? "?"})` };
+    : {
+        proceed: false,
+        because: `classifier: no durable correction (confidence ${a.confidence ?? "?"})`,
+      };
 }

@@ -9,14 +9,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  applyDeltas,
-  exportDurableLayers,
-  getState,
-  reconstruct,
-} from "../src/store.js";
+import { applyDeltas, exportDurableLayers, getState, reconstruct } from "../src/store.js";
 import { loadConfig, resetConfigCache, type HarnessConfig } from "../src/config.js";
-import { registerAutoExport, registerImportReminder, resetDurableSync, syncDurableOnStart, evaluateImportReminder, getImportedThisSession, MAX_IMPORT_REMINDERS } from "../src/durable.js";
+import {
+  registerAutoExport,
+  registerImportReminder,
+  resetDurableSync,
+  syncDurableOnStart,
+  evaluateImportReminder,
+  getImportedThisSession,
+  MAX_IMPORT_REMINDERS,
+} from "../src/durable.js";
 import { makeFakePi } from "./helpers.js";
 
 let dir: string;
@@ -77,7 +80,10 @@ describe("syncDurableOnStart (session_start layered import)", () => {
     const { pi, ctx, notifications, entries } = makeFakePi([]);
     await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
       { path: paths.globalPath, defaultScope: { scope: "global" } },
-      { path: join(paths.projectDir, "proj.md"), defaultScope: { scope: "project", project: "proj" } },
+      {
+        path: join(paths.projectDir, "proj.md"),
+        defaultScope: { scope: "project", project: "proj" },
+      },
     ]);
     expect(getState().items).toHaveLength(2);
     const byId = new Map(getState().items.map((i) => [i.id, i]));
@@ -159,14 +165,20 @@ describe("registerAutoExport (turn_end layered export)", () => {
   it("late enable: the first turn_end imports the layers BEFORE exporting (no clobber, review #26)", async () => {
     // The session started with autoImport OFF, so session_start skipped the
     // import — the durable layer holds a refinement this session never saw.
-    writeLayer(paths.globalPath, ["- **[h_saved]** (importance 0.50) saved refinement", "  - evidence: e"]);
+    writeLayer(paths.globalPath, [
+      "- **[h_saved]** (importance 0.50) saved refinement",
+      "  - evidence: e",
+    ]);
     await primeConfig({ autoImport: false });
     const { pi, ctx, fire, notifications } = makeFakePi([]);
     registerAutoExport(pi, paths);
     // ...the user enables autoImport mid-session (wizard or hand-edit):
     await primeConfig({ autoImport: true });
     // a store mutation makes the auto-export trigger on the next turn_end
-    applyDeltas([{ op: "create", kind: "memory", content: "session fact", evidence: "e" }], vi.fn());
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "session fact", evidence: "e" }],
+      vi.fn(),
+    );
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     // The durable layer was MERGED, not overwritten: both items survive.
     const layer = readFileSync(paths.globalPath, "utf8");
@@ -191,7 +203,10 @@ describe("registerAutoExport (turn_end layered export)", () => {
     };
     registerAutoExport(pi, paths);
     resetDurableSync(); // session never ran its start-sync (autoImport was off)
-    applyDeltas([{ op: "create", kind: "memory", content: "session fact", evidence: "e" }], vi.fn());
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "session fact", evidence: "e" }],
+      vi.fn(),
+    );
     await fire("turn_end", { type: "turn_end", turnIndex: 0 }, ctx());
     expect(notifications.some((n) => /catch-up import failed/.test(n.msg))).toBe(true);
     // the layer was NOT exported over: original content intact, no additions
@@ -233,7 +248,9 @@ describe("registerAutoExport (turn_end layered export)", () => {
     const step = (outcome?: string) => evaluateImportReminder(on, outcome, 2);
     // gates
     expect(evaluateImportReminder({ ...on, autoImport: false }, undefined, 3)).toBe(false);
-    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, undefined, 3)).toBe(false);
+    expect(evaluateImportReminder({ ...on, importRemind: { enabled: false } }, undefined, 3)).toBe(
+      false,
+    );
     expect(evaluateImportReminder(on, undefined, 0)).toBe(false);
     expect(evaluateImportReminder(on, "aborted", 2)).toBe(false); // bad turn: no seed
     // cadence: seed (doesn't count), then fire every 25 completed turns
@@ -280,7 +297,11 @@ describe("registerAutoExport (turn_end layered export)", () => {
     // 30 bad turns (mixed aborted/error): had they counted, the window would
     // have fired twice over by now — they neither seed nor advance.
     for (let t = 0; t < 30; t++) {
-      await fire("turn_end", { type: "turn_end", turnIndex: t, outcome: t % 2 ? "aborted" : "error" }, ctx());
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: t, outcome: t % 2 ? "aborted" : "error" },
+        ctx(),
+      );
     }
     // 25 completed turns: seed + 24 counted → still under 25
     for (let t = 0; t < 25; t++) {
@@ -301,7 +322,9 @@ describe("registerAutoExport (turn_end layered export)", () => {
     for (let t = 0; t <= 30; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
-    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(
+      0,
+    );
   });
 
   it("reminders respect importRemind.enabled: false", async () => {
@@ -315,7 +338,9 @@ describe("registerAutoExport (turn_end layered export)", () => {
     for (let t = 0; t <= 30; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
-    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(
+      0,
+    );
     // the session-start WHAT-listing still fires (awareness at import time)
     expect(notifications.some((n) => /New instructions now active/.test(n.msg))).toBe(true);
   });
@@ -333,7 +358,10 @@ describe("import awareness (what arrived + cadence reminder)", () => {
     const { pi, ctx, notifications } = makeFakePi([]);
     await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
       { path: paths.globalPath, defaultScope: { scope: "global" } },
-      { path: join(paths.projectDir, "proj.md"), defaultScope: { scope: "project", project: "proj" } },
+      {
+        path: join(paths.projectDir, "proj.md"),
+        defaultScope: { scope: "project", project: "proj" },
+      },
     ]);
     const imported = getImportedThisSession();
     expect(imported).toHaveLength(1); // created by global + updated by project → ONE entry
@@ -372,8 +400,10 @@ describe("import awareness — reconciliation (review #27)", () => {
   it("reminders stop advertising items deleted or deactivated after the import (review #27)", async () => {
     await primeConfig({ autoImport: true });
     writeLayer(paths.globalPath, [
-      "- **[h_g]** (importance 0.50) keep", "  - evidence: e",
-      "- **[h_h]** (importance 0.50) gone", "  - evidence: e",
+      "- **[h_g]** (importance 0.50) keep",
+      "  - evidence: e",
+      "- **[h_h]** (importance 0.50) gone",
+      "  - evidence: e",
     ]);
     const { pi, ctx, fire, notifications } = makeFakePi([]);
     await syncDurableOnStart(pi, ctx() as unknown as ExtensionContext, [
@@ -391,7 +421,9 @@ describe("import awareness — reconciliation (review #27)", () => {
     for (let t = 0; t <= 30; t++) {
       await fire("turn_end", { type: "turn_end", turnIndex: t }, ctx());
     }
-    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(0);
+    expect(notifications.filter((n) => /imported item\(s\) are active/.test(n.msg))).toHaveLength(
+      0,
+    );
     expect(getImportedThisSession()).toHaveLength(0);
   });
 });
@@ -399,7 +431,16 @@ describe("import awareness — reconciliation (review #27)", () => {
 describe("exportDurableLayers slug handling", () => {
   it("writes the current project file under the injected dir", async () => {
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "p-fact", evidence: "e", scope: "project", project: "here" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "p-fact",
+          evidence: "e",
+          scope: "project",
+          project: "here",
+        },
+      ],
       vi.fn(),
     );
     const written = await exportDurableLayers(paths, "here");

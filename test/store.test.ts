@@ -133,7 +133,18 @@ describe("reconstruct", () => {
         customType: "harness-state",
         data: {
           state: {
-            items: [{ id: "h_a", kind: "memory", content: "old", evidence: "e", importance: 0.5, active: true, createdAt: 1, updatedAt: 1 }],
+            items: [
+              {
+                id: "h_a",
+                kind: "memory",
+                content: "old",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
           },
         },
       },
@@ -142,7 +153,18 @@ describe("reconstruct", () => {
         customType: "harness-state",
         data: {
           state: {
-            items: [{ id: "h_b", kind: "prompt", content: "new", evidence: "e", importance: 0.5, active: true, createdAt: 2, updatedAt: 2 }],
+            items: [
+              {
+                id: "h_b",
+                kind: "prompt",
+                content: "new",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                createdAt: 2,
+                updatedAt: 2,
+              },
+            ],
           },
         },
       },
@@ -187,7 +209,16 @@ describe("reconstruct", () => {
             items: [
               null,
               "bogus",
-              { id: "h_ok", kind: "memory", content: "fine", evidence: "e", importance: 0.5, active: true, createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_ok",
+                kind: "memory",
+                content: "fine",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -222,7 +253,13 @@ describe("decayAndPrune", () => {
     applyDeltas(
       [
         { op: "create", kind: "memory", content: "keep", evidence: "e", importance: 0.8 },
-        { op: "create", kind: "memory", content: "drop", evidence: "e", importance: IMPORTANCE_FLOOR - 0.05 },
+        {
+          op: "create",
+          kind: "memory",
+          content: "drop",
+          evidence: "e",
+          importance: IMPORTANCE_FLOOR - 0.05,
+        },
       ],
       vi.fn(),
     );
@@ -301,7 +338,10 @@ describe("bumpImportance", () => {
     expect(s.drops).toBe(1);
     expect(typeof s.lastCitedAt).toBe("number");
     // A bare bump (no opts) never fabricates support.
-    const [c2] = applyDeltas([{ op: "create", kind: "memory", content: "y", evidence: "e" }], vi.fn());
+    const [c2] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "y", evidence: "e" }],
+      vi.fn(),
+    );
     const id2 = c2!.op === "create" ? c2!.item.id : "";
     bumpImportance(id2, 0.1, vi.fn());
     expect(getState().items.find((i) => i.id === id2)!.support).toBeUndefined();
@@ -381,14 +421,20 @@ describe("snapshotState (defensive copy for proposers)", () => {
   beforeEach(reset);
 
   it("clones nested support so a proposer cannot fabricate evidence in live state (review r4341960948)", () => {
-    const [c] = applyDeltas([{ op: "create", kind: "memory", content: "x", evidence: "e" }], vi.fn());
+    const [c] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "x", evidence: "e" }],
+      vi.fn(),
+    );
     const id = c!.op === "create" ? c!.item.id : "";
     bumpImportance(id, 0.03, vi.fn(), { support: "citation" });
     const live = getState().items[0]!;
     expect(live.support?.citations).toBe(1);
 
     const snap = snapshotState();
-    expect(snap.items[0]!.support).toEqual({ citations: 1, lastCitedAt: live.support!.lastCitedAt });
+    expect(snap.items[0]!.support).toEqual({
+      citations: 1,
+      lastCitedAt: live.support!.lastCitedAt,
+    });
     // Mutating the snapshot's nested counters (or adding them) must not leak.
     snap.items[0]!.support!.citations = 999;
     snap.items[0]!.support!.keeps = 999;
@@ -406,8 +452,20 @@ describe("exportDurable", () => {
   it("writes active items grouped by kind, excluding inactive ones", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "be terse", evidence: "user feedback", importance: 0.8 },
-        { op: "create", kind: "memory", content: "uses vitest", evidence: "saw config", importance: 0.7 },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "be terse",
+          evidence: "user feedback",
+          importance: 0.8,
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "uses vitest",
+          evidence: "saw config",
+          importance: 0.7,
+        },
         { op: "create", kind: "skill", content: "hidden one", evidence: "e", importance: 0.5 },
       ],
       vi.fn(),
@@ -440,8 +498,20 @@ describe("parseDurable + reconstructFromDurable", () => {
   it("parseDurable inverts exportDurable (round-trip of the canonical format)", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "be terse", evidence: "user feedback", importance: 0.8 },
-        { op: "create", kind: "memory", content: "uses vitest", evidence: "saw config", importance: 0.7 },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "be terse",
+          evidence: "user feedback",
+          importance: 0.8,
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "uses vitest",
+          evidence: "saw config",
+          importance: 0.7,
+        },
       ],
       vi.fn(),
     );
@@ -486,7 +556,7 @@ describe("parseDurable + reconstructFromDurable", () => {
       "utf8",
     );
     const persist = vi.fn();
-    let res;
+    let res: Awaited<ReturnType<typeof reconstructFromDurable>>;
     try {
       res = await reconstructFromDurable(file, {}, persist);
     } finally {
@@ -633,7 +703,9 @@ describe("parseDurable + reconstructFromDurable", () => {
 
 describe("modelKey", () => {
   it("renders provider/id and is undefined for no model", () => {
-    expect(modelKey({ provider: "anthropic", id: "claude-sonnet-4" })).toBe("anthropic/claude-sonnet-4");
+    expect(modelKey({ provider: "anthropic", id: "claude-sonnet-4" })).toBe(
+      "anthropic/claude-sonnet-4",
+    );
     expect(modelKey(undefined)).toBeUndefined();
   });
 });
@@ -641,10 +713,16 @@ describe("modelKey", () => {
 describe("model binding — applyDeltas stamps ownerModel", () => {
   beforeEach(reset);
 
-  it("create uses delta.ownerModel, defaulting to orphan (\"\")", () => {
+  it('create uses delta.ownerModel, defaulting to orphan ("")', () => {
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "tagged", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "tagged",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
         { op: "create", kind: "memory", content: "orphan", evidence: "e" },
       ],
       vi.fn(),
@@ -674,7 +752,13 @@ describe("model binding — adoptOrphans", () => {
     applyDeltas(
       [
         { op: "create", kind: "memory", content: "orphan", evidence: "e" },
-        { op: "create", kind: "memory", content: "owned", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "owned",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
       ],
       vi.fn(),
     );
@@ -687,7 +771,10 @@ describe("model binding — adoptOrphans", () => {
   });
 
   it("is a no-op (no persist) when there are no orphans", () => {
-    applyDeltas([{ op: "create", kind: "memory", content: "x", evidence: "e", ownerModel: "a/b" }], vi.fn());
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "x", evidence: "e", ownerModel: "a/b" }],
+      vi.fn(),
+    );
     const persist = vi.fn();
     expect(adoptOrphans("a/b", persist)).toBe(0);
     expect(persist).not.toHaveBeenCalled();
@@ -702,7 +789,22 @@ describe("model binding — reconstruct normalizes legacy snapshots", () => {
       {
         type: "custom",
         customType: "harness-state",
-        data: { state: { items: [{ id: "h_a", kind: "memory", content: "legacy", evidence: "e", importance: 0.5, active: true, createdAt: 1, updatedAt: 1 }] } },
+        data: {
+          state: {
+            items: [
+              {
+                id: "h_a",
+                kind: "memory",
+                content: "legacy",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          },
+        },
       },
     ]);
     expect(getState().items[0]!.ownerModel).toBe("");
@@ -713,7 +815,23 @@ describe("model binding — reconstruct normalizes legacy snapshots", () => {
       {
         type: "custom",
         customType: "harness-state",
-        data: { state: { items: [{ id: "h_a", kind: "memory", content: "x", evidence: "e", importance: 0.5, active: true, ownerModel: "anthropic/sonnet", createdAt: 1, updatedAt: 1 }] } },
+        data: {
+          state: {
+            items: [
+              {
+                id: "h_a",
+                kind: "memory",
+                content: "x",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "anthropic/sonnet",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          },
+        },
       },
     ]);
     expect(getState().items[0]!.ownerModel).toBe("anthropic/sonnet");
@@ -726,7 +844,13 @@ describe("model binding — durable round-trip", () => {
   it("export emits one model: line per owned item; parse inverts it", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "owned note", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "owned note",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
         { op: "create", kind: "memory", content: "orphan fact", evidence: "e" },
       ],
       vi.fn(),
@@ -779,7 +903,15 @@ describe("model binding — durable round-trip", () => {
 
   it("an untagged durable entry orphans an existing owned item (adopted on first contact)", async () => {
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "tagged", evidence: "e", ownerModel: "anthropic/sonnet" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "tagged",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
       vi.fn(),
     );
     const id = getState().items[0]!.id;
@@ -822,12 +954,24 @@ describe("scope — create/update via deltas", () => {
 
   it(`scope:"project" on create stamps the cached session slug; explicit project wins`, () => {
     setSessionProject("my-proj");
-    applyDeltas([{ op: "create", kind: "memory", content: "m", evidence: "e", scope: "project" }], vi.fn());
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "m", evidence: "e", scope: "project" }],
+      vi.fn(),
+    );
     expect(getState().items[0]!.scope).toBe("project");
     expect(getState().items[0]!.project).toBe("my-proj");
 
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "m2", evidence: "e", scope: "project", project: "other" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "m2",
+          evidence: "e",
+          scope: "project",
+          project: "other",
+        },
+      ],
       vi.fn(),
     );
     expect(getState().items[1]!.project).toBe("other");
@@ -868,9 +1012,42 @@ describe("scope — create/update via deltas", () => {
         data: {
           state: {
             items: [
-              { id: "h_a", kind: "memory", content: "legacy", evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: 1, updatedAt: 1 },
-              { id: "h_b", kind: "memory", content: "broken", evidence: "e", importance: 0.5, active: true, ownerModel: "", scope: "project", createdAt: 1, updatedAt: 1 },
-              { id: "h_c", kind: "memory", content: "ok", evidence: "e", importance: 0.5, active: true, ownerModel: "", scope: "project", project: "p1", createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_a",
+                kind: "memory",
+                content: "legacy",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+              {
+                id: "h_b",
+                kind: "memory",
+                content: "broken",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "",
+                scope: "project",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+              {
+                id: "h_c",
+                kind: "memory",
+                content: "ok",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "",
+                scope: "project",
+                project: "p1",
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -921,12 +1098,22 @@ describe("durable layers — export", () => {
       [
         { op: "create", kind: "memory", content: "g", evidence: "e" },
         { op: "create", kind: "memory", content: "cur-1", evidence: "e", scope: "project" },
-        { op: "create", kind: "memory", content: "other-1", evidence: "e", scope: "project", project: "other" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "other-1",
+          evidence: "e",
+          scope: "project",
+          project: "other",
+        },
       ],
       vi.fn(),
     );
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-layers-"));
-    const paths = { globalPath: join(dir, "harness-state.md"), projectDir: join(dir, "harness-state") };
+    const paths = {
+      globalPath: join(dir, "harness-state.md"),
+      projectDir: join(dir, "harness-state"),
+    };
     try {
       const written = await exportDurableLayers(paths, "cur");
       expect(written).toEqual([
@@ -952,14 +1139,19 @@ describe("durable layers — export", () => {
     );
     const id = c!.op === "create" ? c!.item.id : "";
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-layers-del-"));
-    const paths = { globalPath: join(dir, "harness-state.md"), projectDir: join(dir, "harness-state") };
+    const paths = {
+      globalPath: join(dir, "harness-state.md"),
+      projectDir: join(dir, "harness-state"),
+    };
     try {
       await exportDurableLayers(paths, "cur");
       expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain("cur-1");
 
       applyDeltas([{ op: "delete", id, reason: "moved on" }], vi.fn());
       await exportDurableLayers(paths, "cur");
-      expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain("_(no active items)_");
+      expect(readFileSync(join(paths.projectDir, "cur.md"), "utf8")).toContain(
+        "_(no active items)_",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -969,18 +1161,16 @@ describe("durable layers — export", () => {
 describe("durable layers — import", () => {
   beforeEach(reset);
 
-  function layerFile(dir: string, name: string, defaultScope: { scope: "global" | "project"; project?: string }, bullets: string[]): { path: string; defaultScope: typeof defaultScope } {
+  function layerFile(
+    dir: string,
+    name: string,
+    defaultScope: { scope: "global" | "project"; project?: string },
+    bullets: string[],
+  ): { path: string; defaultScope: typeof defaultScope } {
     const file = join(dir, name);
     writeFileSync(
       file,
-      [
-        "# Continual Harness State",
-        "",
-        "## Memory facts",
-        "",
-        ...bullets,
-        "",
-      ].join("\n"),
+      ["# Continual Harness State", "", "## Memory facts", "", ...bullets, ""].join("\n"),
       "utf8",
     );
     return { path: file, defaultScope };
@@ -1025,7 +1215,14 @@ describe("durable layers — import", () => {
     applyDeltas(
       [
         { op: "create", kind: "memory", content: "live-global", evidence: "e" },
-        { op: "create", kind: "memory", content: "live-project", evidence: "e", scope: "project", project: "proj" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "live-project",
+          evidence: "e",
+          scope: "project",
+          project: "proj",
+        },
         { op: "create", kind: "memory", content: "doomed", evidence: "e" },
       ],
       vi.fn(),
@@ -1060,7 +1257,10 @@ describe("durable layers — import", () => {
     const res = await importDurableLayers(
       [
         { path: join(tmpdir(), `nope-g-${Date.now()}.md`), defaultScope: { scope: "global" } },
-        { path: join(tmpdir(), `nope-p-${Date.now()}.md`), defaultScope: { scope: "project", project: "x" } },
+        {
+          path: join(tmpdir(), `nope-p-${Date.now()}.md`),
+          defaultScope: { scope: "project", project: "x" },
+        },
       ],
       {},
       persist,
@@ -1097,7 +1297,19 @@ describe("durable layers — import", () => {
   });
 
   it("idempotent: re-importing an unchanged file persists nothing (no tree noise)", async () => {
-    applyDeltas([{ op: "create", kind: "memory", content: "fact", evidence: "e", importance: 0.5, ownerModel: "m/x" }], vi.fn());
+    applyDeltas(
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "fact",
+          evidence: "e",
+          importance: 0.5,
+          ownerModel: "m/x",
+        },
+      ],
+      vi.fn(),
+    );
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-imp-idem-"));
     const file = join(dir, "harness-state.md");
     await exportDurable(file);

@@ -33,7 +33,8 @@ import { createHash } from "node:crypto";
 import { IMPORTANCE_FLOOR, REFINE_ENTRY, STATE_ENTRY } from "./store.js";
 import { DEDUPE_THRESHOLD, durableLayer, tokenOverlap } from "./proposer.js";
 import { DEFAULT_REF_BUMP } from "./config.js";
-import type { ComponentKind, HarnessItem, HarnessState } from "./types.js";
+import { KEEP_DROP_BUMP } from "./types.js";
+import type { AnyEntry, ComponentKind, HarnessItem, HarnessState } from "./types.js";
 
 // ---- record types (contract §4; `v` follows the contract's major.minor) -----
 
@@ -84,8 +85,9 @@ export interface CorpusOptions {
 
 /** Overlap floor for "not_dup" candidates: below it a pair is uninformative. */
 export const NOT_DUP_FLOOR = 0.3;
-/** keep/drop bump magnitude (harness.ts handleBump). */
-const KEEP_DROP_BUMP = 0.1;
+// keep/drop bump magnitude: KEEP_DROP_BUMP (types.ts) — the single constant
+// /harness keep|drop bumps by AND this classifier reads back out of snapshot
+// diffs (the former harness.ts/corpus.ts hand-synced pair).
 /** Classification tolerance around each bump (float safety, clamped bumps). */
 const BUMP_TOL = 0.02;
 /** Smallest importance delta worth classifying at all. */
@@ -93,28 +95,15 @@ const EPSILON = 0.005;
 
 // ---- helpers ----------------------------------------------------------------
 
-/** Loose entry shape, kept decoupled from pi's internal session types.
- *  `applied` is a legacy COUNT; the full delta list lives in `appliedDeltas`
- *  (0.11.0+ audit entries — see refine.ts). */
-type AnyEntry = {
-  type?: string;
-  customType?: string;
-  data?: {
-    state?: HarnessState;
-    proposer?: string;
-    applied?: unknown;
-    appliedDeltas?: unknown[];
-  };
-};
-
 /** Parse a dedupe delete reason ("merged into h_x (overlap 0.71)" or the
  *  delete-only "near-duplicate of h_x (overlap 0.71)"). */
 export function parseDedupeDelete(
   reason: string,
 ): { keeperId: string; overlap: number } | undefined {
-  const m = /^(?:merged into|near-duplicate of) (h_[A-Za-z0-9_]+) \(overlap (0?\.\d+|1(?:\.0+)?)\)$/.exec(
-    reason,
-  );
+  const m =
+    /^(?:merged into|near-duplicate of) (h_[A-Za-z0-9_]+) \(overlap (0?\.\d+|1(?:\.0+)?)\)$/.exec(
+      reason,
+    );
   if (!m) return undefined;
   return { keeperId: m[1]!, overlap: Number(m[2]) };
 }
@@ -125,6 +114,65 @@ function round4(x: number): number {
 
 function hash(content: string): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+// ---- the shared audit-trail walk ---------------------------------------------
+
+/** One `harness-refinement` audit entry, annotated with the snapshots around
+ *  it (see walkAuditTrail for the attribution semantics). */
+export interface RefineAuditStep {
+  /** Manual vs auto (the audit entry's `source`). */
+  source?: string | undefined;
+  /** Which proposer ran. */
+  proposer?: string | undefined;
+  /** Direct-applied deltas (the entry's `appliedDeltas`; [] on legacy entries). */
+  appliedDeltas: unknown[];
+  /** Post-run state — the LAST harness-state snapshot on the branch so far.
+   *  A run that applied deltas appends its snapshot immediately before its
+   *  audit entry; a no-op run writes none, so "last" is correct either way. */
+  current?: HarnessState | undefined;
+  /** Pre-run state — the snapshot before `current` (undefined before the
+   *  second snapshot). */
+  pre?: HarnessState | undefined;
+}
+
+/** Walk the session branch's audit trail once, in order, notifying on every
+ *  `harness-state` snapshot transition and every `harness-refinement` entry.
+ *  THE shared walk (status.ts aggregates from it; buildCorpus builds records
+ *  from it) — the two formerly carried two copies of the same traversal,
+ *  implicit-EMPTY-baseline fix included, which had already drifted once.
+ *
+ *  Baseline note: a fresh session persists no empty harness-state entry, so
+ *  the first snapshot's transition is reported against an implicit empty
+ *  state (review #27) — without this, its `created` events are silently
+ *  dropped. */
+export function walkAuditTrail(
+  entries: Iterable<unknown>,
+  handlers: {
+    onTransition?: (prev: HarnessState, next: HarnessState) => void;
+    onRefine?: (step: RefineAuditStep) => void;
+  },
+): void {
+  const snapshots: HarnessState[] = [];
+  for (const raw of entries) {
+    const entry = raw as AnyEntry;
+    if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
+      const next = entry.data.state;
+      const prev = snapshots.at(-1) ?? { items: [] };
+      handlers.onTransition?.(prev, next);
+      snapshots.push(next);
+      continue;
+    }
+    if (entry.type === "custom" && entry.customType === REFINE_ENTRY && entry.data) {
+      handlers.onRefine?.({
+        source: entry.data.source,
+        proposer: entry.data.proposer,
+        appliedDeltas: Array.isArray(entry.data.appliedDeltas) ? entry.data.appliedDeltas : [],
+        current: snapshots.at(-1),
+        pre: snapshots.at(-2),
+      });
+    }
+  }
 }
 
 // ---- lifecycle ---------------------------------------------------------------
@@ -161,8 +209,7 @@ export function classifyTransition(
     // keep/drop win (documented in CorpusOptions).
     if (Math.abs(d - KEEP_DROP_BUMP) <= BUMP_TOL) out.push({ event: "kept", item });
     else if (Math.abs(d + KEEP_DROP_BUMP) <= BUMP_TOL) out.push({ event: "dropped", item });
-    else if (citeBump > 0 && Math.abs(d - citeBump) <= BUMP_TOL)
-      out.push({ event: "cited", item });
+    else if (citeBump > 0 && Math.abs(d - citeBump) <= BUMP_TOL) out.push({ event: "cited", item });
     // else: explicit harness_mutate importance set — not a lifecycle signal.
   }
   for (const item of prev.items) {
@@ -185,7 +232,14 @@ function diffSnapshots(
 }
 
 function lifecycle(item: HarnessItem, event: LifecycleEvent, importance: number): LifecycleRecord {
-  return { v: 1, kind: "lifecycle", item_kind: item.kind, content_hash: hash(item.content), event, importance };
+  return {
+    v: 1,
+    kind: "lifecycle",
+    item_kind: item.kind,
+    content_hash: hash(item.content),
+    event,
+    importance,
+  };
 }
 
 // ---- dedupe pairs --------------------------------------------------------------
@@ -222,15 +276,10 @@ function collectDedupePairs(
     const keeper = currentById.get(parsed.keeperId) ?? preById.get(parsed.keeperId);
     const dup = preById.get(d.id!);
     if (!keeper || !dup) continue;
-    pushPair(
-      out,
-      seen,
-      keeper.content,
-      dup.content,
-      "dup",
-      round4(parsed.overlap),
-      { kinds: [keeper.kind], owners: [keeper.ownerModel, dup.ownerModel] },
-    );
+    pushPair(out, seen, keeper.content, dup.content, "dup", round4(parsed.overlap), {
+      kinds: [keeper.kind],
+      owners: [keeper.ownerModel, dup.ownerModel],
+    });
   }
 
   // not_dup candidates: everything the planner COULD have compared (same key
@@ -273,7 +322,16 @@ function pushPair(
   const key = `${label}\x00${a}\x00${b}`;
   if (seen.has(key)) return; // one record per unique pair across runs
   seen.add(key);
-  const rec: DedupePairRecord = { v: 1, kind: "dedupe_pair", a, b, label, similarity, source: "tokenOverlap", meta };
+  const rec: DedupePairRecord = {
+    v: 1,
+    kind: "dedupe_pair",
+    a,
+    b,
+    label,
+    similarity,
+    source: "tokenOverlap",
+    meta,
+  };
   if (needsReview) rec.needs_review = true;
   out.push(rec);
 }
@@ -298,33 +356,13 @@ export function buildCorpus(entries: Iterable<unknown>, opts: CorpusOptions = {}
   const pairs: DedupePairRecord[] = [];
   const lifecycle: LifecycleRecord[] = [];
   const seen = new Set<string>();
-  const snapshots: HarnessState[] = [];
-  for (const raw of entries) {
-    const entry = raw as AnyEntry;
-    if (entry.type === "custom" && entry.customType === STATE_ENTRY && entry.data?.state) {
-      const next = entry.data.state;
-      // Implicit EMPTY baseline before the branch's first snapshot (review
-      // #27 fixed this in status.ts; the corpus walk was missed — review
-      // finding #1): a fresh session persists no empty harness-state entry,
-      // so the first create batch / auto-import IS the first snapshot —
-      // without this its `created` events were silently dropped from
-      // lifecycle.jsonl.
-      const prev = snapshots.at(-1) ?? { items: [] };
-      diffSnapshots(prev, next, citeBump, lifecycle);
-      snapshots.push(next);
-      continue;
-    }
-    if (
-      entry.type === "custom" &&
-      entry.customType === REFINE_ENTRY &&
-      entry.data?.proposer === "dedupe"
-    ) {
-      const current = snapshots.at(-1);
-      if (!current) continue; // no state seen yet — nothing to compare
-      const deltas = Array.isArray(entry.data.appliedDeltas) ? entry.data.appliedDeltas : [];
-      const pre = snapshots.at(-2) ?? { items: [] };
-      collectDedupePairs(current, pre, deltas, seen, pairs);
-    }
-  }
+  walkAuditTrail(entries, {
+    onTransition: (prev, next) => diffSnapshots(prev, next, citeBump, lifecycle),
+    onRefine: (step) => {
+      if (step.proposer !== "dedupe") return;
+      if (!step.current) return; // no state seen yet — nothing to compare
+      collectDedupePairs(step.current, step.pre ?? { items: [] }, step.appliedDeltas, seen, pairs);
+    },
+  });
   return { pairs, lifecycle };
 }

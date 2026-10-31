@@ -13,7 +13,15 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AppliedDelta, ComponentKind, Delta, HarnessItem, HarnessState, SupportInfo } from "./types.js";
+import { KIND_LABEL, KIND_ORDER } from "./types.js";
+import type {
+  AppliedDelta,
+  ComponentKind,
+  Delta,
+  HarnessItem,
+  HarnessState,
+  SupportInfo,
+} from "./types.js";
 
 /** Resolved durable-layer scope for a parsed item. */
 export interface ScopeInfo {
@@ -23,6 +31,20 @@ export interface ScopeInfo {
 
 const STATE_ENTRY = "harness-state";
 const REFINE_ENTRY = "harness-refinement";
+
+/** The snapshot-persist callback every mutating store API takes: hands the
+ *  post-mutation state + version to the session branch. */
+export type PersistFn = (snapshot: HarnessState, version: number) => void;
+
+/** Build the standard persist callback over a pi-like API: every snapshot
+ *  lands on the session branch as a `harness-state` custom entry, which is
+ *  what makes each mutation /tree-rollback-able. THE definition point of the
+ *  entry-type literal for writers (readers use STATE_ENTRY directly) — the
+ *  ~10 former inline `pi.appendEntry("harness-state", …)` copies each carried
+ *  a silent-restore-break typo risk. */
+export function makePersist(pi: { appendEntry(type: string, data: unknown): unknown }): PersistFn {
+  return (snapshot, ver) => pi.appendEntry(STATE_ENTRY, { state: snapshot, version: ver });
+}
 
 export const DEFAULT_DURABLE_PATH = join(homedir(), ".pi", "agent", "harness-state.md");
 /** Directory holding per-project durable files: <slug>.md (see projectSlug). */
@@ -214,7 +236,7 @@ function assertOwnsItem(
  */
 export function applyDeltas(
   deltas: Delta[],
-  persist: (snapshot: HarnessState, version: number) => void,
+  persist: PersistFn,
   actorModel?: string,
 ): AppliedDelta[] {
   const snapshotBefore = { items: state.items.map((i) => ({ ...i })) };
@@ -231,6 +253,47 @@ export function applyDeltas(
   return applied;
 }
 
+/** Coerce one salvaged snapshot item into a renderable HarnessItem, or drop
+ *  it entirely when the essence (id/kind/content) is unsalvageable. Corrupt
+ *  FIELD TYPES used to pass straight through and crash far-away renders —
+ *  `importance: "high"` dies at toFixed(2), an unknown kind at per-kind
+ *  tallies — so reconstruction normalizes types at the boundary instead. */
+function normalizeItem(raw: unknown): HarnessItem | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const i = raw as Partial<HarnessItem> & { kind?: unknown };
+  if (typeof i.id !== "string" || !i.id) return undefined;
+  if (typeof i.kind !== "string" || !KIND_ORDER.includes(i.kind as ComponentKind)) return undefined;
+  if (typeof i.content !== "string") return undefined;
+  const now = Date.now();
+  const item: HarnessItem = {
+    ...i,
+    id: i.id,
+    kind: i.kind as ComponentKind,
+    content: i.content,
+    evidence: typeof i.evidence === "string" ? i.evidence : "",
+    // Non-numeric importance degrades to the create default, not NaN (a NaN
+    // would compare below the prune floor and vanish, or poison toFixed).
+    importance: clamp(
+      typeof i.importance === "number" && Number.isFinite(i.importance) ? i.importance : 0.5,
+    ),
+    active: typeof i.active === "boolean" ? i.active : true,
+    ownerModel: typeof i.ownerModel === "string" ? i.ownerModel : "",
+    createdAt: typeof i.createdAt === "number" && Number.isFinite(i.createdAt) ? i.createdAt : now,
+    updatedAt: typeof i.updatedAt === "number" && Number.isFinite(i.updatedAt) ? i.updatedAt : now,
+    scope: "global",
+  };
+  if (i.scope === "project" && i.project) {
+    item.scope = "project";
+    item.project = i.project;
+  } else {
+    delete item.project;
+  }
+  // Support must be a plain object if present; anything else (a corrupt
+  // snapshot) drops the field rather than poisoning the digest/list.
+  if (i.support === undefined || typeof i.support !== "object") delete item.support;
+  return item;
+}
+
 /** Reconstruct state from the current branch's last harness-state snapshot. */
 export function reconstruct(entries: Iterable<unknown>): void {
   let last: HarnessState | undefined;
@@ -244,28 +307,15 @@ export function reconstruct(entries: Iterable<unknown>): void {
   // the active model on first contact (see adoptOrphans); missing/corrupt
   // scope → "global" (a project item without a slug cannot be placed in a
   // layer, so it falls back to the global durable file).
-  state = last && Array.isArray(last.items)
-    ? {
-        // Guard both levels (review finding #5): one corrupt harness-state
-        // entry (state without an items array, or non-object items) must not
-        // crash the session_start handler — degrade to the salvageable part.
-        items: last.items
-          .filter((i): i is HarnessItem => Boolean(i) && typeof i === "object")
-          .map((i): HarnessItem => {
-          const item: HarnessItem = { ...i, ownerModel: i.ownerModel ?? "", scope: "global" };
-          if (i.scope === "project" && i.project) {
-            item.scope = "project";
-            item.project = i.project;
-          } else {
-            delete item.project;
-          }
-          // Support must be a plain object if present; anything else (a corrupt
-          // snapshot) drops the field rather than poisoning the digest/list.
-          if (i.support === undefined || typeof i.support !== "object") delete item.support;
-          return item;
-          }),
-      }
-    : { items: [] };
+  state =
+    last && Array.isArray(last.items)
+      ? {
+          // Guard both levels (review finding #5): one corrupt harness-state
+          // entry (state without an items array, or non-object items) must not
+          // crash the session_start handler — degrade to the salvageable part.
+          items: last.items.map(normalizeItem).filter((i): i is HarnessItem => i !== undefined),
+        }
+      : { items: [] };
   version = 0;
 }
 
@@ -278,7 +328,7 @@ export function reconstruct(entries: Iterable<unknown>): void {
  */
 export function decayAndPrune(
   options: { decayAfterDays?: number; decayStep?: number } = {},
-  persist: (snapshot: HarnessState, version: number) => void,
+  persist: PersistFn,
 ): { pruned: number; decayed: number } {
   let decayed = 0;
   const step = options.decayStep ?? 0.1;
@@ -313,7 +363,7 @@ export function decayAndPrune(
 export function bumpImportance(
   id: string,
   delta: number,
-  persist: (snapshot: HarnessState, version: number) => void,
+  persist: PersistFn,
   opts?: { support?: "citation" | "keep" | "drop" },
 ): HarnessItem | undefined {
   const item = state.items.find((i) => i.id === id);
@@ -359,10 +409,7 @@ export function mergeSupport(a?: SupportInfo, b?: SupportInfo): SupportInfo | un
  *  the migration policy for legacy snapshots / durable imports / items created
  *  while the active model was unknown: they become owned by the first model to
  *  claim them. Idempotent: a no-op (no persist) when there are no orphans. */
-export function adoptOrphans(
-  key: string,
-  persist: (snapshot: HarnessState, version: number) => void,
-): number {
+export function adoptOrphans(key: string, persist: PersistFn): number {
   let adopted = 0;
   for (const i of state.items) {
     if (i.ownerModel === "") {
@@ -393,11 +440,10 @@ export { STATE_ENTRY, REFINE_ENTRY, IMPORTANCE_FLOOR };
 /** Render the durable markdown for a set of items (empty → placeholder). */
 function renderDurable(items: HarnessItem[]): string {
   const lines: string[] = ["# Continual Harness State", ""];
-  const kinds: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
-  for (const kind of kinds) {
+  for (const kind of KIND_ORDER) {
     const forKind = items.filter((i) => i.kind === kind);
     if (forKind.length === 0) continue;
-    lines.push(`## ${titleFor(kind)}`, "");
+    lines.push(`## ${KIND_LABEL[kind]}`, "");
     for (const i of forKind) {
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
@@ -449,7 +495,10 @@ export function parseSupport(line: string): SupportInfo | undefined {
 }
 
 async function writeFileDur(path: string, body: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true }).catch(() => {});
+  // mkdir errors propagate (not swallowed): an EPERM here is the real cause
+  // of the failed export and far more diagnosable than the writeFile error
+  // it would defer it to.
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, body, "utf8");
 }
 
@@ -480,7 +529,10 @@ async function fileExists(path: string): Promise<boolean> {
  * layer instead of leaving a stale file that auto-import would resurrect).
  * Project files the store has no items for are never created.
  */
-export async function exportDurableLayers(paths: LayerPaths, currentSlug?: string): Promise<string[]> {
+export async function exportDurableLayers(
+  paths: LayerPaths,
+  currentSlug?: string,
+): Promise<string[]> {
   const active = state.items.filter((i) => i.active);
   const globalItems = active.filter((i) => !(i.scope === "project" && i.project));
   const bySlug = new Map<string, HarnessItem[]>();
@@ -505,19 +557,6 @@ export async function exportDurableLayers(paths: LayerPaths, currentSlug?: strin
     written.push(file);
   }
   return written;
-}
-
-function titleFor(kind: ComponentKind): string {
-  switch (kind) {
-    case "prompt":
-      return "Supplemental prompt notes";
-    case "memory":
-      return "Memory facts";
-    case "skill":
-      return "Skill descriptions";
-    case "subagent":
-      return "Sub-agent specs";
-  }
 }
 
 // ---- Durable import (round-trip seam with pi-reflect) ---------------------
@@ -599,7 +638,7 @@ export function parseDurable(text: string): ParsedItem[] {
   let kind: ComponentKind | undefined;
   let pending: ParsedItem | null = null;
   const flush = (): void => {
-    if (pending && pending.content) out.push(pending);
+    if (pending?.content) out.push(pending);
     pending = null;
   };
 
@@ -675,11 +714,140 @@ export function parseDurable(text: string): ParsedItem[] {
         evidence: "",
       };
       if (idInBody) pending.id = idInBody[1]!.trim();
-      continue;
     }
   }
   flush();
   return out.filter((p) => p.content && !/^\(?no active items\)?$/i.test(p.content));
+}
+
+/** Lookups + bookkeeping shared by the merge phases (built by prepareMerge). */
+interface MergeLookups {
+  /** Ids the file(s) name explicitly (prune's "present in file" set). */
+  fileIds: Set<string>;
+  existingById: Map<string, HarnessItem>;
+  // Content fallback (review finding #4): id-less bullets and foreign
+  // (non-h_) ids never hit the id map, so import→import of the same file
+  // without an export in between used to duplicate the item every time.
+  // Matching kind+content folds the re-import into the item the first import
+  // created. Keyed with the kind prefix so content cannot collide across kinds.
+  existingByContent: Map<string, HarnessItem>;
+  /** Store ids any parsed line resolved to (id match, content match, or
+   *  create): with --prune these count as "present in the file" even when the
+   *  file never named the id (an id-less bullet carries no fileIds entry). */
+  touchedIds: Set<string>;
+  /** Active ids before the import (prune never touches items created mid-import). */
+  preActiveIds: Set<string>;
+  /** Distinct parsed items: an explicit id folding across layers (the normal
+   *  global-then-project collision) is ONE item, not one per copy; bullets
+   *  without an id are always separate items (create assigns fresh ids). */
+  distinct: number;
+}
+
+function prepareMerge(parsed: Array<ParsedItem & ScopeInfo>): MergeLookups {
+  const lookups: MergeLookups = {
+    fileIds: new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id))),
+    existingById: new Map(state.items.map((i) => [i.id, i] as const)),
+    existingByContent: new Map(state.items.map((i) => [`${i.kind}${i.content}`, i] as const)),
+    touchedIds: new Set<string>(),
+    preActiveIds: new Set(state.items.filter((i) => i.active).map((i) => i.id)),
+    distinct: 0,
+  };
+  const seenIds = new Set<string>();
+  for (const p of parsed) {
+    if (p.id) {
+      if (!seenIds.has(p.id)) {
+        seenIds.add(p.id);
+        lookups.distinct += 1;
+      }
+    } else lookups.distinct += 1;
+  }
+  return lookups;
+}
+
+/** Find the live item a parsed line matches: by explicit id, else by
+ *  kind+content (the re-import fold — see MergeLookups.existingByContent). */
+function matchExisting(p: ParsedItem & ScopeInfo, lookups: MergeLookups): HarnessItem | undefined {
+  return (
+    (p.id ? lookups.existingById.get(p.id) : undefined) ??
+    lookups.existingByContent.get(`${p.kind}${p.content}`)
+  );
+}
+
+/** Durable-wins update of an existing item in place. Returns true when the
+ *  live item actually differed (a no-op changes nothing and persists nothing). */
+function applyImportUpdate(existing: HarnessItem, p: ParsedItem & ScopeInfo, now: number): boolean {
+  const importance = clamp(p.importance);
+  const ownerModel = p.ownerModel ?? "";
+  // Durable wins; reactivate; keep createdAt. Idempotent imports skip the
+  // write (and the persist) when the live item already matches the file.
+  const unchanged =
+    existing.content === p.content &&
+    existing.evidence === p.evidence &&
+    existing.importance === importance &&
+    existing.active &&
+    existing.ownerModel === ownerModel &&
+    (existing.scope ?? "global") === p.scope &&
+    (existing.scope === "project" ? existing.project : undefined) === p.project &&
+    supportEqual(existing.support, p.support);
+  if (unchanged) return false;
+  existing.content = p.content;
+  existing.evidence = p.evidence;
+  existing.importance = importance;
+  existing.active = true;
+  // Durable wins on owner too: a present tag sets the owner; an absent tag
+  // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
+  // active model on first contact — matching the documented round-trip.
+  existing.ownerModel = ownerModel;
+  existing.scope = p.scope;
+  if (p.scope === "project" && p.project) existing.project = p.project;
+  else delete existing.project;
+  // Durable wins on support too (offline edits / cross-session sync).
+  if (p.support) existing.support = p.support;
+  else delete existing.support;
+  existing.updatedAt = now;
+  return true;
+}
+
+/** Create a new item for a parsed line, registering it in both lookups so a
+ *  later copy of the same item (another layer's id collision, or a repeated
+ *  id-less bullet) UPDATES the item we just created instead of duplicating it.
+ *  Returns the created id. */
+function applyImportCreate(p: ParsedItem & ScopeInfo, now: number, lookups: MergeLookups): string {
+  const id = p.id && /^h_/.test(p.id) ? p.id : genId();
+  state.items.push({
+    id,
+    kind: p.kind,
+    content: p.content,
+    evidence: p.evidence,
+    importance: clamp(p.importance),
+    active: true,
+    ownerModel: p.ownerModel ?? "",
+    ...(p.scope === "project" && p.project
+      ? { scope: "project" as const, project: p.project }
+      : { scope: "global" as const }),
+    ...(p.support ? { support: p.support } : {}),
+    createdAt: now,
+    updatedAt: now,
+  });
+  const created = state.items[state.items.length - 1]!;
+  if (p.id) lookups.existingById.set(p.id, created);
+  lookups.existingByContent.set(`${p.kind}${p.content}`, created);
+  return id;
+}
+
+/** --prune semantics: drop items that were active before the import and are
+ *  absent from EVERY layer (union over the file's explicit ids and every line
+ *  that resolved to a live item). Inactive items are never touched. */
+function pruneAbsent(lookups: MergeLookups): number {
+  const before = state.items.length;
+  state.items = state.items.filter((i) => {
+    if (!i.active) return true; // inactive items are never touched by durable I/O
+    if (!lookups.preActiveIds.has(i.id)) return true; // created during this import
+    if (lookups.fileIds.has(i.id)) return true; // present in the file
+    if (lookups.touchedIds.has(i.id)) return true; // matched by content (id-less / foreign id)
+    return false; // was active before, absent from the file → drop
+  });
+  return before - state.items.length;
 }
 
 /** Merge parsed items (with fully-resolved scope) into the live store.
@@ -687,35 +855,9 @@ export function parseDurable(text: string): ParsedItem[] {
 function mergeParsed(
   parsed: Array<ParsedItem & ScopeInfo>,
   options: { prune?: boolean },
-  persist: (snapshot: HarnessState, version: number) => void,
+  persist: PersistFn,
 ): DurableImportResult {
-  const fileIds = new Set(parsed.map((p) => p.id).filter((id): id is string => Boolean(id)));
-  const existingById = new Map(state.items.map((i) => [i.id, i] as const));
-  // Content fallback (review finding #4): id-less bullets and foreign
-  // (non-h_) ids never hit the id map, so import→import of the same file
-  // without an export in between used to duplicate the item every time.
-  // Matching kind+content folds the re-import into the item the first import
-  // created. Keyed with \x00 so content cannot collide across kinds.
-  const existingByContent = new Map(state.items.map((i) => [`${i.kind}${i.content}`, i] as const));
-  // Store ids any parsed line resolved to (id match, content match, or
-  // create): with --prune these count as "present in the file" even when the
-  // file never named the id (an id-less bullet carries no fileIds entry).
-  const touchedIds = new Set<string>();
-  const preActiveIds = new Set(state.items.filter((i) => i.active).map((i) => i.id));
-  // Distinct parsed items: an explicit id folding across layers (the normal
-  // global-then-project collision) is ONE item, not one per copy; bullets
-  // without an id are always separate items (create assigns fresh ids).
-  const seenIds = new Set<string>();
-  let distinct = 0;
-  for (const p of parsed) {
-    if (p.id) {
-      if (!seenIds.has(p.id)) {
-        seenIds.add(p.id);
-        distinct += 1;
-      }
-    } else distinct += 1;
-  }
-
+  const lookups = prepareMerge(parsed);
   let created = 0;
   let updated = 0;
   let dirty = false;
@@ -723,90 +865,52 @@ function mergeParsed(
   const updatedIds: string[] = [];
   const now = Date.now();
   for (const p of parsed) {
-    const existing =
-      (p.id ? existingById.get(p.id) : undefined) ?? existingByContent.get(`${p.kind}${p.content}`);
+    const existing = matchExisting(p, lookups);
     if (existing) {
-      touchedIds.add(existing.id);
-      const importance = clamp(p.importance);
-      const ownerModel = p.ownerModel ?? "";
-      // Durable wins; reactivate; keep createdAt. Idempotent imports skip the
-      // write (and the persist) when the live item already matches the file.
-      const unchanged =
-        existing.content === p.content &&
-        existing.evidence === p.evidence &&
-        existing.importance === importance &&
-        existing.active &&
-        existing.ownerModel === ownerModel &&
-        (existing.scope ?? "global") === p.scope &&
-        (existing.scope === "project" ? existing.project : undefined) === p.project &&
-        supportEqual(existing.support, p.support);
-      if (unchanged) continue;
-      existing.content = p.content;
-      existing.evidence = p.evidence;
-      existing.importance = importance;
-      existing.active = true;
-      // Durable wins on owner too: a present tag sets the owner; an absent tag
-      // (e.g. pi-reflect stripped it) orphans the item so it's adopted by the
-      // active model on first contact — matching the documented round-trip.
-      existing.ownerModel = ownerModel;
-      existing.scope = p.scope;
-      if (p.scope === "project" && p.project) existing.project = p.project;
-      else delete existing.project;
-      // Durable wins on support too (offline edits / cross-session sync).
-      if (p.support) existing.support = p.support;
-      else delete existing.support;
-      existing.updatedAt = now;
-      updated += 1;
-      updatedIds.push(existing.id);
-      dirty = true;
+      lookups.touchedIds.add(existing.id);
+      if (applyImportUpdate(existing, p, now)) {
+        updated += 1;
+        updatedIds.push(existing.id);
+        dirty = true;
+      }
       // A content-matched line that named a foreign id: register it so a
       // second copy of that id later in the same import id-matches instead
       // of content-matching again (same dedupe as the create branch below).
-      if (p.id) existingById.set(p.id, existing);
+      if (p.id) lookups.existingById.set(p.id, existing);
     } else {
-      const id = p.id && /^h_/.test(p.id) ? p.id : genId();
-      state.items.push({
-        id,
-        kind: p.kind,
-        content: p.content,
-        evidence: p.evidence,
-        importance: clamp(p.importance),
-        active: true,
-        ownerModel: p.ownerModel ?? "",
-        ...(p.scope === "project" && p.project ? { scope: "project" as const, project: p.project } : { scope: "global" as const }),
-        ...(p.support ? { support: p.support } : {}),
-        createdAt: now,
-        updatedAt: now,
-      });
+      createdIds.push(applyImportCreate(p, now, lookups));
       created += 1;
-      createdIds.push(id);
       dirty = true;
-      // Keep the lookups current so a later copy of the same item (another
-      // layer's id collision, or a repeated id-less bullet) UPDATES the item
-      // we just created instead of duplicating it.
-      if (p.id) existingById.set(p.id, state.items[state.items.length - 1]!);
-      existingByContent.set(`${p.kind}${p.content}`, state.items[state.items.length - 1]!);
     }
   }
 
   let pruned = 0;
   if (options.prune) {
-    const before = state.items.length;
-    state.items = state.items.filter((i) => {
-      if (!i.active) return true; // inactive items are never touched by durable I/O
-      if (!preActiveIds.has(i.id)) return true; // created during this import
-      if (fileIds.has(i.id)) return true; // present in the file
-      if (touchedIds.has(i.id)) return true; // matched by content (id-less / foreign id)
-      return false; // was active before, absent from the file → drop
-    });
-    pruned = before - state.items.length;
+    pruned = pruneAbsent(lookups);
     if (pruned > 0) dirty = true;
   }
 
-  if (!dirty) return { imported: distinct, created, updated, pruned, missingFile: false, createdIds, updatedIds };
+  if (!dirty)
+    return {
+      imported: lookups.distinct,
+      created,
+      updated,
+      pruned,
+      missingFile: false,
+      createdIds,
+      updatedIds,
+    };
   version += 1;
   persist(state, version);
-  return { imported: distinct, created, updated, pruned, missingFile: false, createdIds, updatedIds };
+  return {
+    imported: lookups.distinct,
+    created,
+    updated,
+    pruned,
+    missingFile: false,
+    createdIds,
+    updatedIds,
+  };
 }
 
 /** Structurally compare two optional support records (field-wise, so a
@@ -836,23 +940,48 @@ function withDefaultScope(p: ParsedItem, def: ScopeInfo): ParsedItem & ScopeInfo
   return { ...p, ...def };
 }
 
+/** Read a durable layer file. Returns null for a genuinely missing file
+ *  (ENOENT — the expected fresh-install state); any other read error
+ *  (EACCES, EISDIR, …) propagates so the caller reports the real cause
+ *  instead of misdiagnosing it as "no durable files yet". */
+async function readDurableFile(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 /**
  * Parse the durable file and merge it into the live store, then persist a
- * snapshot. Untagged items default to global scope (single-file semantics).
- * See the file-level comment above for merge semantics.
+ * snapshot. Untagged items adopt `options.defaultScope` — the layer the path
+ * represents (see config.ts defaultScopeForPath: the global file → global, a
+ * project-dir file → that project); it defaults to global (single-file
+ * semantics). See the file-level comment above for merge semantics.
  */
 export async function reconstructFromDurable(
   path: string,
-  options: { prune?: boolean },
-  persist: (snapshot: HarnessState, version: number) => void,
+  options: { prune?: boolean; defaultScope?: ScopeInfo },
+  persist: PersistFn,
 ): Promise<DurableImportResult> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true, createdIds: [], updatedIds: [] };
+  const text = await readDurableFile(path);
+  if (text === null) {
+    return {
+      imported: 0,
+      created: 0,
+      updated: 0,
+      pruned: 0,
+      missingFile: true,
+      createdIds: [],
+      updatedIds: [],
+    };
   }
-  return mergeParsed(parseDurable(text).map((p) => withDefaultScope(p, { scope: "global" })), options, persist);
+  return mergeParsed(
+    parseDurable(text).map((p) => withDefaultScope(p, options.defaultScope ?? { scope: "global" })),
+    options,
+    persist,
+  );
 }
 
 /** One layer of a layered import: items without an explicit `scope:` sub-line
@@ -873,20 +1002,27 @@ export interface LayerFile {
 export async function importDurableLayers(
   files: LayerFile[],
   options: { prune?: boolean },
-  persist: (snapshot: HarnessState, version: number) => void,
+  persist: PersistFn,
 ): Promise<DurableImportResult> {
   const all: Array<ParsedItem & ScopeInfo> = [];
   let foundAny = false;
   for (const f of files) {
-    let text: string;
-    try {
-      text = await readFile(f.path, "utf8");
-    } catch {
-      continue;
-    }
+    // A layer file that does not exist is skipped (fresh installs); a real
+    // read error propagates (see readDurableFile).
+    const text = await readDurableFile(f.path);
+    if (text === null) continue;
     foundAny = true;
     for (const p of parseDurable(text)) all.push(withDefaultScope(p, f.defaultScope));
   }
-  if (!foundAny) return { imported: 0, created: 0, updated: 0, pruned: 0, missingFile: true, createdIds: [], updatedIds: [] };
+  if (!foundAny)
+    return {
+      imported: 0,
+      created: 0,
+      updated: 0,
+      pruned: 0,
+      missingFile: true,
+      createdIds: [],
+      updatedIds: [],
+    };
   return mergeParsed(all, options, persist);
 }
