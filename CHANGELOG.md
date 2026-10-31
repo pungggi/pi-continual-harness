@@ -53,10 +53,30 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - The `session_start` durable auto-import is wrapped in the same soft-fail
   try/catch as its `turn_end` counterpart — a throw can no longer escape the
   session_start handler.
-- `/harness push-mem`, `prune`, `adopt`, `keep|drop`, and `move` now **warn
-  on invalid/extra flags** instead of silently falling back (the rule
+- `/harness push-mem`, `prune`, `adopt`, `keep|drop`, `move`, `split`,
+  `lessons`, `import|export|export-corpus`, and `setup` now **warn on
+  invalid/extra arguments** instead of silently falling back (the rule
   `/harness list` already documented): an invalid `--kind` used to quietly
-  push memories, a bad `--decay` to prune without decay.
+  push memories, a bad `--decay` to prune without decay — and, per the PR
+  review, a *misspelled* flag (`prune --decya 30`, `push-mem --knd skill`)
+  was still silently ignored. A grammar gate (`ARG_SPECS`/`checkRest`) now
+  rejects unknown flags, valueless value-flags, and extra positionals for
+  every subcommand before dispatch.
+- **Durable sync survives an unreadable layer** (PR review): a layer that
+  fails to read (EACCES, EISDIR, …) no longer crashes `syncDurableOnStart`
+  or blocks the healthy ones — it is skipped and reported **once per
+  session**, the readable layers import, and auto-export stays paused until
+  every layer reads again (an unread layer must never be overwritten by a
+  store that never saw it). The turn_end catch-up retries quietly and the
+  sync self-heals; previously every turn re-warned and even the healthy
+  global layer never exported. Manual `/harness import` still surfaces the
+  real error (unchanged).
+- `validateDeltas`' create branch now checks `importance` (number in [0,1])
+  and `scope` like the update branch (PR review: a non-pi host could send
+  `importance: "high"` past the guard); `clamp` in the store is NaN-safe as
+  defense in depth for direct-apply proposers; and a smuggled `ownerModel`
+  on a model-facing `harness_mutate` delta is stripped at the boundary
+  (same rule as `support` — creates always stamp to the active model).
 - Under `virtualBinding: "physical"`, a mid-run route change re-caches the
   binding key at `context_with_system`, so `harness_mutate` creates stamp
   with the same key injection renders (previously they could diverge until

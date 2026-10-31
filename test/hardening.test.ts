@@ -1,20 +1,24 @@
-// Hardening regressions from the quality pass: corrupt-snapshot field
-// coercion at reconstruct, ENOENT-vs-real-error durable reads, the
-// no-silent-fallback flag rule on /harness subcommands, and the
-// harness_mutate boundary guard.
+// Hardening regressions from the quality pass and its review: corrupt-snapshot
+// field coercion at reconstruct, ENOENT-vs-real-error durable reads, the
+// no-silent-fallback flag rule on /harness subcommands (values AND grammar),
+// the harness_mutate boundary guard, and unreadable-layer durable sync.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  applyDeltas,
   getState,
   importDurableLayers,
   reconstruct,
   reconstructFromDurable,
+  setActiveModelKey,
 } from "../src/store.js";
-import { validateDeltas } from "../src/tools.js";
+import { executeHarnessMutate, validateDeltas } from "../src/tools.js";
 import { runHarnessCommand } from "../src/harness.js";
+import { handleAutoExportTurnEnd, resetDurableSync, syncDurableOnStart } from "../src/durable.js";
+import { loadConfig, resetConfigCache } from "../src/config.js";
 import { makeFakePi } from "./helpers.js";
 
 describe("reconstruct coerces corrupt snapshot field types", () => {
@@ -38,7 +42,7 @@ describe("reconstruct coerces corrupt snapshot field types", () => {
         // Non-string content is unsalvageable.
         { id: "h_c", kind: "memory", content: 123, evidence: "e", importance: 0.5 },
         // A perfectly fine item rides along untouched.
-        { id: "h_d", kind: "memory", content: "fine", evidence: "e", importance: 0.7 },
+        { id: "h_d", kind: "memory", content: "fine", evidence: "e", importance: 0.5 },
       ],
     };
     reconstruct([{ type: "custom", customType: "harness-state", data: { state: snapshot } }]);
@@ -52,6 +56,18 @@ describe("reconstruct coerces corrupt snapshot field types", () => {
     expect(Number.isFinite(coerced.updatedAt)).toBe(true);
     // Renders over the coerced item no longer throw.
     expect(() => coerced.importance.toFixed(2)).not.toThrow();
+  });
+
+  it("a non-numeric importance reaching applyDeltas degrades to the default, not NaN", () => {
+    reconstruct([]);
+    // Companion proposers call applyDeltas directly, bypassing the tool guard.
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "c", evidence: "e", importance: Number.NaN }],
+      () => {},
+    );
+    const item = getState().items[0]!;
+    expect(Number.isFinite(item.importance)).toBe(true);
+    expect(item.importance).toBe(0.5); // never NaN (would silently prune later)
   });
 });
 
@@ -79,12 +95,102 @@ describe("durable reads distinguish missing files from real errors", () => {
     );
   });
 
+  it("skipReadErrors records the failure and imports the healthy layers", async () => {
+    const healthy = join(dir, "healthy.md");
+    writeFileSync(
+      healthy,
+      "## Memory facts\n\n- **[h_ok]** (importance 0.50) fact\n  - evidence: e\n",
+    );
+    const res = await importDurableLayers(
+      [
+        { path: dir, defaultScope: { scope: "global" } }, // a directory → EISDIR
+        { path: healthy, defaultScope: { scope: "global" } },
+      ],
+      {},
+      () => {},
+      { skipReadErrors: true },
+    );
+    expect(res.missingFile).toBe(false);
+    expect(res.imported).toBe(1);
+    expect(res.readErrors).toHaveLength(1);
+    expect(res.readErrors![0]!.path).toBe(dir);
+  });
+
   it("/harness import reports the failure as an error, not 'no durable file'", async () => {
     const { pi, ctx, notifications } = makeFakePi([]);
     await runHarnessCommand(pi, `import ${dir}`, ctx() as never);
     const warned = notifications.filter((n) => n.level === "error" && /import failed/i.test(n.msg));
     expect(warned).toHaveLength(1);
     expect(notifications.some((n) => /No durable file/i.test(n.msg))).toBe(false);
+  });
+});
+
+describe("durable sync with an unreadable layer (review finding)", () => {
+  let dir: string;
+  let paths: { globalPath: string; projectDir: string };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "pi-ch-unreadable-"));
+    paths = { globalPath: join(dir, "harness-state.md"), projectDir: join(dir, "harness-state") };
+    reconstruct([]);
+    resetDurableSync();
+    resetConfigCache();
+    const cfg = join(dir, "harness.json");
+    writeFileSync(cfg, JSON.stringify({ autoImport: true }));
+    await loadConfig(cfg);
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    resetConfigCache();
+    resetDurableSync();
+    reconstruct([]);
+  });
+
+  function layers() {
+    return [
+      { path: paths.globalPath, defaultScope: { scope: "global" as const } },
+      {
+        path: join(paths.projectDir, "proj.md"),
+        defaultScope: { scope: "project" as const, project: "proj" },
+      },
+    ];
+  }
+
+  it("imports the healthy layer, warns once, and keeps auto-export paused", async () => {
+    // The global "layer" is a DIRECTORY (EISDIR); the project layer is healthy.
+    mkdirSync(paths.globalPath);
+    mkdirSync(paths.projectDir, { recursive: true });
+    const projectFile = join(paths.projectDir, "proj.md");
+    writeFileSync(
+      projectFile,
+      "## Memory facts\n\n- **[h_p]** (importance 0.50) proj fact\n  - evidence: e\n",
+    );
+
+    const { pi, ctx, notifications } = makeFakePi([]);
+    await syncDurableOnStart(pi, ctx() as never, layers());
+    expect(getState().items.map((i) => i.content)).toEqual(["proj fact"]); // healthy layer in
+    const warnings = notifications.filter(
+      (n) => n.level === "warning" && /could not read/i.test(n.msg),
+    );
+    expect(warnings).toHaveLength(1);
+
+    // The turn_end catch-up retries quietly: no new warning, no nagging.
+    await handleAutoExportTurnEnd(pi, ctx() as never, paths);
+    expect(notifications.filter((n) => /could not read/i.test(n.msg))).toHaveLength(1);
+    // Export stayed paused: the unread (global) layer must not be overwritten
+    // by a store that never saw it.
+    expect(notifications.some((n) => /durable state exported/i.test(n.msg))).toBe(false);
+
+    // Self-heal: once every layer reads again, the sync completes and the
+    // next turn_end exports.
+    rmSync(paths.globalPath, { recursive: true, force: true });
+    writeFileSync(
+      paths.globalPath,
+      "## Skill descriptions\n\n- **[h_g]** (importance 0.50) skill\n  - evidence: e\n",
+    );
+    await handleAutoExportTurnEnd(pi, ctx() as never, paths);
+    expect(notifications.some((n) => /durable state exported/i.test(n.msg))).toBe(true);
+    expect(notifications.filter((n) => /could not read/i.test(n.msg))).toHaveLength(1);
   });
 });
 
@@ -107,9 +213,9 @@ describe("/harness subcommands warn on invalid flags (no silent fallback)", () =
     expect(out.some((l) => l.startsWith("info:"))).toBe(false); // no steering happened
   });
 
-  it("push-mem rejects a valueless --model", async () => {
+  it("push-mem rejects a valueless --model at the grammar gate", async () => {
     const out = await run("push-mem --model");
-    expect(out.join("\n")).toMatch(/--model expects a value/);
+    expect(out.join("\n")).toMatch(/--model \(missing value\)/);
   });
 
   it("prune rejects a non-numeric --decay instead of pruning without decay", async () => {
@@ -117,9 +223,33 @@ describe("/harness subcommands warn on invalid flags (no silent fallback)", () =
     expect(out.join("\n")).toMatch(/--decay expects a positive number of days/);
   });
 
-  it("prune rejects a valueless --decay", async () => {
+  it("prune rejects a valueless --decay at the grammar gate", async () => {
     const out = await run("prune --decay");
-    expect(out.join("\n")).toMatch(/--decay expects a positive number of days/);
+    expect(out.join("\n")).toMatch(/--decay \(missing value\)/);
+  });
+
+  it("a misspelled flag is rejected, not silently ignored (prune --decya)", async () => {
+    // This used to prune with NO decay at all — the value validators only
+    // see flags they know by name (review finding).
+    const out = await run("prune --decya 30");
+    expect(out.join("\n")).toMatch(/unexpected argument\(s\): --decya/);
+    expect(out.join("\n")).not.toMatch(/Harness: \d+ pruned/); // nothing ran
+  });
+
+  it("a misspelled push-mem flag is rejected instead of pushing memories", async () => {
+    const out = await run("push-mem --knd skill");
+    expect(out.join("\n")).toMatch(/unexpected argument\(s\): --knd/);
+    expect(out.some((l) => l.startsWith("info:"))).toBe(false); // no steering happened
+  });
+
+  it("split and lessons take no arguments", async () => {
+    expect((await run("split now")).join("\n")).toMatch(/unexpected argument\(s\): now/);
+    expect((await run("lessons extra")).join("\n")).toMatch(/unexpected argument\(s\): extra/);
+  });
+
+  it("import rejects a second positional path", async () => {
+    const out = await run("import a.md b.md");
+    expect(out.join("\n")).toMatch(/unexpected argument\(s\): b\.md/);
   });
 
   it("adopt rejects unexpected positional arguments", async () => {
@@ -171,6 +301,26 @@ describe("harness_mutate boundary guard (validateDeltas)", () => {
     ).toMatch(/evidence exceeds maxLength/);
   });
 
+  it("rejects CREATES with out-of-range importance or bad scope (review finding)", () => {
+    // The create branch used to skip importance/scope entirely; a non-pi host
+    // could send importance: "high" and store NaN.
+    expect(
+      validateDeltas([
+        { op: "create", kind: "memory", content: "c", evidence: "e", importance: 2 },
+      ]),
+    ).toMatch(/importance must be a number in \[0,1\]/);
+    expect(
+      validateDeltas([
+        { op: "create", kind: "memory", content: "c", evidence: "e", importance: "high" },
+      ]),
+    ).toMatch(/importance must be a number in \[0,1\]/);
+    expect(
+      validateDeltas([
+        { op: "create", kind: "memory", content: "c", evidence: "e", scope: "both" },
+      ]),
+    ).toMatch(/scope must be global\|project/);
+  });
+
   it("rejects updates with out-of-range importance or bad scope", () => {
     expect(validateDeltas([{ op: "update", id: "h_x", importance: 2 }])).toMatch(
       /importance must be a number in \[0,1\]/,
@@ -178,6 +328,26 @@ describe("harness_mutate boundary guard (validateDeltas)", () => {
     expect(validateDeltas([{ op: "update", id: "h_x", scope: "both" }])).toMatch(
       /scope must be global\|project/,
     );
+  });
+
+  it("strips a smuggled ownerModel: creates stamp to the ACTIVE model", async () => {
+    reconstruct([]);
+    setActiveModelKey("test/main");
+    const { pi } = makeFakePi([]);
+    await executeHarnessMutate(pi, {
+      deltas: [
+        {
+          op: "create",
+          kind: "memory",
+          content: "c",
+          evidence: "e",
+          ownerModel: "evil/model",
+        } as never,
+      ],
+    });
+    const item = getState().items[0]!;
+    expect(item.ownerModel).toBe("test/main"); // never the smuggled key
+    setActiveModelKey(undefined);
   });
 });
 
@@ -187,7 +357,6 @@ describe("session-scoped writes go through makePersist", () => {
   });
 
   it("a /harness keep persists a harness-state entry with the canonical type", async () => {
-    const { applyDeltas } = await import("../src/store.js");
     applyDeltas(
       [{ op: "create", kind: "memory", content: "note", evidence: "e", ownerModel: "test/main" }],
       () => {},
@@ -198,5 +367,16 @@ describe("session-scoped writes go through makePersist", () => {
     const state = entries.filter((e) => e.customType === "harness-state");
     expect(state).toHaveLength(1);
     expect((state[0]!.data as { version?: number }).version).toBe(2); // create + keep
+  });
+
+  it("keep still works when the id is the only positional (grammar gate passes)", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "note2", evidence: "e", ownerModel: "test/main" }],
+      () => {},
+    );
+    const id = getState().items[0]!.id;
+    const { pi, ctx, notifications } = makeFakePi([]);
+    await runHarnessCommand(pi, `keep ${id}`, ctx() as never);
+    expect(notifications.some((n) => n.level === "info" && /keep:/i.test(n.msg))).toBe(true);
   });
 });

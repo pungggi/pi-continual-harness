@@ -71,6 +71,10 @@ export interface ImportedRef {
 let importedThisSession: ImportedRef[] = [];
 // Reminders fired for the current import batch (bounded — see MAX_IMPORT_REMINDERS).
 let remindersFired = 0;
+// Whether the unreadable-layer warning already fired this session. The turn_end
+// catch-up re-runs syncDurableOnStart while a layer stays unreadable; without
+// the flag it would warn on EVERY turn (review finding on read-error handling).
+let importFailureWarned = false;
 
 /** A batch never nags forever: after this many reminders the items are
  *  considered acknowledged-by-repetition until the next session/import. */
@@ -84,6 +88,7 @@ export function resetDurableSync(): void {
   importedThisSession = [];
   importCadence.reset();
   remindersFired = 0;
+  importFailureWarned = false;
 }
 
 /** Items imported by this session's start auto-import (awareness reminders). */
@@ -111,6 +116,15 @@ function summarizeImported(items: ImportedRef[], max = 5): string[] {
 /**
  * session_start half of the durable sync: layered import (opt-in). `files`
  * defaults to the real layers for ctx.cwd; tests inject temp paths.
+ *
+ * Unreadable layers (EACCES, EISDIR, …) neither crash this handler nor block
+ * the healthy ones: they are skipped and reported — once per session — in a
+ * warning. The sync stays INCOMPLETE while any layer is unreadable
+ * (startSyncRan stays false), so auto-export remains paused: a store that
+ * never saw the unread layer must never be able to overwrite it (the same
+ * data-loss guard as the late-enable catch-up, review #26). The turn_end
+ * catch-up keeps retrying quietly; the moment every layer reads again the
+ * sync completes and export resumes on the next store change.
  */
 export async function syncDurableOnStart(
   pi: ExtensionAPI,
@@ -120,9 +134,22 @@ export async function syncDurableOnStart(
   const config = await loadConfig();
   if (!config.autoImport) return;
   const layers = files ?? layerFilesFor(ctx.cwd);
-  const res = await importDurableLayers(layers, {}, makePersist(pi));
-  // The start-sync completed (a throw above leaves it false, so the turn_end
-  // catch-up retries before any export; missing layers are a completed no-op).
+  const res = await importDurableLayers(layers, {}, makePersist(pi), { skipReadErrors: true });
+  if (res.readErrors !== undefined && res.readErrors.length > 0) {
+    if (!importFailureWarned) {
+      importFailureWarned = true;
+      const listed = res.readErrors.map((e) => `${e.path} (${e.error})`).join("; ");
+      ctx.ui.notify(
+        `Continual Harness: durable auto-import could not read ${res.readErrors.length === 1 ? "one layer" : `${res.readErrors.length} layers`}: ${listed}. ` +
+          "Readable layers were imported; auto-export stays paused until every layer is readable (an unread layer is never overwritten). Retrying quietly each turn.",
+        "warning",
+      );
+    }
+    return; // sync incomplete — no startSyncRan, export stays paused
+  }
+  // The start-sync completed (missing layers are a completed no-op); a throw
+  // above still leaves it false, so the turn_end catch-up retries before any
+  // export.
   startSyncRan = true;
   if (res.missingFile) return; // nothing durable yet — stay quiet
   // Capture WHAT arrived (created or updated) for the awareness reminders.

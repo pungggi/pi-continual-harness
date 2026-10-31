@@ -127,6 +127,11 @@ function genId(): string {
 }
 
 function clamp(n: number): number {
+  // NaN-safe: a non-numeric importance reaching the store (a sloppy direct
+  // caller — the tool boundary validates, companion proposers do not go
+  // through it) would otherwise compare below the prune floor on the next
+  // decay and silently vanish the item; degrade to the create default.
+  if (!Number.isFinite(n)) return 0.5;
   return Math.max(0, Math.min(1, n));
 }
 
@@ -591,6 +596,10 @@ export interface DurableImportResult {
   createdIds: string[];
   /** Ids of the items this import UPDATED in place (durable won). */
   updatedIds: string[];
+  /** Layers that could not be READ (EACCES, EISDIR, …) when the caller passed
+   *  { skipReadErrors: true }; the healthy layers still imported. Absent in
+   *  the default throw-on-error mode and when every layer was readable. */
+  readErrors?: Array<{ path: string; error: string }>;
 }
 
 export interface ParsedItem {
@@ -998,23 +1007,38 @@ export interface LayerFile {
  * EVERY layer (union semantics), not from each file in turn. Earlier layers
  * lose id collisions to later ones; callers pass the global file first so the
  * project layer wins on conflicts.
+ *
+ * Read errors: by default a non-ENOENT read error propagates (the manual
+ * import path must surface the real cause). Pass { skipReadErrors: true }
+ * for the auto-sync path: unreadable layers are recorded in `readErrors`
+ * and skipped, so one bad layer neither blocks the healthy ones nor crashes
+ * the session_start handler — the caller decides how to surface it.
  */
 export async function importDurableLayers(
   files: LayerFile[],
   options: { prune?: boolean },
   persist: PersistFn,
+  opts?: { skipReadErrors?: boolean },
 ): Promise<DurableImportResult> {
   const all: Array<ParsedItem & ScopeInfo> = [];
+  const readErrors: Array<{ path: string; error: string }> = [];
   let foundAny = false;
   for (const f of files) {
-    // A layer file that does not exist is skipped (fresh installs); a real
-    // read error propagates (see readDurableFile).
-    const text = await readDurableFile(f.path);
+    let text: string | null;
+    try {
+      // A layer file that does not exist is skipped (fresh installs); a real
+      // read error is handled per `opts` (see the function comment).
+      text = await readDurableFile(f.path);
+    } catch (err) {
+      if (!opts?.skipReadErrors) throw err;
+      readErrors.push({ path: f.path, error: (err as Error).message });
+      continue;
+    }
     if (text === null) continue;
     foundAny = true;
     for (const p of parseDurable(text)) all.push(withDefaultScope(p, f.defaultScope));
   }
-  if (!foundAny)
+  if (!foundAny && readErrors.length === 0)
     return {
       imported: 0,
       created: 0,
@@ -1024,5 +1048,6 @@ export async function importDurableLayers(
       createdIds: [],
       updatedIds: [],
     };
-  return mergeParsed(all, options, persist);
+  const res = mergeParsed(all, options, persist);
+  return readErrors.length > 0 ? { ...res, readErrors } : res;
 }

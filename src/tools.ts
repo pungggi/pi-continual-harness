@@ -73,6 +73,17 @@ export function validateDeltas(raw: unknown): string | undefined {
       if (evidence) return evidence;
       if (delta.content === "") return `${where}: content must not be empty`;
       if (delta.evidence === "") return `${where}: evidence must not be empty`;
+      // Same range checks as the update branch: the schema declares
+      // minimum 0 / maximum 1 on create importance too, and a non-numeric
+      // value from a non-pi host would otherwise store NaN (review: the
+      // create branch used to skip importance/scope entirely).
+      const imp = delta.importance;
+      if (imp !== undefined && (typeof imp !== "number" || imp < 0 || imp > 1)) {
+        return `${where}: importance must be a number in [0,1]`;
+      }
+      if (delta.scope !== undefined && delta.scope !== "global" && delta.scope !== "project") {
+        return `${where}: scope must be global|project`;
+      }
     } else if (delta.op === "update") {
       const id = validText(delta.id, 200, "id", where);
       if (id) return id;
@@ -174,16 +185,20 @@ export async function executeHarnessMutate(
     };
   }
   const incoming = params.deltas as Delta[];
-  // `support` is SERVER-ONLY (review r4341960971): the update shape tolerates
-  // additional properties, so a schema-valid call could otherwise carry
-  // `support: { citations: 999 }` and fabricate execution/human-feedback
-  // evidence for the lessons digest. Strip it at the tool boundary — the only
-  // model-facing write path. Internal writers (dedupe merge, keep/drop,
-  // outcome loop) call applyDeltas directly and keep it.
+  // `support` and `ownerModel` are SERVER-ONLY (support: review r4341960971;
+  // ownerModel: per-model isolation promises the model can never choose the
+  // owner — creates stamp to the active model, updates keep theirs). The
+  // shapes tolerate additional properties, so a schema-valid call could
+  // otherwise carry `support: { citations: 999 }` (fabricated feedback for
+  // the lessons digest) or `ownerModel: "someone/else"` (a cross-model
+  // smuggle). Strip both at the tool boundary — the only model-facing write
+  // path. Internal writers (dedupe merge, keep/drop, outcome loop, direct-
+  // apply proposers) call applyDeltas directly and keep them.
   const deltas = incoming.map((d): Delta => {
-    if (d.op === "update" && "support" in d) {
-      const copy = { ...d };
+    if ((d.op === "create" || d.op === "update") && ("support" in d || "ownerModel" in d)) {
+      const copy: Delta & { support?: unknown; ownerModel?: unknown } = { ...d };
       delete copy.support;
+      delete copy.ownerModel;
       return copy;
     }
     return d;

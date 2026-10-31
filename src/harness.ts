@@ -345,6 +345,12 @@ export async function runHarnessCommand(
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = (parts[0] ?? "status").toLowerCase();
   const rest = parts.slice(1);
+  // Grammar gate before dispatch: reject unknown flags and extra positionals
+  // for every subcommand that declares a grammar (see ARG_SPECS). Without it,
+  // `prune --decya 30` silently pruned with no decay and `push-mem --knd
+  // skill` silently pushed memories — value validation alone does not catch a
+  // misspelled FLAG (review finding on the strict-flag helpers).
+  if (!checkRest(ctx, sub, rest)) return;
   switch (sub) {
     case "import":
       await handleImport(pi, ctx, rest);
@@ -407,6 +413,83 @@ function explicitPath(rest: string[]): string | undefined {
 // warn instead of silently falling back — a filter that quietly ignores its
 // own argument would make the listing lie." These helpers give every other
 // subcommand the same semantics.
+
+/** The argument grammar one subcommand accepts: which boolean flags, which
+ *  flags take a value, and how many positional tokens. Value CONTENT is
+ *  validated separately per flag (enumFlagValue & friends) — the grammar
+ *  only claims value tokens so they are not mistaken for positionals. */
+interface ArgSpec {
+  /** Flags without a value, e.g. --all. */
+  bool?: string[];
+  /** Flags that consume the NEXT token as their value, e.g. --kind. */
+  value?: string[];
+  /** Max non-flag, non-value tokens (default 0). */
+  maxPositionals?: number;
+  /** What the positionals are, for the warning copy. */
+  positionalName?: string;
+}
+
+/** Grammars enforced by checkRest. Subcommands without an entry (status,
+ *  list) keep their own handling: status ignores arguments (it is the
+ *  fallback subcommand), list enforces a stricter parser of its own. */
+const ARG_SPECS: Record<string, ArgSpec> = {
+  import: { bool: ["--prune"], maxPositionals: 1, positionalName: "path" },
+  export: { maxPositionals: 1, positionalName: "path" },
+  "export-corpus": { maxPositionals: 1, positionalName: "directory" },
+  prune: { value: ["--decay"] },
+  keep: { maxPositionals: 1, positionalName: "item id" },
+  drop: { maxPositionals: 1, positionalName: "item id" },
+  move: { maxPositionals: 2, positionalName: "item id + scope" },
+  adopt: { bool: ["--all"], value: ["--from"] },
+  "push-mem": { bool: ["--all"], value: ["--kind", "--model"] },
+  setup: { bool: ["--yes"], value: ["--preset"] },
+  split: {},
+  lessons: {},
+};
+
+/** Enforce `sub`'s argument grammar: every token must be a known flag, a
+ *  known flag's value, or one of at most maxPositionals positionals. Warns
+ *  and returns false on anything else — a misspelled flag or stray token
+ *  must not be silently ignored (`prune --decya 30` used to prune with no
+ *  decay at all). */
+function checkRest(ctx: ExtensionCommandContext, sub: string, rest: string[]): boolean {
+  const spec = ARG_SPECS[sub];
+  if (!spec) return true;
+  const bool = spec.bool ?? [];
+  const value = spec.value ?? [];
+  const maxPos = spec.maxPositionals ?? 0;
+  const unexpected: string[] = [];
+  let positionals = 0;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]!;
+    if (value.includes(t)) {
+      if (i + 1 >= rest.length) {
+        unexpected.push(`${t} (missing value)`);
+        break;
+      }
+      i += 1; // claim the value token; its CONTENT is validated per-flag
+      continue;
+    }
+    if (bool.includes(t)) continue;
+    if (t.startsWith("-")) {
+      unexpected.push(t);
+      continue;
+    }
+    positionals += 1;
+    if (positionals > maxPos) unexpected.push(t);
+  }
+  if (unexpected.length === 0) return true;
+  const expected = [
+    ...bool,
+    ...value.map((f) => `${f} <value>`),
+    ...(maxPos > 0 ? [`at most ${maxPos} ${spec.positionalName ?? "positional argument(s)"}`] : []),
+  ];
+  ctx.ui.notify(
+    `/harness ${sub}: unexpected argument(s): ${unexpected.join(" ")} — expected ${expected.join(", ") || "no arguments"}.`,
+    "warning",
+  );
+  return false;
+}
 
 /** Read `--flag <value>` where the value must be one of `values`.
  *  Returns the value, undefined when the flag is absent, or "invalid" when it
