@@ -15,9 +15,15 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import continualHarness from "../src/index.js";
-import { applyDeltas, getState, reconstruct, setSessionProject, STATE_ENTRY } from "../src/store.js";
+import {
+  applyDeltas,
+  getState,
+  reconstruct,
+  setSessionProject,
+  STATE_ENTRY,
+} from "../src/store.js";
 import type { Delta } from "../src/types.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { resetAutoRefine } from "../src/auto-refine.js";
@@ -68,7 +74,16 @@ describe("session_start reconstruction", () => {
         data: {
           state: {
             items: [
-              { id: "h_1", kind: "memory", content: "restored fact", evidence: "e", importance: 0.6, active: true, createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_1",
+                kind: "memory",
+                content: "restored fact",
+                evidence: "e",
+                importance: 0.6,
+                active: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -105,7 +120,16 @@ describe("injection — before_agent_start bridge + context_with_system render",
         data: {
           state: {
             items: [
-              { id: "h_1", kind: "prompt", content: "Always cite evidence", evidence: "e", importance: 0.8, active: true, createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_1",
+                kind: "prompt",
+                content: "Always cite evidence",
+                evidence: "e",
+                importance: 0.8,
+                active: true,
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -117,10 +141,18 @@ describe("injection — before_agent_start bridge + context_with_system render",
 
     // before_agent_start adopts the restored orphan to the active model first
     // (the bridge), then the per-request render happens in context_with_system.
-    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
-    const [ret] = (await fire("context_with_system", {
-      messages: [{ role: "system", content: "BASE" }],
-    }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+    await fire(
+      "before_agent_start",
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx(),
+    );
+    const [ret] = (await fire(
+      "context_with_system",
+      {
+        messages: [{ role: "system", content: "BASE" }],
+      },
+      ctx(),
+    )) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
 
     expect(ret?.messages).toBeDefined();
     expect(ret!.messages![0]!.role).toBe("system");
@@ -133,25 +165,51 @@ describe("injection — before_agent_start bridge + context_with_system render",
     const { pi, fire, ctx, tools } = makeFakePi([]);
     continualHarness(pi);
     await fire("session_start", { reason: "startup" }, ctx());
-    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
+    await fire(
+      "before_agent_start",
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx(),
+    );
 
-    const first = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+    const first = (await fire(
+      "context_with_system",
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx(),
+    )) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
     expect(first[0]).toBeUndefined(); // empty store → no owned transcript
 
     // The model fixes the (empty) state mid-run:
-    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
-      deltas: [{ op: "create", kind: "memory", content: "prefer pnpm here", evidence: "e" }],
-    }, undefined, undefined, ctx());
+    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {
+        deltas: [{ op: "create", kind: "memory", content: "prefer pnpm here", evidence: "e" }],
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
 
-    const second = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
+    const second = (await fire(
+      "context_with_system",
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx(),
+    )) as Array<{ messages?: Array<{ role: string; content: string }> } | undefined>;
     expect(second[0]!.messages![0]!.content).toContain("prefer pnpm here");
   });
 
   it("returns undefined (no transcript ownership) when there is no active state", async () => {
     const { pi, fire, ctx } = makeFakePi([]);
     continualHarness(pi);
-    await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx());
-    const [ret] = await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx());
+    await fire(
+      "before_agent_start",
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx(),
+    );
+    const [ret] = await fire(
+      "context_with_system",
+      { messages: [{ role: "system", content: "BASE" }] },
+      ctx(),
+    );
     expect(ret).toBeUndefined();
   });
 });
@@ -176,8 +234,16 @@ describe("context_with_system injection selection (default on, opt-out)", () => 
       const { pi, fire, ctx } = makeFakePi([]);
       continualHarness(pi);
       applyDeltas(items, () => {});
-      await fire("before_agent_start", { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" }, ctx()); // cache the active model
-      const [ret] = (await fire("context_with_system", { messages: [{ role: "system", content: "BASE" }] }, ctx())) as Array<{
+      await fire(
+        "before_agent_start",
+        { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+        ctx(),
+      ); // cache the active model
+      const [ret] = (await fire(
+        "context_with_system",
+        { messages: [{ role: "system", content: "BASE" }] },
+        ctx(),
+      )) as Array<{
         messages?: Array<{ role: string; content: string }>;
       }>;
       return ret?.messages?.[0]?.content ?? "";
@@ -190,8 +256,22 @@ describe("context_with_system injection selection (default on, opt-out)", () => 
   it("default policy orders injected items by importance (highest first)", async () => {
     // Inserted low-first; default selection must surface high before low.
     const block = await blockWith([
-      { op: "create", kind: "prompt", content: "low-imp", evidence: "e", importance: 0.2, ownerModel: "test/main" },
-      { op: "create", kind: "prompt", content: "high-imp", evidence: "e", importance: 0.9, ownerModel: "test/main" },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "low-imp",
+        evidence: "e",
+        importance: 0.2,
+        ownerModel: "test/main",
+      },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "high-imp",
+        evidence: "e",
+        importance: 0.9,
+        ownerModel: "test/main",
+      },
     ]);
     expect(block).toContain("high-imp");
     expect(block).toContain("low-imp");
@@ -201,8 +281,22 @@ describe("context_with_system injection selection (default on, opt-out)", () => 
   it("maxPerKind trims the lowest-importance items and appends a transparency footer", async () => {
     const block = await blockWith(
       [
-        { op: "create", kind: "prompt", content: "kept", evidence: "e", importance: 0.9, ownerModel: "test/main" },
-        { op: "create", kind: "prompt", content: "dropped", evidence: "e", importance: 0.2, ownerModel: "test/main" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "kept",
+          evidence: "e",
+          importance: 0.9,
+          ownerModel: "test/main",
+        },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "dropped",
+          evidence: "e",
+          importance: 0.2,
+          ownerModel: "test/main",
+        },
       ],
       { maxPerKind: 1 },
     );
@@ -215,8 +309,22 @@ describe("context_with_system injection selection (default on, opt-out)", () => 
     // Inserted low-first; legacy must preserve insertion order (low before high).
     const block = await blockWith(
       [
-        { op: "create", kind: "prompt", content: "low-imp", evidence: "e", importance: 0.2, ownerModel: "test/main" },
-        { op: "create", kind: "prompt", content: "high-imp", evidence: "e", importance: 0.9, ownerModel: "test/main" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "low-imp",
+          evidence: "e",
+          importance: 0.2,
+          ownerModel: "test/main",
+        },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "high-imp",
+          evidence: "e",
+          importance: 0.9,
+          ownerModel: "test/main",
+        },
       ],
       { enabled: false },
     );
@@ -234,8 +342,20 @@ describe("/refine command", () => {
 
   it("gathers trajectory evidence and steers the agent via sendUserMessage", async () => {
     const branch = [
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "Fix the login bug in auth.ts" }] } },
-      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Looking into auth.ts now" }] } },
+      {
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Fix the login bug in auth.ts" }],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Looking into auth.ts now" }],
+        },
+      },
     ];
     const { pi, commands, ctx, sentMessages, sendOptions, entries } = makeFakePi(branch);
     continualHarness(pi);
@@ -264,18 +384,53 @@ describe("/refine command", () => {
         data: {
           state: {
             items: [
-              { id: "h_sup", kind: "memory", content: "run tests before pushing", evidence: "e", importance: 0.6, active: true, ownerModel: "test/main", support: { citations: 2, lastCitedAt: 1 }, createdAt: 1, updatedAt: 1 },
-              { id: "h_quiet", kind: "memory", content: "unsupported note", evidence: "e", importance: 0.6, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_sup",
+                kind: "memory",
+                content: "run tests before pushing",
+                evidence: "e",
+                importance: 0.6,
+                active: true,
+                ownerModel: "test/main",
+                support: { citations: 2, lastCitedAt: 1 },
+                createdAt: 1,
+                updatedAt: 1,
+              },
+              {
+                id: "h_quiet",
+                kind: "memory",
+                content: "unsupported note",
+                evidence: "e",
+                importance: 0.6,
+                active: true,
+                ownerModel: "test/main",
+                createdAt: 1,
+                updatedAt: 1,
+              },
               // Another model's note: per-model isolation applies to the digest
               // too (review r4341960955) — never named, never "delete"-steered.
-              { id: "h_foreign", kind: "memory", content: "other models note", evidence: "e", importance: 0.9, active: true, ownerModel: "other/model", support: { citations: 7, lastCitedAt: 1 }, createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_foreign",
+                kind: "memory",
+                content: "other models note",
+                evidence: "e",
+                importance: 0.9,
+                active: true,
+                ownerModel: "other/model",
+                support: { citations: 7, lastCitedAt: 1 },
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
       },
     ]);
     const branch = [
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "improve things" }] } },
+      {
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "improve things" }] },
+      },
     ];
     const { pi, commands, ctx, sentMessages } = makeFakePi(branch);
     continualHarness(pi);
@@ -311,7 +466,9 @@ describe("/refine command", () => {
     const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
     continualHarness(pi);
     await commands.get("refine")!.handler("25 --comit", ctx()); // typo'd --commit
-    expect(notifications.some((n) => n.level === "warning" && n.msg.includes("--comit"))).toBe(true);
+    expect(notifications.some((n) => n.level === "warning" && n.msg.includes("--comit"))).toBe(
+      true,
+    );
     expect(sentMessages).toHaveLength(1); // the refine itself still runs
   });
 
@@ -327,12 +484,20 @@ describe("/refine command", () => {
 
   it("boundary delivery: runRefine returns the steering message undelivered (auto-refine persists it as a turn_end draft)", async () => {
     const branch = [
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "learned: prefer pnpm" }] } },
+      {
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "learned: prefer pnpm" }] },
+      },
     ];
     const { pi, ctx, sentMessages, entries } = makeFakePi(branch);
     continualHarness(pi);
 
-    const result = await runRefine(pi, ctx() as unknown as Parameters<typeof runRefine>[1], { lookback: 5, delivery: "boundary" }, "auto");
+    const result = await runRefine(
+      pi,
+      ctx() as unknown as Parameters<typeof runRefine>[1],
+      { lookback: 5, delivery: "boundary" },
+      "auto",
+    );
 
     // NOT sent as a user message — the caller owns delivery
     expect(sentMessages).toHaveLength(0);
@@ -352,9 +517,19 @@ describe("harness tools round-trip", () => {
     continualHarness(pi);
 
     const mutate = tools.get("harness_mutate")!;
-    const res = (await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {
-      deltas: [{ op: "create", kind: "memory", content: "fact A", evidence: "saw it" }],
-    }, undefined, undefined, ctx())) as { content: Array<{ type: string; text: string }>; details: { applied: unknown[] }; structuredContent?: { applied: number; created: number; updated: number; deleted: number } };
+    const res = (await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {
+        deltas: [{ op: "create", kind: "memory", content: "fact A", evidence: "saw it" }],
+      },
+      undefined,
+      undefined,
+      ctx(),
+    )) as {
+      content: Array<{ type: string; text: string }>;
+      details: { applied: unknown[] };
+      structuredContent?: { applied: number; created: number; updated: number; deleted: number };
+    };
 
     expect(res.content[0]!.text).toMatch(/Applied 1 delta/);
     expect(res.details.applied).toHaveLength(1);
@@ -364,9 +539,18 @@ describe("harness tools round-trip", () => {
     expect(entries.some((e) => e.customType === STATE_ENTRY)).toBe(true);
 
     const list = tools.get("harness_list")!;
-    const listed = (await (list.execute as (...a: unknown[]) => Promise<unknown>)(undefined, {}, undefined, undefined, ctx())) as {
+    const listed = (await (list.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {},
+      undefined,
+      undefined,
+      ctx(),
+    )) as {
       content: Array<{ type: string; text: string }>;
-      structuredContent?: { count: number; items: Array<{ id: string; content: string; ownerModel: string }> };
+      structuredContent?: {
+        count: number;
+        items: Array<{ id: string; content: string; ownerModel: string }>;
+      };
     };
     expect(listed.content[0]!.text).toContain("fact A");
     // structuredContent mirrors the store for programmatic callers
@@ -390,7 +574,11 @@ describe("/harness command", () => {
     // Completions are async since the thin-entry refactor (issue #36): pi's
     // API allows a Promise here, and the store-backed menus lazy-load.
     const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
-    const items = (await complete("")) as Array<{ value: string; label: string; description?: string }>;
+    const items = (await complete("")) as Array<{
+      value: string;
+      label: string;
+      description?: string;
+    }>;
     expect(items.map((i) => i.value)).toEqual([
       "import",
       "export",
@@ -417,7 +605,9 @@ describe("/harness command", () => {
     const { pi, commands } = makeFakePi([]);
     continualHarness(pi);
     const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
-    expect(((await complete("imp")) as Array<{ value: string }>).map((i) => i.value)).toEqual(["import"]);
+    expect(((await complete("imp")) as Array<{ value: string }>).map((i) => i.value)).toEqual([
+      "import",
+    ]);
     expect(((await complete("P")) as Array<{ value: string }>).map((i) => i.value)).toEqual([
       "prune",
       "push-mem",
@@ -471,7 +661,13 @@ describe("/harness command", () => {
     // --model offers `active` plus the distinct owner models in the store
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "a", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "a",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
         { op: "create", kind: "memory", content: "b", evidence: "e", ownerModel: "google/gemini" },
       ] as Delta[],
       () => {},
@@ -500,11 +696,19 @@ describe("/harness command", () => {
     // --preset completes the three preset names as full replacement values
     expect(await complete("setup --preset ")).toEqual([
       { value: "setup --preset quiet", label: "quiet", description: expect.any(String) },
-      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
+      {
+        value: "setup --preset recommended",
+        label: "recommended",
+        description: expect.any(String),
+      },
       { value: "setup --preset power", label: "power", description: expect.any(String) },
     ]);
     expect(await complete("setup --preset re")).toEqual([
-      { value: "setup --preset recommended", label: "recommended", description: expect.any(String) },
+      {
+        value: "setup --preset recommended",
+        label: "recommended",
+        description: expect.any(String),
+      },
     ]);
   });
 
@@ -535,7 +739,11 @@ describe("/harness command", () => {
       { value: "list --scope all", label: "all", description: expect.any(String) },
     ]);
     expect(await complete("list --kind memory --scope pr")).toEqual([
-      { value: "list --kind memory --scope project", label: "project", description: expect.any(String) },
+      {
+        value: "list --kind memory --scope project",
+        label: "project",
+        description: expect.any(String),
+      },
     ]);
   });
 
@@ -545,7 +753,16 @@ describe("/harness command", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [{ op: "create", kind: "memory", content: "use PostgreSQL for the orders service", evidence: "design review" }] },
+      {
+        deltas: [
+          {
+            op: "create",
+            kind: "memory",
+            content: "use PostgreSQL for the orders service",
+            evidence: "design review",
+          },
+        ],
+      },
       undefined,
       undefined,
       ctx(),
@@ -553,7 +770,11 @@ describe("/harness command", () => {
     const id = getState().items[0]!.id;
     const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
 
-    const items = (await complete("keep ")) as Array<{ value: string; label: string; description?: string }>;
+    const items = (await complete("keep ")) as Array<{
+      value: string;
+      label: string;
+      description?: string;
+    }>;
     expect(items).toHaveLength(1);
     expect(items[0]!.value).toBe(`keep ${id}`);
     expect(items[0]!.label).toBe(id);
@@ -575,7 +796,11 @@ describe("/harness command", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [{ op: "create", kind: "memory", content: "relay deploy procedure", evidence: "e" }] },
+      {
+        deltas: [
+          { op: "create", kind: "memory", content: "relay deploy procedure", evidence: "e" },
+        ],
+      },
       undefined,
       undefined,
       ctx(),
@@ -654,8 +879,24 @@ describe("/harness command", () => {
     applyDeltas(
       [
         { op: "create", kind: "memory", content: "global fact", evidence: "g", importance: 0.4 },
-        { op: "create", kind: "prompt", content: "app note", evidence: "p", importance: 0.9, scope: "project", project: "tmp" },
-        { op: "create", kind: "memory", content: "foreign fact", evidence: "f", importance: 0.8, scope: "project", project: "other" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "app note",
+          evidence: "p",
+          importance: 0.9,
+          scope: "project",
+          project: "tmp",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "foreign fact",
+          evidence: "f",
+          importance: 0.8,
+          scope: "project",
+          project: "other",
+        },
       ] as Delta[],
       () => {},
     );
@@ -702,7 +943,15 @@ describe("/harness command", () => {
     expect(notifications.at(-1)!.msg).toContain("`/refine`");
 
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "full fact", evidence: "the evidence", ownerModel: "test/main" }] as Delta[],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "full fact",
+          evidence: "the evidence",
+          ownerModel: "test/main",
+        },
+      ] as Delta[],
       () => {},
     );
     await commands.get("harness")!.handler("list -f", ctx());
@@ -737,10 +986,17 @@ describe("/harness command", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [
-        { op: "create", kind: "memory", content: "PowerShell quirk", evidence: "global ev" },
-        { op: "create", kind: "memory", content: "relay deploy procedure", evidence: "project ev" },
-      ] },
+      {
+        deltas: [
+          { op: "create", kind: "memory", content: "PowerShell quirk", evidence: "global ev" },
+          {
+            op: "create",
+            kind: "memory",
+            content: "relay deploy procedure",
+            evidence: "project ev",
+          },
+        ],
+      },
       undefined,
       undefined,
       ctx(),
@@ -811,8 +1067,16 @@ describe("/harness command", () => {
     });
     const branch = [
       // The first snapshot IS the create batch (implicit empty baseline).
-      { type: "custom", customType: "harness-state", data: { state: { items: [a(0.5)] }, version: 1 } },
-      { type: "custom", customType: "harness-state", data: { state: { items: [a(0.6)] }, version: 2 } }, // kept (+0.1)
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: { state: { items: [a(0.5)] }, version: 1 },
+      },
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: { state: { items: [a(0.6)] }, version: 2 },
+      }, // kept (+0.1)
     ];
     const { pi, commands, ctx, notifications } = makeFakePi(branch);
     continualHarness(pi);
@@ -840,7 +1104,9 @@ describe("/harness command", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [{ op: "create", kind: "memory", content: "low", evidence: "e", importance: 0.1 }] },
+      {
+        deltas: [{ op: "create", kind: "memory", content: "low", evidence: "e", importance: 0.1 }],
+      },
       undefined,
       undefined,
       ctx(),
@@ -870,13 +1136,9 @@ describe("/harness command", () => {
     // The human signals land in the support counters (Harness² retention evidence).
     expect(getState().items[0]!.support).toEqual({ keeps: 1, drops: 1 });
     // harness_list text surfaces the support line for the agent (like list -f).
-    const listed = (await (tools.get("harness_list")!.execute as (...a: unknown[]) => Promise<unknown>)(
-      undefined,
-      {},
-      undefined,
-      undefined,
-      ctx(),
-    )) as { content: Array<{ text: string }> };
+    const listed = (await (
+      tools.get("harness_list")!.execute as (...a: unknown[]) => Promise<unknown>
+    )(undefined, {}, undefined, undefined, ctx())) as { content: Array<{ text: string }> };
     expect(listed.content[0]!.text).toContain("support: kept 1×, dropped 1×");
   });
 
@@ -885,7 +1147,13 @@ describe("/harness command", () => {
     continualHarness(pi);
     const mutate = tools.get("harness_mutate")!;
     const exec = (deltas: unknown[]) =>
-      (mutate.execute as (...a: unknown[]) => Promise<unknown>)(undefined, { deltas }, undefined, undefined, ctx());
+      (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
+        undefined,
+        { deltas },
+        undefined,
+        undefined,
+        ctx(),
+      );
 
     await exec([{ op: "create", kind: "memory", content: "x", evidence: "e" }]);
     const id = getState().items[0]!.id;
@@ -898,7 +1166,9 @@ describe("/harness command", () => {
     expect(item.content).toBe("updated"); // the legit field applied
     expect(item.support).toBeUndefined(); // the fabricated evidence did not
     // Create-side: applyOne never reads support from a create delta either.
-    await exec([{ op: "create", kind: "memory", content: "y", evidence: "e", support: { citations: 42 } }]);
+    await exec([
+      { op: "create", kind: "memory", content: "y", evidence: "e", support: { citations: 42 } },
+    ]);
     expect(getState().items[1]!.support).toBeUndefined();
   });
 
@@ -1010,13 +1280,21 @@ describe("/harness command", () => {
         // a routed response: the virtual selection resolved to claude-x
         {
           type: "message",
-          message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [{ type: "text", text: "ok" }] },
+          message: {
+            role: "assistant",
+            provider: "anthropic",
+            model: "claude-x",
+            content: [{ type: "text", text: "ok" }],
+          },
         },
         { type: "custom", customType: STATE_ENTRY, data: { state: { items: [a] }, version: 1 } },
       ];
       const { pi, commands, ctx, notifications, fire } = makeFakePi(branch);
       continualHarness(pi);
-      const virtualCtx = () => ({ ...ctx(), model: { provider: "openai-codex", id: "auto", api: "pi-virtual" } });
+      const virtualCtx = () => ({
+        ...ctx(),
+        model: { provider: "openai-codex", id: "auto", api: "pi-virtual" },
+      });
       await fire("session_start", { reason: "startup" }, virtualCtx());
       await commands.get("harness")!.handler("status", virtualCtx());
       const msg = notifications.find((n) => n.msg.startsWith("Harness:"))!.msg;
@@ -1035,7 +1313,10 @@ describe("runRefine + auto-refine", () => {
 
   it("runRefine tags the audit entry with source (manual default, auto explicit)", async () => {
     const branch = [
-      { type: "message", message: { role: "user", content: [{ type: "text", text: "fix the login bug" }] } },
+      {
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "fix the login bug" }] },
+      },
     ];
     const { pi, commands, ctx, entries } = makeFakePi(branch);
     continualHarness(pi);
@@ -1060,25 +1341,41 @@ describe("runRefine + auto-refine", () => {
     await loadConfig(cfgFile); // populate the in-process config cache (deterministic)
     try {
       const branch = [
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
       ];
       const { pi, fire, ctx, sentMessages, entries } = makeFakePi(branch);
       continualHarness(pi); // turn_end on the fake = auto-refine (last registered)
 
       // turn 0 seeds the baseline (no fire); turn 1 fires (everyTurns=1)
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx());
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } },
+        ctx(),
+      );
       expect(sentMessages).toHaveLength(0);
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx())) as Array<{
-        entries?: Array<{ type: string; customType?: string; content?: string }>;
-        continue?: boolean;
-      } | undefined>;
+      const rets = (await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } },
+        ctx(),
+      )) as Array<
+        | {
+            entries?: Array<{ type: string; customType?: string; content?: string }>;
+            continue?: boolean;
+          }
+        | undefined
+      >;
 
       // Boundary delivery (pi ≥ 0.87): the steering prompt is a structural
       // custom-message draft + continue:true — NOT a synthetic user message.
       const boundary = rets.find((r) => r && r.continue === true);
       expect(boundary).toBeDefined();
       expect(sentMessages).toHaveLength(0);
-      const draft = boundary!.entries!.find((e) => e.type === "custom_message" && e.customType === "harness.auto-refine-request");
+      const draft = boundary!.entries!.find(
+        (e) => e.type === "custom_message" && e.customType === "harness.auto-refine-request",
+      );
       expect(draft).toBeDefined();
       expect(draft!.content).toContain("/refine");
       const audits = entries.filter((e) => e.customType === "harness-refinement");
@@ -1105,7 +1402,10 @@ describe("runRefine + auto-refine", () => {
         data: { source: "auto", proposer: "steering", applied: 0, startedAt: t },
       });
       const branch = [
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
         noOpRun(1),
         noOpRun(2),
         noOpRun(3),
@@ -1113,13 +1413,24 @@ describe("runRefine + auto-refine", () => {
       const { pi, fire, ctx, entries, notifications } = makeFakePi(branch);
       continualHarness(pi);
 
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx()); // seed
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx())) as Array<{
-        continue?: boolean;
-      } | undefined>;
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } },
+        ctx(),
+      ); // seed
+      const rets = (await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } },
+        ctx(),
+      )) as Array<
+        | {
+            continue?: boolean;
+          }
+        | undefined
+      >;
       // The cadence elapsed but the history gate vetoed: no new refine ran.
       expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(0);
-      expect(rets.every((r) => !r || r.continue !== true)).toBe(true);
+      expect(rets.every((r) => r?.continue !== true)).toBe(true);
       expect(notifications.some((n) => n.msg.includes("history gate"))).toBe(true);
     } finally {
       resetAutoRefine();
@@ -1143,7 +1454,10 @@ describe("runRefine + auto-refine", () => {
       });
       // Branch already ends with 3 ineffective runs → the window says "skip".
       const branch = [
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
         noOpRun(1),
         noOpRun(2),
         noOpRun(3),
@@ -1151,20 +1465,39 @@ describe("runRefine + auto-refine", () => {
       const { pi, fire, ctx, entries, notifications } = makeFakePi(branch);
       continualHarness(pi);
 
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx()); // seed
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } },
+        ctx(),
+      ); // seed
       // Cadence 1: history gate skips (1/1 consecutive).
-      await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx());
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } },
+        ctx(),
+      );
       expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(0);
       expect(notifications.some((n) => n.msg.includes("history gate"))).toBe(true);
       // Cadence 2: the SAME still-all-ineffective window cannot skip again —
       // the refine runs, so later trajectory evidence always gets its turn.
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true } }, ctx())) as Array<{
-        continue?: boolean;
-      } | undefined>;
+      const rets = (await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true } },
+        ctx(),
+      )) as Array<
+        | {
+            continue?: boolean;
+          }
+        | undefined
+      >;
       expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
       expect(rets.some((r) => r && r.continue === true)).toBe(true);
       // Budget spent → cadence 3 can skip again (alternating worst case).
-      await fire("turn_end", { type: "turn_end", turnIndex: 3, entries: [], context: { canContinue: true } }, ctx());
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 3, entries: [], context: { canContinue: true } },
+        ctx(),
+      );
       expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
     } finally {
       resetAutoRefine();
@@ -1182,16 +1515,39 @@ describe("runRefine + auto-refine", () => {
     await loadConfig(cfgFile);
     try {
       const branch = [
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
-        { type: "custom", customType: "harness-refinement", data: { source: "auto", proposer: "steering", applied: 0, startedAt: 1 } },
-        { type: "custom", customType: "harness-refinement", data: { source: "auto", proposer: "dedupe", applied: 1, startedAt: 2 } },
-        { type: "custom", customType: "harness-refinement", data: { source: "auto", proposer: "steering", applied: 0, startedAt: 3 } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
+        {
+          type: "custom",
+          customType: "harness-refinement",
+          data: { source: "auto", proposer: "steering", applied: 0, startedAt: 1 },
+        },
+        {
+          type: "custom",
+          customType: "harness-refinement",
+          data: { source: "auto", proposer: "dedupe", applied: 1, startedAt: 2 },
+        },
+        {
+          type: "custom",
+          customType: "harness-refinement",
+          data: { source: "auto", proposer: "steering", applied: 0, startedAt: 3 },
+        },
       ];
       const { pi, fire, ctx, entries } = makeFakePi(branch);
       continualHarness(pi);
 
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } }, ctx()); // seed
-      await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } }, ctx());
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true } },
+        ctx(),
+      ); // seed
+      await fire(
+        "turn_end",
+        { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true } },
+        ctx(),
+      );
       // Gate lifted by the dedupe run's applied:1 → a new auto-refine happened.
       const audits = entries.filter((e) => e.customType === "harness-refinement");
       expect(audits).toHaveLength(1);
@@ -1212,18 +1568,33 @@ describe("runRefine + auto-refine", () => {
     await loadConfig(cfgFile);
     try {
       const { pi, fire, ctx, sentMessages, entries } = makeFakePi([
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
       ]);
       continualHarness(pi);
 
       // Seed on a completed turn; each aborted/error turn would fire at
       // everyTurns=1 if the outcome were ignored. None may produce a boundary
       // continuation, an audit entry, or a steering send.
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx());
+      await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 0,
+          entries: [],
+          context: { canContinue: true },
+          outcome: "completed",
+        },
+        ctx(),
+      );
       for (const outcome of ["aborted", "error"]) {
-        const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true }, outcome }, ctx())) as Array<
-          { continue?: boolean } | undefined
-        >;
+        const rets = (await fire(
+          "turn_end",
+          { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true }, outcome },
+          ctx(),
+        )) as Array<{ continue?: boolean } | undefined>;
         expect(rets.find((r) => r?.continue === true)).toBeUndefined();
       }
       expect(sentMessages).toHaveLength(0);
@@ -1231,9 +1602,17 @@ describe("runRefine + auto-refine", () => {
 
       // The aborted turns did not advance the window: the next COMPLETED turn
       // still fires (2 - 0 >= 1 from the seed).
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 2, entries: [], context: { canContinue: true }, outcome: "completed" }, ctx())) as Array<
-        { continue?: boolean } | undefined
-      >;
+      const rets = (await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 2,
+          entries: [],
+          context: { canContinue: true },
+          outcome: "completed",
+        },
+        ctx(),
+      )) as Array<{ continue?: boolean } | undefined>;
       expect(rets.find((r) => r?.continue === true)).toBeDefined();
       expect(entries.filter((e) => e.customType === "harness-refinement")).toHaveLength(1);
     } finally {
@@ -1255,11 +1634,19 @@ describe("runRefine + auto-refine", () => {
       // already-omitted one and an unrelated custom message.
       const contextEntries = [
         {
-          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_stale" },
+          sourceEntry: {
+            type: "custom_message",
+            customType: "harness.auto-refine-request",
+            id: "e_stale",
+          },
           messages: [{ role: "custom" }],
         },
         {
-          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_gone" },
+          sourceEntry: {
+            type: "custom_message",
+            customType: "harness.auto-refine-request",
+            id: "e_gone",
+          },
           messages: [],
         },
         {
@@ -1268,14 +1655,38 @@ describe("runRefine + auto-refine", () => {
         },
       ];
       const { pi, fire, ctx } = makeFakePi([
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
       ]);
       continualHarness(pi);
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true, contextEntries } }, ctx());
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true, contextEntries } }, ctx())) as Array<{
-        entries?: Array<{ type: string; customType?: string; targetId?: string }>;
-        continue?: boolean;
-      } | undefined>;
+      await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 0,
+          entries: [],
+          context: { canContinue: true, contextEntries },
+        },
+        ctx(),
+      );
+      const rets = (await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 1,
+          entries: [],
+          context: { canContinue: true, contextEntries },
+        },
+        ctx(),
+      )) as Array<
+        | {
+            entries?: Array<{ type: string; customType?: string; targetId?: string }>;
+            continue?: boolean;
+          }
+        | undefined
+      >;
       const boundary = rets.find((r) => r?.continue === true)!;
       const omissions = boundary.entries!.filter((e) => e.type === "context_edit");
       // only the stale LIVE draft, not the already-omitted one, not the other message
@@ -1295,24 +1706,55 @@ describe("runRefine + auto-refine", () => {
     resetConfigCache();
     const dir = mkdtempSync(join(tmpdir(), "pi-ch-omit-off-"));
     const cfgFile = join(dir, "harness.json");
-    writeFileSync(cfgFile, JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1, omitStaleDrafts: false } }));
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ autoRefine: { enabled: true, everyTurns: 1, omitStaleDrafts: false } }),
+    );
     await loadConfig(cfgFile);
     try {
       const contextEntries = [
         {
-          sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request", id: "e_stale" },
+          sourceEntry: {
+            type: "custom_message",
+            customType: "harness.auto-refine-request",
+            id: "e_stale",
+          },
           messages: [{ role: "custom" }],
         },
       ];
       const { pi, fire, ctx } = makeFakePi([
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
       ]);
       continualHarness(pi);
-      await fire("turn_end", { type: "turn_end", turnIndex: 0, entries: [], context: { canContinue: true, contextEntries } }, ctx());
-      const rets = (await fire("turn_end", { type: "turn_end", turnIndex: 1, entries: [], context: { canContinue: true, contextEntries } }, ctx())) as Array<{
-        entries?: Array<{ type: string }>;
-        continue?: boolean;
-      } | undefined>;
+      await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 0,
+          entries: [],
+          context: { canContinue: true, contextEntries },
+        },
+        ctx(),
+      );
+      const rets = (await fire(
+        "turn_end",
+        {
+          type: "turn_end",
+          turnIndex: 1,
+          entries: [],
+          context: { canContinue: true, contextEntries },
+        },
+        ctx(),
+      )) as Array<
+        | {
+            entries?: Array<{ type: string }>;
+            continue?: boolean;
+          }
+        | undefined
+      >;
       const boundary = rets.find((r) => r?.continue === true)!;
       expect(boundary.entries!.some((e) => e.type === "context_edit")).toBe(false);
     } finally {
@@ -1353,16 +1795,26 @@ describe("runRefine + auto-refine", () => {
     await loadConfig(cfgFile);
     try {
       const { pi, fire, ctx, sentMessages } = makeFakePi([
-        { type: "message", message: { role: "user", content: [{ type: "text", text: "fix bug" }] } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "fix bug" }] },
+        },
       ]);
       continualHarness(pi);
 
       // Fire turn_end at turnIndex N; count boundary continuations across the
       // turn_end handler returns (boundary delivery, not steering sends).
       const fireAndCount = async (turnIndex: number): Promise<number> => {
-        const rets = (await fire("turn_end", { type: "turn_end", turnIndex, entries: [], context: { canContinue: true } }, ctx())) as Array<{
-          continue?: boolean;
-        } | undefined>;
+        const rets = (await fire(
+          "turn_end",
+          { type: "turn_end", turnIndex, entries: [], context: { canContinue: true } },
+          ctx(),
+        )) as Array<
+          | {
+              continue?: boolean;
+            }
+          | undefined
+        >;
         return rets.filter((r) => r?.continue === true).length;
       };
 
@@ -1395,7 +1847,9 @@ describe("proposer selection (Phase 4)", () => {
     ]);
     continualHarness(pi);
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "fact one", evidence: "e", importance: 0.8 }] as Delta[],
+      [
+        { op: "create", kind: "memory", content: "fact one", evidence: "e", importance: 0.8 },
+      ] as Delta[],
       () => {},
     );
     expect(getState().items).toHaveLength(1);
@@ -1410,7 +1864,9 @@ describe("proposer selection (Phase 4)", () => {
       },
     });
 
-    await runRefine(pi, ctx() as unknown as ExtensionCommandContext, { proposer: "mutator-regression" });
+    await runRefine(pi, ctx() as unknown as ExtensionCommandContext, {
+      proposer: "mutator-regression",
+    });
 
     // live store is untouched: still 1 item, importance unchanged, no junk id
     expect(getState().items).toHaveLength(1);
@@ -1425,8 +1881,20 @@ describe("proposer selection (Phase 4)", () => {
     continualHarness(pi);
     // seed two near-duplicate active items
     const seeds: Delta[] = [
-      { op: "create", kind: "prompt", content: "always use the foo pattern", evidence: "t1", importance: 0.9 },
-      { op: "create", kind: "prompt", content: "use the foo pattern always", evidence: "t2", importance: 0.4 },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "always use the foo pattern",
+        evidence: "t1",
+        importance: 0.9,
+      },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "use the foo pattern always",
+        evidence: "t2",
+        importance: 0.4,
+      },
     ];
     applyDeltas(seeds, () => {});
     expect(getState().items).toHaveLength(2);
@@ -1453,8 +1921,20 @@ describe("proposer selection (Phase 4)", () => {
     ]);
     continualHarness(pi);
     const seeds: Delta[] = [
-      { op: "create", kind: "prompt", content: "always use the foo pattern", evidence: "t1", importance: 0.9 },
-      { op: "create", kind: "prompt", content: "use the foo pattern always", evidence: "t2", importance: 0.4 },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "always use the foo pattern",
+        evidence: "t1",
+        importance: 0.9,
+      },
+      {
+        op: "create",
+        kind: "prompt",
+        content: "use the foo pattern always",
+        evidence: "t2",
+        importance: 0.4,
+      },
     ];
     applyDeltas(seeds, () => {});
     await commands.get("refine")!.handler("--proposer dedupe", ctx());
@@ -1475,10 +1955,23 @@ describe("/harness push-mem (Phase 5)", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [
-        { op: "create", kind: "memory", content: "use PostgreSQL", evidence: "decided in design review" },
-        { op: "create", kind: "prompt", content: "always cite evidence", evidence: "e", importance: 0.8 },
-      ] },
+      {
+        deltas: [
+          {
+            op: "create",
+            kind: "memory",
+            content: "use PostgreSQL",
+            evidence: "decided in design review",
+          },
+          {
+            op: "create",
+            kind: "prompt",
+            content: "always cite evidence",
+            evidence: "e",
+            importance: 0.8,
+          },
+        ],
+      },
       undefined,
       undefined,
       ctx(),
@@ -1505,11 +1998,13 @@ describe("/harness push-mem (Phase 5)", () => {
     const mutate = tools.get("harness_mutate")!;
     await (mutate.execute as (...a: unknown[]) => Promise<unknown>)(
       undefined,
-      { deltas: [
-        { op: "create", kind: "memory", content: "m1", evidence: "e" },
-        { op: "create", kind: "prompt", content: "p1", evidence: "e" },
-        { op: "create", kind: "skill", content: "s1", evidence: "e" },
-      ] },
+      {
+        deltas: [
+          { op: "create", kind: "memory", content: "m1", evidence: "e" },
+          { op: "create", kind: "prompt", content: "p1", evidence: "e" },
+          { op: "create", kind: "skill", content: "s1", evidence: "e" },
+        ],
+      },
       undefined,
       undefined,
       ctx(),
@@ -1535,8 +2030,20 @@ describe("/harness push-mem (Phase 5)", () => {
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "sonnet fact", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "gemini fact", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "sonnet fact",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "gemini fact",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ] as Delta[],
       () => {},
     );
@@ -1551,8 +2058,20 @@ describe("/harness push-mem (Phase 5)", () => {
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "current model fact", evidence: "e", ownerModel: "test/main" },
-        { op: "create", kind: "memory", content: "other model fact", evidence: "e", ownerModel: "other/model" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "current model fact",
+          evidence: "e",
+          ownerModel: "test/main",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "other model fact",
+          evidence: "e",
+          ownerModel: "other/model",
+        },
       ] as Delta[],
       () => {},
     );

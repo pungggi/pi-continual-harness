@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { buildOmissionDrafts, evaluateAutoRefine, resetAutoRefine, turnEndedBadly, type ProjectedLike } from "../src/auto-refine.js";
+import {
+  buildOmissionDrafts,
+  evaluateAutoRefine,
+  resetAutoRefine,
+  turnEndedBadly,
+  type ProjectedLike,
+} from "../src/auto-refine.js";
 import type { HarnessConfig } from "../src/config.js";
 
 const cfg = (over: Partial<HarnessConfig> = {}): HarnessConfig => ({
@@ -34,9 +40,15 @@ describe("buildOmissionDrafts (pi ≥ 0.87 context edits)", () => {
 
   it("ignores other custom messages, plain entries, and id-less drafts", () => {
     const other: ProjectedLike[] = [
-      { sourceEntry: { type: "custom_message", customType: "something-else", id: "e3" }, messages: [{}] },
+      {
+        sourceEntry: { type: "custom_message", customType: "something-else", id: "e3" },
+        messages: [{}],
+      },
       { sourceEntry: { type: "custom", customType: "harness-state", id: "e4" }, messages: [] },
-      { sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request" }, messages: [{}] },
+      {
+        sourceEntry: { type: "custom_message", customType: "harness.auto-refine-request" },
+        messages: [{}],
+      },
       {},
     ];
     expect(buildOmissionDrafts(other)).toEqual([]);

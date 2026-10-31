@@ -44,7 +44,11 @@ describe("config", () => {
 
     it("merges a partial file over defaults (auto-import on, reminder on)", async () => {
       await withTempDir(async (file) => {
-        await writeFile(file, JSON.stringify({ autoImport: true, remindRefine: { enabled: true } }), "utf8");
+        await writeFile(
+          file,
+          JSON.stringify({ autoImport: true, remindRefine: { enabled: true } }),
+          "utf8",
+        );
         const cfg = await loadConfig(file);
         expect(cfg.autoImport).toBe(true);
         expect(cfg.remindRefine?.enabled).toBe(true);
@@ -82,7 +86,11 @@ describe("config", () => {
       await withTempDir(async (file) => {
         await writeFile(
           file,
-          JSON.stringify({ durableScope: "bogus", unknownKey: 1, remindRefine: { everyTurns: 10 } }),
+          JSON.stringify({
+            durableScope: "bogus",
+            unknownKey: 1,
+            remindRefine: { everyTurns: 10 },
+          }),
           "utf8",
         );
         const cfg = await loadConfig(file);
@@ -101,7 +109,8 @@ describe("config", () => {
         await writeFile(
           file,
           JSON.stringify({
-            $schema: "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
+            $schema:
+              "https://raw.githubusercontent.com/pungggi/pi-continual-harness/main/harness.schema.json",
             autoImport: true,
           }),
           "utf8",
@@ -120,7 +129,11 @@ describe("config", () => {
       // A non-numeric bump must not leak through: it is an arithmetic operand
       // (importance + bump) and a string would corrupt importance to NaN.
       await withTempDir(async (file) => {
-        await writeFile(file, JSON.stringify({ outcomeImportance: { enabled: true, bump: "0.1" } }), "utf8");
+        await writeFile(
+          file,
+          JSON.stringify({ outcomeImportance: { enabled: true, bump: "0.1" } }),
+          "utf8",
+        );
         const cfg = await loadConfig(file);
         expect(cfg.outcomeImportance?.enabled).toBe(true);
         expect(cfg.outcomeImportance?.bump).toBe(DEFAULT_REF_BUMP); // string rejected → default
@@ -285,12 +298,19 @@ describe("config", () => {
   describe("importRemind (awareness reminders)", () => {
     it("defaults: enabled, every 25 turns", async () => {
       expect(DEFAULT_CONFIG.importRemind).toEqual({ enabled: true, everyTurns: 25 });
-      expect((await loadConfig(tempFile())).importRemind).toEqual({ enabled: true, everyTurns: 25 });
+      expect((await loadConfig(tempFile())).importRemind).toEqual({
+        enabled: true,
+        everyTurns: 25,
+      });
     });
 
     it("honors explicit disable and custom cadence", async () => {
       await withTempDir(async (file) => {
-        await writeFile(file, JSON.stringify({ autoImport: true, importRemind: { enabled: false, everyTurns: 10 } }), "utf8");
+        await writeFile(
+          file,
+          JSON.stringify({ autoImport: true, importRemind: { enabled: false, everyTurns: 10 } }),
+          "utf8",
+        );
         const cfg = await loadConfig(file);
         expect(cfg.importRemind).toEqual({ enabled: false, everyTurns: 10 });
       });
@@ -309,7 +329,11 @@ describe("config", () => {
 
   describe("remindRefine (activation nudge, issue #19)", () => {
     it("defaults: on, every 25 turns, detail every 4th reminder", async () => {
-      expect(DEFAULT_CONFIG.remindRefine).toEqual({ enabled: true, everyTurns: 25, detailEvery: 4 });
+      expect(DEFAULT_CONFIG.remindRefine).toEqual({
+        enabled: true,
+        everyTurns: 25,
+        detailEvery: 4,
+      });
       expect((await loadConfig(tempFile())).remindRefine).toEqual({
         enabled: true,
         everyTurns: 25,
@@ -331,12 +355,20 @@ describe("config", () => {
 
     it("coerces non-integer / sub-1 cadences to the defaults (spam guard)", async () => {
       await withTempDir(async (file) => {
-        await writeFile(file, JSON.stringify({ remindRefine: { everyTurns: 0, detailEvery: 0 } }), "utf8");
+        await writeFile(
+          file,
+          JSON.stringify({ remindRefine: { everyTurns: 0, detailEvery: 0 } }),
+          "utf8",
+        );
         const cfg = await loadConfig(file);
         expect(cfg.remindRefine?.everyTurns).toBe(25);
         expect(cfg.remindRefine?.detailEvery).toBe(4);
         resetConfigCache();
-        await writeFile(file, JSON.stringify({ remindRefine: { everyTurns: 2.5, detailEvery: 1.5 } }), "utf8");
+        await writeFile(
+          file,
+          JSON.stringify({ remindRefine: { everyTurns: 2.5, detailEvery: 1.5 } }),
+          "utf8",
+        );
         const cfg2 = await loadConfig(file);
         expect(cfg2.remindRefine?.everyTurns).toBe(25);
         expect(cfg2.remindRefine?.detailEvery).toBe(4);

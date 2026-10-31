@@ -52,7 +52,11 @@ export function makeFakePi(branch: unknown[], cwd = "/tmp") {
     },
     registerCommand: (
       name: string,
-      opts: { description?: string; getArgumentCompletions?: (prefix: string) => unknown; handler: Handler },
+      opts: {
+        description?: string;
+        getArgumentCompletions?: (prefix: string) => unknown;
+        handler: Handler;
+      },
     ) => {
       commands.set(name, opts);
     },

@@ -10,8 +10,46 @@
 //  - The store is session-scoped (reset-free, online). A durable markdown
 //    export is the composition seam with pi-reflect / pi-mem (see store.ts).
 
+/** The four Continual Harness components, as the schema enum order. The one
+ *  list every module derives from (schemas.ts's enum, select.ts's KIND_ORDER,
+ *  the durable renderer's section order) — import, never re-enumerate. */
+export const KIND_VALUES = ["prompt", "memory", "skill", "subagent"] as const;
+
 /** The four Continual Harness components. */
-export type ComponentKind = "prompt" | "memory" | "skill" | "subagent";
+export type ComponentKind = (typeof KIND_VALUES)[number];
+
+/** Canonical kind iteration order (durable sections, injection sections,
+ *  per-kind tallies). Same members as KIND_VALUES; named separately because
+ *  it is an ORDER, not an enum. */
+export const KIND_ORDER: ComponentKind[] = [...KIND_VALUES];
+
+/** `/harness keep|drop` importance nudge magnitude. The lifecycle classifier
+ *  (corpus.ts) reads ±this value from snapshot diffs, so the bump and the
+ *  classification must come from the same constant (review of the former
+ *  harness.ts/corpus.ts hand-synced pair). */
+export const KEEP_DROP_BUMP = 0.1;
+
+/** Minimal loose shape of a pi session entry, shared by every branch walker
+ *  (refine evidence, outcome scanning, status/corpus audit walks). Kept
+ *  structural on purpose: pi's real entry types are richer and versioned;
+ *  walkers only read these fields. Message content is a plain string OR a
+ *  block array depending on the message source — never assume either. */
+export type AnyEntry = {
+  type?: string;
+  customType?: string;
+  message?: {
+    role?: string;
+    content?: string | Array<{ type?: string; text?: string }>;
+  };
+  data?: {
+    state?: HarnessState;
+    source?: string;
+    proposer?: string;
+    applied?: unknown;
+    appliedDeltas?: unknown[];
+    startedAt?: number;
+  };
+};
 
 /**
  * Post-adoption support signals (Harness², arXiv 2610.14224: a lesson should

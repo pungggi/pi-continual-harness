@@ -12,7 +12,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { runRefine } from "../src/refine.js";
 import { registerProposer } from "../src/proposer.js";
 import { applyDeltas, getState, reconstruct } from "../src/store.js";
@@ -60,7 +60,7 @@ describe("Deliverable A: complete injection", () => {
   beforeEach(reset);
 
   it("threads a complete closure into ProposeInput and extracts text + usage", async () => {
-    const model = { id: "test-mini", provider: "test" } as unknown as Model<any>;
+    const model = { id: "test-mini", provider: "test" } as unknown as Model<Api>;
     const calls: Array<{ model: unknown; context: unknown; opts: unknown }> = [];
     const registry: FakeRegistry = {
       complete: async (m, context, opts) => {
@@ -76,7 +76,9 @@ describe("Deliverable A: complete injection", () => {
     };
 
     let receivedComplete: ((p: string) => Promise<unknown>) | undefined;
-    let completeResult: { text: string; model?: string; usage?: { input: number; output: number } } | undefined;
+    let completeResult:
+      | { text: string; model?: string; usage?: { input: number; output: number } }
+      | undefined;
     registerProposer({
       name: "a-thread-complete",
       async propose(input) {
@@ -87,7 +89,12 @@ describe("Deliverable A: complete injection", () => {
         return {
           deltas: [
             {
-              delta: { op: "create", kind: "memory", content: "from model", evidence: "model said so" },
+              delta: {
+                op: "create",
+                kind: "memory",
+                content: "from model",
+                evidence: "model said so",
+              },
               rationale: "model proposed",
             },
           ],
@@ -107,7 +114,8 @@ describe("Deliverable A: complete injection", () => {
     // extracted text + usage from the assistant response.
     expect(typeof receivedComplete).toBe("function");
     expect(calls).toHaveLength(1);
-    const sent = (calls[0]!.context as { messages: Array<{ role: string; content: string }> }).messages[0]!;
+    const sent = (calls[0]!.context as { messages: Array<{ role: string; content: string }> })
+      .messages[0]!;
     expect(sent.role).toBe("user");
     expect(sent.content).toBe("propose deltas");
     // token budget honored
@@ -132,7 +140,7 @@ describe("Deliverable A: complete injection", () => {
   });
 
   it("forwards maxOutputTokens -> maxTokens on the provider call", async () => {
-    const model = { id: "m", provider: "test" } as unknown as Model<any>;
+    const model = { id: "m", provider: "test" } as unknown as Model<Api>;
     const optsSeen: unknown[] = [];
     const registry: FakeRegistry = {
       complete: async (_m, _c, opts) => {
@@ -190,8 +198,8 @@ describe("Deliverable A: complete injection", () => {
   });
 
   it("resolveModel: 'provider/id' lookup, bare id, and fallback to the active model", async () => {
-    const active = { id: "active", provider: "p0" } as unknown as Model<any>;
-    const other = { id: "other-mini", provider: "p1" } as unknown as Model<any>;
+    const active = { id: "active", provider: "p0" } as unknown as Model<Api>;
+    const other = { id: "other-mini", provider: "p1" } as unknown as Model<Api>;
     const seenModels: unknown[] = [];
     const registry: FakeRegistry = {
       complete: async (m) => {
@@ -214,7 +222,7 @@ describe("Deliverable A: complete injection", () => {
     });
     const { pi } = makePi();
     await runRefine(pi, makeCtx({ model: active, registry }), { proposer: "a-resolve-ref" });
-    expect((seenModelat(seenModels, 0)).id).toBe("byref");
+    expect(seenModelat(seenModels, 0).id).toBe("byref");
 
     // case 2: bare id matches getAvailable()
     seenModels.length = 0;
@@ -227,7 +235,7 @@ describe("Deliverable A: complete injection", () => {
       },
     });
     await runRefine(pi, makeCtx({ model: active, registry }), { proposer: "a-resolve-bare" });
-    expect((seenModelat(seenModels, 0)).id).toBe("other-mini");
+    expect(seenModelat(seenModels, 0).id).toBe("other-mini");
 
     // case 3: no modelId -> falls back to the active session model
     seenModels.length = 0;
@@ -240,7 +248,7 @@ describe("Deliverable A: complete injection", () => {
       },
     });
     await runRefine(pi, makeCtx({ model: active, registry }), { proposer: "a-resolve-active" });
-    expect((seenModelat(seenModels, 0)).id).toBe("active");
+    expect(seenModelat(seenModels, 0).id).toBe("active");
   });
 });
 

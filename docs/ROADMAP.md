@@ -134,37 +134,92 @@ Shipped: config loader + slug derivation + reminder cadence tests (14 new). **Ef
   and the durable round-trip are untouched, defaults trim nothing for small
   stores, and a one-key opt-out restores the pre-0.8 block exactly.
 
-## Phase 13 — DONE (0.20.0) — Harness²: harnessing-level recursion
+## Phase 8 — DONE (0.10.0)
 
-Inspired by **Harness² — Recursive Agent Harnessing** (arXiv
-[2610.14224](https://arxiv.org/abs/2610.14224)): beyond refining the harness
-for the current task, the improvement process itself learns from what past
-improvement yielded, and a lesson is retained only when execution evidence
-supports it. Implemented with zero extra model calls, from signals the branch
-already carries:
+- **Merge-capable dedupe (the "fuzzy corrections" take 1).** The `dedupe`
+  proposer now **merges** instead of blind-deleting: two active items sharing
+  the key fields (kind, owner model, **durable layer** — scope + project slug)
+  with token overlap ≥ a configurable threshold merge into the higher-
+  importance keeper — the keeper's content stays verbatim (ACE anti-collapse;
+  injection is content-only, so the prompt block is untouched), its `evidence`
+  becomes the line-wise union (capped), applied as ONE audited `update` +
+  `delete` pair; identical evidence degenerates to a plain delete. Pure planner
+  (`planDedupe(state, opts)`, exported) + wrapper reading new config keys
+  `dedupe: { threshold, merge }` (bad values coerced); `/refine --threshold`
+  overrides for one run; `ProposeInput.config` threads the loaded config to any
+  proposer. `merge: false` restores delete-only. Spec + research grounding
+  (incl. the Cactus/Needle papers behind the future hooks — threshold
+  auto-tuning, semantic similarity via the `DedupeOptions.similarity` seam,
+  token-aware tokenization, calibrated two-band gating):
+  [PLAN-dedupe-merge.md](PLAN-dedupe-merge.md).
+  **Effort:** ~180 lines (proposer/config/refine) + 25 tests. **Risk:** low —
+  no schema change (existing `update`+`delete` ops), atomic batches with
+  rollback, everything audited and `/tree`-rollbackable.
 
-- **Support counters** (`SupportInfo` on every item): citations from the
-  outcome loop, keeps/drops from `/harness keep|drop`. Dedupe merges carry
-  them onto the keeper; durable files round-trip them (`support:` sub-line);
-  `/harness list -f` and `harness_list` display them.
-- **Lessons digest** (`src/lessons.ts`, pure): an evidence-gated summary
-  injected into the `/refine` steering prompt — proven-useful items, rejected
-  signals (drops with no use since; never-cited items are NOT named), and
-  recent refine-run productivity. `/harness lessons` prints it on demand.
-- **Scoped proposals**: the steering prompt classifies every create as
-  invariant (cross-domain agentic behavior → `scope: "global"`) or
-  domain-specific (project knowledge → `scope: "project"`). The paper's
-  ablation shows scoping is load-bearing; here it also protects the global
-  layer from project noise.
-- **History gate**: `autoRefine.refineNoOpSkip` (default 3) skips a cadenced
-  auto-refine when the last N refine runs were all ineffective — a free gate
-  that runs before the classifier gate, bounded to one consecutive skip so it
-  can never latch shut against later trajectory evidence. Manual `/refine`
-  bypasses it.
+## Phase 9 — DONE (0.12.0) — pi 0.87/0.99 adoption
 
-Deferred by design: Harness²'s true probe step (re-execute under a candidate
-harness and contrast behavior) needs task re-execution infrastructure this
-package intentionally does not own — a candidate companion package.
+Adopted the pi 0.87/0.99 extension APIs across the package (peer dep
+**≥ 0.99.0**). Five upgrades:
+
+- **Live re-injection** (`context_with_system`): the block renders on EVERY
+  provider request, so a mid-run `harness_mutate` lands on the next request;
+  `before_agent_start` is now only the binding bridge (key cache + adoption).
+- **Virtual-model binding policy** (`virtualBinding: virtual|physical`):
+  routers no longer silently split the harness; `physical` keys by the routed
+  model behind the latest successful response. Pure `vmodel.ts` helpers
+  exported.
+- **Classifier integration** (`classifier.model`, pi ≥ 0.99
+  `modelRegistry.classify()`): a minimal structural `ClassifyFn` seam in
+  `ProposeInput` powering (a) classifier-confirmed dedupe — recall-widened
+  candidates confirmed by ONE batched yes/no call (≤20 pairs), errors fall
+  back to the rule-based plan — and (b) the auto-refine `gate`, which skips a
+  cadenced refine when the trajectory holds no durable correction.
+- **Structured tool results**: `outputSchema` + `structuredContent` on both
+  tools for codemode / `ctx.executeTool()` programmatic use.
+- **Boundary delivery for auto-refine** (pi ≥ 0.87 actionable `turn_end`):
+  steering prompt persisted as a structural `harness.auto-refine-request`
+  entry with `{ entries, continue: true }` instead of a synthetic user message
+  (`sendUserMessage` fallback when the boundary can't continue; manual
+  `/refine` still steers).
+
+**Effort:** ~450 lines (src) + 3 new test files. **Risk:** low — every path
+config-gated or behavior-identical without a classifier; the render move is
+covered by the existing injection-selection tests re-driven through
+`context_with_system`.
+
+## Phase 10 — DONE (0.13.0) — stale-draft hygiene
+
+Closed the follow-up from Phase 9: boundary-delivered auto-refine drafts
+accumulated in model context forever (each one carries the full steering
+prompt). Now every boundary also appends `context_edit` drafts (pi ≥ 0.87
+`ContextEditEntry`, `replacement: null`) omitting each LIVE prior
+`harness.auto-refine-request`, giving the invariant **at most one auto-refine
+request is ever model-visible**. Idempotent via the projection (already-
+omitted drafts surface with empty `messages` and are skipped); raw history,
+usage, and UI history untouched. Kill-switch `autoRefine.omitStaleDrafts:
+false`. `buildOmissionDrafts` exported.
+
+**Effort:** ~60 lines + 5 tests. **Risk:** low — opt-in path only (auto-refine),
+rollback-able, config kill-switch.
+
+## Phase 11 — DONE (0.14.0) — aborted/error turns are inert
+
+pi's `turn_end` `BoundaryState.outcome` (`"completed" | "aborted" | "error"`,
+present since 0.99 — surfaced by pi 1.1.0's aborted-vs-finished theme) is now
+consumed everywhere it matters: an aborted or errored turn neither seeds nor
+advances the auto-refine / reminder cadence windows, and the outcome loop
+defers scanning its partial assistant text to the next completed turn — a
+refine can no longer fire (nor the classifier gate judge) a trajectory that
+was cut off. Missing outcome = completed (synthetic events, earliest 0.99.x).
+Durable auto-export deliberately still exports on such turns. Pure
+`turnEndedBadly()` exported. The pi 1.1.0 classifier catalog (GPT-6 Luna,
+llama.cpp native decision models) is documented for `classifier.model` —
+config only, no code. Run-granularity `agent_settled.aborted` is deliberately
+NOT adopted: it would force a peer bump to ≥ 1.1.0; revisit when a
+settlement-level hook is actually needed.
+
+**Effort:** ~60 lines (src) + 6 tests. **Risk:** low — a behavior guard on
+opt-in paths only (auto-refine, reminder, outcome), plus docs.
 
 ## Phase 12 — DONE (main; unreleased) — cross-model adoption
 
@@ -204,92 +259,38 @@ package intentionally does not own — a candidate companion package.
 agent-applied, but inside the same audited, rollback-able envelope as
 `split`, and the source model's harness is structurally out of reach (create
 deltas only).
-## Phase 11 — DONE (0.14.0) — aborted/error turns are inert
 
-pi's `turn_end` `BoundaryState.outcome` (`"completed" | "aborted" | "error"`,
-present since 0.99 — surfaced by pi 1.1.0's aborted-vs-finished theme) is now
-consumed everywhere it matters: an aborted or errored turn neither seeds nor
-advances the auto-refine / reminder cadence windows, and the outcome loop
-defers scanning its partial assistant text to the next completed turn — a
-refine can no longer fire (nor the classifier gate judge) a trajectory that
-was cut off. Missing outcome = completed (synthetic events, earliest 0.99.x).
-Durable auto-export deliberately still exports on such turns. Pure
-`turnEndedBadly()` exported. The pi 1.1.0 classifier catalog (GPT-6 Luna,
-llama.cpp native decision models) is documented for `classifier.model` —
-config only, no code. Run-granularity `agent_settled.aborted` is deliberately
-NOT adopted: it would force a peer bump to ≥ 1.1.0; revisit when a
-settlement-level hook is actually needed.
+## Phase 13 — DONE (0.20.0) — Harness²: harnessing-level recursion
 
-**Effort:** ~60 lines (src) + 6 tests. **Risk:** low — a behavior guard on
-opt-in paths only (auto-refine, reminder, outcome), plus docs.
+Inspired by **Harness² — Recursive Agent Harnessing** (arXiv
+[2610.14224](https://arxiv.org/abs/2610.14224)): beyond refining the harness
+for the current task, the improvement process itself learns from what past
+improvement yielded, and a lesson is retained only when execution evidence
+supports it. Implemented with zero extra model calls, from signals the branch
+already carries:
 
-## Phase 10 — DONE (0.13.0) — stale-draft hygiene
+- **Support counters** (`SupportInfo` on every item): citations from the
+  outcome loop, keeps/drops from `/harness keep|drop`. Dedupe merges carry
+  them onto the keeper; durable files round-trip them (`support:` sub-line);
+  `/harness list -f` and `harness_list` display them.
+- **Lessons digest** (`src/lessons.ts`, pure): an evidence-gated summary
+  injected into the `/refine` steering prompt — proven-useful items, rejected
+  signals (drops with no use since; never-cited items are NOT named), and
+  recent refine-run productivity. `/harness lessons` prints it on demand.
+- **Scoped proposals**: the steering prompt classifies every create as
+  invariant (cross-domain agentic behavior → `scope: "global"`) or
+  domain-specific (project knowledge → `scope: "project"`). The paper's
+  ablation shows scoping is load-bearing; here it also protects the global
+  layer from project noise.
+- **History gate**: `autoRefine.refineNoOpSkip` (default 3) skips a cadenced
+  auto-refine when the last N refine runs were all ineffective — a free gate
+  that runs before the classifier gate, bounded to one consecutive skip so it
+  can never latch shut against later trajectory evidence. Manual `/refine`
+  bypasses it.
 
-Closed the follow-up from Phase 9: boundary-delivered auto-refine drafts
-accumulated in model context forever (each one carries the full steering
-prompt). Now every boundary also appends `context_edit` drafts (pi ≥ 0.87
-`ContextEditEntry`, `replacement: null`) omitting each LIVE prior
-`harness.auto-refine-request`, giving the invariant **at most one auto-refine
-request is ever model-visible**. Idempotent via the projection (already-
-omitted drafts surface with empty `messages` and are skipped); raw history,
-usage, and UI history untouched. Kill-switch `autoRefine.omitStaleDrafts:
-false`. `buildOmissionDrafts` exported.
-
-**Effort:** ~60 lines + 5 tests. **Risk:** low — opt-in path only (auto-refine),
-rollback-able, config kill-switch.
-
-## Phase 9 — DONE (0.12.0) — pi 0.87/0.99 adoption
-
-Adopted the pi 0.87/0.99 extension APIs across the package (peer dep
-**≥ 0.99.0**). Five upgrades:
-
-- **Live re-injection** (`context_with_system`): the block renders on EVERY
-  provider request, so a mid-run `harness_mutate` lands on the next request;
-  `before_agent_start` is now only the binding bridge (key cache + adoption).
-- **Virtual-model binding policy** (`virtualBinding: virtual|physical`):
-  routers no longer silently split the harness; `physical` keys by the routed
-  model behind the latest successful response. Pure `vmodel.ts` helpers
-  exported.
-- **Classifier integration** (`classifier.model`, pi ≥ 0.99
-  `modelRegistry.classify()`): a minimal structural `ClassifyFn` seam in
-  `ProposeInput` powering (a) classifier-confirmed dedupe — recall-widened
-  candidates confirmed by ONE batched yes/no call (≤20 pairs), errors fall
-  back to the rule-based plan — and (b) the auto-refine `gate`, which skips a
-  cadenced refine when the trajectory holds no durable correction.
-- **Structured tool results**: `outputSchema` + `structuredContent` on both
-  tools for codemode / `ctx.executeTool()` programmatic use.
-- **Boundary delivery for auto-refine** (pi ≥ 0.87 actionable `turn_end`):
-  steering prompt persisted as a structural `harness.auto-refine-request`
-  entry with `{ entries, continue: true }` instead of a synthetic user message
-  (`sendUserMessage` fallback when the boundary can't continue; manual
-  `/refine` still steers).
-
-**Effort:** ~450 lines (src) + 3 new test files. **Risk:** low — every path
-config-gated or behavior-identical without a classifier; the render move is
-covered by the existing injection-selection tests re-driven through
-`context_with_system`.
-
-## Phase 8 — DONE (0.10.0)
-
-- **Merge-capable dedupe (the "fuzzy corrections" take 1).** The `dedupe`
-  proposer now **merges** instead of blind-deleting: two active items sharing
-  the key fields (kind, owner model, **durable layer** — scope + project slug)
-  with token overlap ≥ a configurable threshold merge into the higher-
-  importance keeper — the keeper's content stays verbatim (ACE anti-collapse;
-  injection is content-only, so the prompt block is untouched), its `evidence`
-  becomes the line-wise union (capped), applied as ONE audited `update` +
-  `delete` pair; identical evidence degenerates to a plain delete. Pure planner
-  (`planDedupe(state, opts)`, exported) + wrapper reading new config keys
-  `dedupe: { threshold, merge }` (bad values coerced); `/refine --threshold`
-  overrides for one run; `ProposeInput.config` threads the loaded config to any
-  proposer. `merge: false` restores delete-only. Spec + research grounding
-  (incl. the Cactus/Needle papers behind the future hooks — threshold
-  auto-tuning, semantic similarity via the `DedupeOptions.similarity` seam,
-  token-aware tokenization, calibrated two-band gating):
-  [PLAN-dedupe-merge.md](PLAN-dedupe-merge.md).
-  **Effort:** ~180 lines (proposer/config/refine) + 25 tests. **Risk:** low —
-  no schema change (existing `update`+`delete` ops), atomic batches with
-  rollback, everything audited and `/tree`-rollbackable.
+Deferred by design: Harness²'s true probe step (re-execute under a candidate
+harness and contrast behavior) needs task re-execution infrastructure this
+package intentionally does not own — a candidate companion package.
 
 ## Future extensions (not on the phase plan)
 
@@ -338,3 +339,4 @@ A third, narrower future extension opened up by Phase 7:
 
 Durable storage engines (pi-mem), offline deep refinement (pi-reflect),
 live sub-agent orchestration (pi-boss / pi-room).
+

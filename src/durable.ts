@@ -21,21 +21,25 @@
 // Both paths are visible (one notify line) and use the same persisted
 // harness-state entries as every other mutation (/tree rollback covers them).
 
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  TurnEndEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState } from "./store.js";
+import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, getState, makePersist } from "./store.js";
 import { exportDurableLayers, getVersion, importDurableLayers } from "./store.js";
 import type { LayerFile, LayerPaths } from "./store.js";
 import type { HarnessItem } from "./types.js";
-import { DEFAULT_IMPORT_REMIND_TURNS, layerFilesFor, loadConfig, projectSlug, type HarnessConfig } from "./config.js";
+import {
+  DEFAULT_IMPORT_REMIND_TURNS,
+  layerFilesFor,
+  loadConfig,
+  projectSlug,
+  type HarnessConfig,
+} from "./config.js";
 import { makeTurnCadence } from "./cadence.js";
 
-/** Real (homedir-based) layer paths. Tests inject their own. */
-function layerPaths(): LayerPaths {
+/** Real (homedir-based) layer paths — the ONE definition shared by the auto
+ *  export path here, /harness export, and /refine --commit. Tests inject
+ *  their own. */
+export function defaultLayerPaths(): LayerPaths {
   return { globalPath: DEFAULT_DURABLE_PATH, projectDir: PROJECT_DURABLE_DIR };
 }
 
@@ -67,6 +71,10 @@ export interface ImportedRef {
 let importedThisSession: ImportedRef[] = [];
 // Reminders fired for the current import batch (bounded — see MAX_IMPORT_REMINDERS).
 let remindersFired = 0;
+// Whether the unreadable-layer warning already fired this session. The turn_end
+// catch-up re-runs syncDurableOnStart while a layer stays unreadable; without
+// the flag it would warn on EVERY turn (review finding on read-error handling).
+let importFailureWarned = false;
 
 /** A batch never nags forever: after this many reminders the items are
  *  considered acknowledged-by-repetition until the next session/import. */
@@ -80,6 +88,7 @@ export function resetDurableSync(): void {
   importedThisSession = [];
   importCadence.reset();
   remindersFired = 0;
+  importFailureWarned = false;
 }
 
 /** Items imported by this session's start auto-import (awareness reminders). */
@@ -87,19 +96,35 @@ export function getImportedThisSession(): ImportedRef[] {
   return importedThisSession;
 }
 
+/** Char cap on one imported-item listing line (bounded summary rows). */
+const IMPORT_SUMMARY_CHARS = 70;
+
 /** One listing line per imported item, bounded: `• [id] (kind) content…`. */
-export function summarizeImported(items: ImportedRef[], max = 5): string[] {
+function summarizeImported(items: ImportedRef[], max = 5): string[] {
   const lines = items.slice(0, max).map((i) => {
-    const c = i.content.length > 70 ? `${i.content.slice(0, 69)}…` : i.content;
+    const c =
+      i.content.length > IMPORT_SUMMARY_CHARS
+        ? `${i.content.slice(0, IMPORT_SUMMARY_CHARS - 1)}…`
+        : i.content;
     return `• [${i.id}] (${i.kind}) ${c}`;
   });
-  if (items.length > max) lines.push(`(+${items.length - max} more — full list via the agent's harness_list tool)`);
+  if (items.length > max)
+    lines.push(`(+${items.length - max} more — full list via the agent's harness_list tool)`);
   return lines;
 }
 
 /**
  * session_start half of the durable sync: layered import (opt-in). `files`
  * defaults to the real layers for ctx.cwd; tests inject temp paths.
+ *
+ * Unreadable layers (EACCES, EISDIR, …) neither crash this handler nor block
+ * the healthy ones: they are skipped and reported — once per session — in a
+ * warning. The sync stays INCOMPLETE while any layer is unreadable
+ * (startSyncRan stays false), so auto-export remains paused: a store that
+ * never saw the unread layer must never be able to overwrite it (the same
+ * data-loss guard as the late-enable catch-up, review #26). The turn_end
+ * catch-up keeps retrying quietly; the moment every layer reads again the
+ * sync completes and export resumes on the next store change.
  */
 export async function syncDurableOnStart(
   pi: ExtensionAPI,
@@ -109,11 +134,22 @@ export async function syncDurableOnStart(
   const config = await loadConfig();
   if (!config.autoImport) return;
   const layers = files ?? layerFilesFor(ctx.cwd);
-  const res = await importDurableLayers(layers, {}, (snapshot, ver) => {
-    pi.appendEntry("harness-state", { state: snapshot, version: ver });
-  });
-  // The start-sync completed (a throw above leaves it false, so the turn_end
-  // catch-up retries before any export; missing layers are a completed no-op).
+  const res = await importDurableLayers(layers, {}, makePersist(pi), { skipReadErrors: true });
+  if (res.readErrors !== undefined && res.readErrors.length > 0) {
+    if (!importFailureWarned) {
+      importFailureWarned = true;
+      const listed = res.readErrors.map((e) => `${e.path} (${e.error})`).join("; ");
+      ctx.ui.notify(
+        `Continual Harness: durable auto-import could not read ${res.readErrors.length === 1 ? "one layer" : `${res.readErrors.length} layers`}: ${listed}. ` +
+          "Readable layers were imported; auto-export stays paused until every layer is readable (an unread layer is never overwritten). Retrying quietly each turn.",
+        "warning",
+      );
+    }
+    return; // sync incomplete — no startSyncRan, export stays paused
+  }
+  // The start-sync completed (missing layers are a completed no-op); a throw
+  // above still leaves it false, so the turn_end catch-up retries before any
+  // export.
   startSyncRan = true;
   if (res.missingFile) return; // nothing durable yet — stay quiet
   // Capture WHAT arrived (created or updated) for the awareness reminders.
@@ -131,7 +167,9 @@ export async function syncDurableOnStart(
   if (res.pruned > 0) bits.push(`${res.pruned} pruned`);
   // WHAT arrived, not just counts: silently-injected instructions must be
   // visible at the moment they enter the session.
-  const lines = [`Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`];
+  const lines = [
+    `Continual Harness: durable sync imported ${res.imported} item(s) (${bits.join(", ")}).`,
+  ];
   if (importedThisSession.length > 0) {
     lines.push("New instructions now active:", ...summarizeImported(importedThisSession));
   }
@@ -171,9 +209,7 @@ function reconcileImported(): void {
   importedThisSession = importedThisSession
     .map((ref): ImportedRef | undefined => {
       const live = getState().items.find((i) => i.id === ref.id);
-      return live && live.active
-        ? { id: live.id, kind: live.kind, content: live.content }
-        : undefined;
+      return live?.active ? { id: live.id, kind: live.kind, content: live.content } : undefined;
     })
     .filter((r): r is ImportedRef => Boolean(r));
 }
@@ -217,7 +253,10 @@ function startFilesFor(cwd: string, injected?: LayerPaths): LayerFile[] | undefi
   const slug = projectSlug(cwd);
   return [
     { path: injected.globalPath, defaultScope: { scope: "global" } },
-    { path: join(injected.projectDir, `${slug}.md`), defaultScope: { scope: "project", project: slug } },
+    {
+      path: join(injected.projectDir, `${slug}.md`),
+      defaultScope: { scope: "project", project: slug },
+    },
   ];
 }
 
@@ -247,15 +286,9 @@ export async function handleAutoExportTurnEnd(
   }
   if (getVersion() === lastExportedVersion) return;
   try {
-    const written = await exportDurableLayers(
-      paths ?? layerPaths(),
-      projectSlug(ctx.cwd),
-    );
+    const written = await exportDurableLayers(paths ?? defaultLayerPaths(), projectSlug(ctx.cwd));
     lastExportedVersion = getVersion();
-    ctx.ui.notify(
-      `Continual Harness: durable state exported (${written.length} file(s)).`,
-      "info",
-    );
+    ctx.ui.notify(`Continual Harness: durable state exported (${written.length} file(s)).`, "info");
   } catch (err) {
     // Soft-fail but leave lastExportedVersion stale → retried next turn.
     ctx.ui.notify(`Durable auto-export failed: ${(err as Error).message}`, "warning");

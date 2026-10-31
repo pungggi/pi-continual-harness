@@ -19,19 +19,27 @@ export { STATE_ENTRY } from "./store.js";
 
 // Core domain types (re-exported so companion packages — e.g. a dedicated-model
 // proposer — can build and validate deltas without reaching into internal paths).
-export {
-  type AppliedDelta,
-  type ComponentKind,
-  type Delta,
-  type HarnessItem,
-  type HarnessState,
-  type SupportInfo,
+export type {
+  AppliedDelta,
+  ComponentKind,
+  Delta,
+  HarnessItem,
+  HarnessState,
+  SupportInfo,
 } from "./types.js";
 
 // Public extension API: other extensions can register their own delta proposer
 // (see src/proposer.ts) and it becomes selectable via /refine --proposer <name>
 // or the `proposer` config key.
-export { DEFAULT_DEDUPE, DEDUPE_THRESHOLD, EVIDENCE_MERGE_CAP, buildSteeringPrompt, listProposers, planDedupe, registerProposer, unionEvidence,
+export {
+  DEFAULT_DEDUPE,
+  DEDUPE_THRESHOLD,
+  EVIDENCE_MERGE_CAP,
+  buildSteeringPrompt,
+  listProposers,
+  planDedupe,
+  registerProposer,
+  unionEvidence,
   type CompleteOptions,
   type CompleteResult,
   type DedupeOptions,

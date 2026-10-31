@@ -15,9 +15,7 @@
 //
 // Registration happens in the SAME order as the historical index.ts factory:
 // session_start → inject (before_agent_start, context_with_system) → tools →
-// /refine → /harness → remind → auto-export → import-reminder → outcome →
-// auto-refine. The turn_end order matters: durable sync's export must run
-// before outcome/auto-refine.
+// /refine → /harness → the turn_end chain below.
 //
 // The feature modules' own register* functions remain the test-facing path
 // (they delegate to the same extracted handlers this entry calls), and
@@ -25,7 +23,12 @@
 // public API for companion packages — which load it on demand, not at pi
 // startup.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  TurnEndEvent,
+  TurnEndEventResult,
+} from "@earendil-works/pi-coding-agent";
 import { HARNESS_COMMAND_DESCRIPTION, REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
 import {
   harnessListTool,
@@ -33,6 +36,50 @@ import {
   type HarnessListParams,
   type HarnessMutateParams,
 } from "./schemas.js";
+
+/** One lazily-loaded turn_end subscriber. `run` dynamic-imports its feature
+ *  module on first fire, so the entry stays thin. */
+interface TurnEndHandler {
+  /** Stable identity for the ordering invariant (test/entry.test.ts). */
+  name: string;
+  run: (
+    pi: ExtensionAPI,
+    event: TurnEndEvent,
+    ctx: ExtensionContext,
+  ) => Promise<TurnEndEventResult | void> | void;
+}
+
+/** The turn_end chain in REGISTRATION ORDER. The order is load-bearing:
+ *  durable sync's export must run BEFORE outcome/auto-refine — a refine's
+ *  deltas must be visible to that same turn's export check, not the next
+ *  one's. This array is the single definition; test/entry.test.ts pins the
+ *  order so a future insertion cannot silently reorder it. */
+export const TURN_END_CHAIN: TurnEndHandler[] = [
+  {
+    name: "remind",
+    run: (_pi, event, ctx) => import("./remind.js").then((m) => m.handleRemindTurnEnd(event, ctx)),
+  },
+  {
+    name: "auto-export",
+    run: (pi, _event, ctx) =>
+      import("./durable.js").then((m) => m.handleAutoExportTurnEnd(pi, ctx)),
+  },
+  {
+    name: "import-reminder",
+    run: (_pi, event, ctx) =>
+      import("./durable.js").then((m) => m.handleImportReminderTurnEnd(event, ctx)),
+  },
+  {
+    name: "outcome",
+    run: (pi, event, ctx) =>
+      import("./outcome.js").then((m) => m.handleOutcomeTurnEnd(pi, event, ctx)),
+  },
+  {
+    name: "auto-refine",
+    run: (pi, event, ctx) =>
+      import("./auto-refine.js").then((m) => m.handleAutoRefineTurnEnd(pi, event, ctx)),
+  },
+];
 
 export default function continualHarness(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
@@ -50,15 +97,13 @@ export default function continualHarness(pi: ExtensionAPI): void {
   // Tools: schemas are static (cheap data, shared with tools.ts); executes
   // lazy-load the store-backed implementation on first call.
   pi.registerTool(
-    harnessListTool(
-      async (_toolCallId, params) =>
-        (await import("./tools.js")).executeHarnessList(params as HarnessListParams),
+    harnessListTool(async (_toolCallId, params) =>
+      (await import("./tools.js")).executeHarnessList(params as HarnessListParams),
     ),
   );
   pi.registerTool(
-    harnessMutateTool(
-      async (_toolCallId, params) =>
-        (await import("./tools.js")).executeHarnessMutate(pi, params as HarnessMutateParams),
+    harnessMutateTool(async (_toolCallId, params) =>
+      (await import("./tools.js")).executeHarnessMutate(pi, params as HarnessMutateParams),
     ),
   );
 
@@ -76,23 +121,10 @@ export default function continualHarness(pi: ExtensionAPI): void {
       (await import("./harness.js")).harnessCompletions(argumentPrefix),
   });
 
-  // turn_end chain (order preserved from the historical factory):
-  pi.on("turn_end", async (event, ctx) =>
-    (await import("./remind.js")).handleRemindTurnEnd(event, ctx),
-  );
-  // Durable sync's turn_end export (opt-in via autoImport) registers before
-  // outcome/auto-refine; in production pi every turn_end handler runs.
-  pi.on("turn_end", async (_event, ctx) =>
-    (await import("./durable.js")).handleAutoExportTurnEnd(pi, ctx),
-  );
-  // Import-awareness reminders (autoImport bundles them; bounded cadence).
-  pi.on("turn_end", async (event, ctx) =>
-    (await import("./durable.js")).handleImportReminderTurnEnd(event, ctx),
-  );
-  pi.on("turn_end", async (event, ctx) =>
-    (await import("./outcome.js")).handleOutcomeTurnEnd(pi, event, ctx),
-  );
-  pi.on("turn_end", async (event, ctx) =>
-    (await import("./auto-refine.js")).handleAutoRefineTurnEnd(pi, event, ctx),
-  );
+  // turn_end chain (order preserved from the historical factory — see
+  // TURN_END_CHAIN): remind → auto-export → import-reminder → outcome →
+  // auto-refine. In production pi every turn_end handler runs.
+  for (const h of TURN_END_CHAIN) {
+    pi.on("turn_end", (event, ctx) => h.run(pi, event, ctx));
+  }
 }

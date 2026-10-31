@@ -57,7 +57,13 @@ describe("presets (pure data)", () => {
   it("quiet pins every opt-in feature key to the shipped default (the notify-only nudge is silenced)", () => {
     const quiet = expandPreset("quiet")!;
     const paths = quiet.deltas.map((d) => d.path);
-    expect(paths).toEqual(["autoImport", "importRemind", "remindRefine", "autoRefine", "outcomeImportance"]);
+    expect(paths).toEqual([
+      "autoImport",
+      "importRemind",
+      "remindRefine",
+      "autoRefine",
+      "outcomeImportance",
+    ]);
     for (const d of quiet.deltas) {
       if (d.path === "remindRefine") continue; // the deliberate exception
       expect(d.value).toEqual(getPath(DEFAULT_CONFIG, d.path));
@@ -114,7 +120,9 @@ describe("presets (pure data)", () => {
       }
     }
     const power = expandPreset("power")!;
-    expect(power.deltas.find((d) => d.path === "autoRefine")!.value).not.toBe(DEFAULT_CONFIG.autoRefine);
+    expect(power.deltas.find((d) => d.path === "autoRefine")!.value).not.toBe(
+      DEFAULT_CONFIG.autoRefine,
+    );
   });
 });
 
@@ -196,7 +204,9 @@ describe("saveConfig (backup + atomic write + reload)", () => {
       const res = await saveConfig({ autoImport: true }, file);
       expect(res.backup).toBeDefined();
       expect(res.backup).toMatch(/harness\.json\.bak-\d{4}-\d{2}-\d{2}T/);
-      expect(await readFile(res.backup!, "utf8")).toBe(JSON.stringify({ remindRefine: { enabled: true } }));
+      expect(await readFile(res.backup!, "utf8")).toBe(
+        JSON.stringify({ remindRefine: { enabled: true } }),
+      );
       // merged keeps the previous setting + adds the new one
       expect(res.merged).toEqual({ remindRefine: { enabled: true }, autoImport: true });
       expect(res.effective.remindRefine?.enabled).toBe(true);
@@ -286,7 +296,9 @@ describe("handleSetup (wizard flow)", () => {
     try {
       const { fake, ctx } = wizard();
       await handleSetup(ctx, ["--preset", "bogus"], file);
-      expect(fake.notifications.some((n) => n.level === "warning" && /Unknown preset/.test(n.msg))).toBe(true);
+      expect(
+        fake.notifications.some((n) => n.level === "warning" && /Unknown preset/.test(n.msg)),
+      ).toBe(true);
       await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await cleanup();
@@ -297,7 +309,11 @@ describe("handleSetup (wizard flow)", () => {
     try {
       const { fake, ctx } = wizard();
       await handleSetup(ctx, ["--preset", "constructor"], file);
-      expect(fake.notifications.some((n) => n.level === "warning" && /Unknown preset "constructor"/.test(n.msg))).toBe(true);
+      expect(
+        fake.notifications.some(
+          (n) => n.level === "warning" && /Unknown preset "constructor"/.test(n.msg),
+        ),
+      ).toBe(true);
       await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await cleanup();
@@ -308,7 +324,9 @@ describe("handleSetup (wizard flow)", () => {
     try {
       const { fake, ctx } = wizard();
       await handleSetup(ctx, ["--preset"], file);
-      expect(fake.notifications.some((n) => n.level === "warning" && /needs a value/.test(n.msg))).toBe(true);
+      expect(
+        fake.notifications.some((n) => n.level === "warning" && /needs a value/.test(n.msg)),
+      ).toBe(true);
       await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await cleanup();

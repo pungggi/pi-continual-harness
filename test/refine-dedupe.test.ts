@@ -95,8 +95,20 @@ describe("dedupe wiring: config threading + --threshold", () => {
     ]);
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "always use the foo pattern", evidence: "t1", importance: 0.9 },
-        { op: "create", kind: "prompt", content: "use the foo pattern always", evidence: "t2", importance: 0.4 },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "always use the foo pattern",
+          evidence: "t1",
+          importance: 0.9,
+        },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "use the foo pattern always",
+          evidence: "t2",
+          importance: 0.4,
+        },
       ],
       () => {},
     );

@@ -59,7 +59,13 @@ describe("buildPairQuestions + confirmGroups (pure)", () => {
 
   it("keeps only confirmed pairs; missing answers and pairs beyond the cap stay out", () => {
     const groups: DedupeGroup[] = [
-      { keeper: item("h_1", "k1"), absorbed: [{ dup: item("h_2", "d2"), overlap: 0.7 }, { dup: item("h_3", "d3"), overlap: 0.6 }] },
+      {
+        keeper: item("h_1", "k1"),
+        absorbed: [
+          { dup: item("h_2", "d2"), overlap: 0.7 },
+          { dup: item("h_3", "d3"), overlap: 0.6 },
+        ],
+      },
       { keeper: item("h_4", "k4"), absorbed: [{ dup: item("h_5", "d5"), overlap: 0.65 }] },
     ];
     // confirm p0 only

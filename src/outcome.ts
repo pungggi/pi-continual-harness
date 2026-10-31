@@ -23,20 +23,11 @@
 // into findReferences() so it is unit-testable without a live pi runtime.
 
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_REF_BUMP, type HarnessConfig, loadConfig } from "./config.js";
+import { DEFAULT_REF_BUMP, loadConfig } from "./config.js";
 import { turnEndedBadly } from "./auto-refine.js";
-import { bumpImportance, getState, modelKey } from "./store.js";
+import { bumpImportance, getState, makePersist, modelKey } from "./store.js";
 import { messageText } from "./refine.js";
-
-// Minimal entry shape; kept loose to avoid coupling to pi's internal types.
-// Message content is a plain string OR a block array depending on the source.
-type AnyEntry = {
-  type?: string;
-  message?: {
-    role?: string;
-    content?: string | Array<{ type?: string; text?: string }>;
-  };
-};
+import type { AnyEntry } from "./types.js";
 
 // Matches [h_xxxx] citation tags (the same form inject.ts emits).
 const REF_RE = /\[(h_[a-z0-9_]+)\]/gi;
@@ -104,7 +95,9 @@ export async function handleOutcomeTurnEnd(
   const activeIds = new Set(
     key === undefined
       ? []
-      : getState().items.filter((i) => i.active && i.ownerModel === key).map((i) => i.id),
+      : getState()
+          .items.filter((i) => i.active && i.ownerModel === key)
+          .map((i) => i.id),
   );
   const refs = findReferences(text, activeIds);
   if (refs.length === 0) return;
@@ -113,14 +106,7 @@ export async function handleOutcomeTurnEnd(
   for (const id of refs) {
     // "citation" records the support signal (Harness²: retention needs
     // execution evidence, not creation-time enthusiasm).
-    const item = bumpImportance(
-      id,
-      bump,
-      (snapshot, ver) => {
-        pi.appendEntry("harness-state", { state: snapshot, version: ver });
-      },
-      { support: "citation" },
-    );
+    const item = bumpImportance(id, bump, makePersist(pi), { support: "citation" });
     if (item) bumped += 1;
   }
   if (bumped > 0) {

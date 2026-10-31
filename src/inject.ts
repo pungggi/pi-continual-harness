@@ -26,8 +26,20 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { adoptOrphans, getActiveModelKey, getState, setActiveModelKey } from "./store.js";
-import { KIND_ORDER, normalizeInjection, selectForInjection, estimateTokens, type InjectionConfig } from "./select.js";
+import {
+  adoptOrphans,
+  getActiveModelKey,
+  getState,
+  makePersist,
+  setActiveModelKey,
+} from "./store.js";
+import {
+  KIND_ORDER,
+  normalizeInjection,
+  selectForInjection,
+  estimateTokens,
+  type InjectionConfig,
+} from "./select.js";
 import { loadConfig } from "./config.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { ComponentKind } from "./types.js";
@@ -139,8 +151,11 @@ function recordInjectionStats(
 }
 
 /** Append text to a system message's content (string or text blocks). */
-function appendToSystemContent(content: string | Array<{ type: string; text?: string }>, block: string): string | Array<{ type: string; text?: string }> {
-  if (typeof content === "string") return content + "\n" + block;
+function appendToSystemContent(
+  content: string | Array<{ type: string; text?: string }>,
+  block: string,
+): string | Array<{ type: string; text?: string }> {
+  if (typeof content === "string") return `${content}\n${block}`;
   return [...content, { type: "text", text: block }];
 }
 
@@ -164,9 +179,7 @@ export async function handleBeforeAgentStart(
   // Adopt any orphans to the resolved key (legacy/import migration). No-op —
   // and no persist — when there is nothing to adopt.
   if (key) {
-    adoptOrphans(key, (snapshot, ver) => {
-      pi.appendEntry("harness-state", { state: snapshot, version: ver });
-    });
+    adoptOrphans(key, makePersist(pi));
   }
 }
 
@@ -185,14 +198,23 @@ export async function handleContextWithSystem(
   // key under the "physical" policy); fall back to the cached agent-start
   // key when the model is momentarily unknown.
   const key =
-    resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ??
-    getActiveModelKey();
+    resolveBindingKey(ctx.model, branchEntries(ctx), virtualBinding) ?? getActiveModelKey();
+  // Re-cache the live key: the model-facing tools stamp with the cached key,
+  // so under "physical" a mid-run route change would otherwise leave creates
+  // stamped for a stale key until the next agent start — injection would show
+  // one model's items while harness_mutate writes another's.
+  if (key) setActiveModelKey(key);
   const block = renderHarnessBlock(key, injection);
   if (!block) return; // nothing to inject — do not own the transcript
   const messages = [...event.messages];
-  const sys = messages[0] as { role?: string; content?: string | Array<{ type: string; text?: string }> } | undefined;
-  if (!sys || sys.role !== "system" || sys.content === undefined) return;
-  messages[0] = { ...sys, content: appendToSystemContent(sys.content, block) } as (typeof messages)[number];
+  const sys = messages[0] as
+    | { role?: string; content?: string | Array<{ type: string; text?: string }> }
+    | undefined;
+  if (sys?.role !== "system" || sys.content === undefined) return;
+  messages[0] = {
+    ...sys,
+    content: appendToSystemContent(sys.content, block),
+  } as (typeof messages)[number];
   return { messages };
 }
 

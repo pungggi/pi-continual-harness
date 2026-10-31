@@ -30,7 +30,8 @@ function makeMini(branch: unknown[]) {
   const notifications: Array<{ msg: string; level: string }> = [];
   const pi = {
     on: (ev: string, h: Handler) => handlers.set(ev, h),
-    appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+    appendEntry: (customType: string, data: unknown) =>
+      entries.push({ type: "custom", customType, data }),
     sendUserMessage: () => {},
   };
   const ctx = (): MiniCtx => ({
@@ -49,7 +50,17 @@ function seedItem(id: string, importance: number): void {
       data: {
         state: {
           items: [
-            { id, kind: "memory", content: "fact", evidence: "e", importance, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
+            {
+              id,
+              kind: "memory",
+              content: "fact",
+              evidence: "e",
+              importance,
+              active: true,
+              ownerModel: "test/main",
+              createdAt: 1,
+              updatedAt: 1,
+            },
           ],
         },
       },
@@ -225,7 +236,16 @@ describe("registerOutcome handler", () => {
         data: {
           state: {
             items: [
-              { id: "h_abc", kind: "memory", content: "fact", evidence: "e", importance: 0.5, active: false, createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_abc",
+                kind: "memory",
+                content: "fact",
+                evidence: "e",
+                importance: 0.5,
+                active: false,
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -249,8 +269,28 @@ describe("registerOutcome handler", () => {
         data: {
           state: {
             items: [
-              { id: "h_mine", kind: "memory", content: "mine", evidence: "e", importance: 0.5, active: true, ownerModel: "test/main", createdAt: 1, updatedAt: 1 },
-              { id: "h_other", kind: "memory", content: "other", evidence: "e", importance: 0.5, active: true, ownerModel: "other/model", createdAt: 1, updatedAt: 1 },
+              {
+                id: "h_mine",
+                kind: "memory",
+                content: "mine",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "test/main",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+              {
+                id: "h_other",
+                kind: "memory",
+                content: "other",
+                evidence: "e",
+                importance: 0.5,
+                active: true,
+                ownerModel: "other/model",
+                createdAt: 1,
+                updatedAt: 1,
+              },
             ],
           },
         },
@@ -291,7 +331,12 @@ describe("messageText", () => {
   });
 
   it("joins text blocks with spaces", () => {
-    expect(messageText([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a b");
+    expect(
+      messageText([
+        { type: "text", text: "a" },
+        { type: "text", text: "b" },
+      ]),
+    ).toBe("a b");
   });
 
   it("degrades to empty string for undefined / non-array / odd shapes", () => {

@@ -34,9 +34,12 @@ export interface ListOptions {
   slug: string;
 }
 
+/** Default char cap for one-line previews (menu rows, notifications). */
+export const PREVIEW_LEN = 60;
+
 /** Single-line, whitespace-flattened preview truncated to `max` chars — the
  *  shared truncation style for one-line rows (menu entries, notifications). */
-export function preview(text: string, max = 60): string {
+export function preview(text: string, max = PREVIEW_LEN): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
@@ -99,11 +102,15 @@ function fullRow(i: HarnessItem): string {
     i.scope === "project" ? `project "${i.project ?? ""}"` : "global",
   ];
   const sup = supportSummary(i.support);
-  return `[${i.id}] (${bits.join(", ")}) ${i.content}\n  evidence: ${i.evidence}` + (sup ? `\n  ${sup}` : "");
+  return (
+    `[${i.id}] (${bits.join(", ")}) ${i.content}\n  evidence: ${i.evidence}` +
+    (sup ? `\n  ${sup}` : "")
+  );
 }
 
-/** Tally `items` by a string key, rendered as "key (n), key (n)". */
-function tally<T>(items: T[], key: (i: T) => string): string {
+/** Tally `items` by a string key, rendered as "key (n), key (n)".
+ *  Shared with tools.ts (the empty-list diagnostics). */
+export function tally<T>(items: T[], key: (i: T) => string): string {
   const counts = new Map<string, number>();
   for (const i of items) counts.set(key(i), (counts.get(key(i)) ?? 0) + 1);
   return [...counts.entries()].map(([k, n]) => `${k} (${n})`).join(", ");
@@ -114,7 +121,7 @@ function scopeDescription(opts: ListOptions): string {
     case "global":
       return "scope global";
     case "project":
-      return 'scope project (any project\'s items; rows carry the slug)';
+      return "scope project (any project's items; rows carry the slug)";
     case "all":
       return "scope all";
     default:
@@ -139,7 +146,10 @@ export function renderListReport(items: HarnessItem[], opts: ListOptions): strin
   let foreignNote: string | undefined;
   if (opts.scope === undefined) {
     const foreign = items.filter(
-      (i) => i.scope === "project" && i.project !== opts.slug && (opts.kind ? i.kind === opts.kind : true),
+      (i) =>
+        i.scope === "project" &&
+        i.project !== opts.slug &&
+        (opts.kind ? i.kind === opts.kind : true),
     ).length;
     if (foreign > 0) {
       foreignNote = `+ ${foreign} foreign-project item(s) hidden — re-run with --scope all to see them.`;

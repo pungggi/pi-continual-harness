@@ -11,7 +11,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import continualHarness, { ADOPT_BATCH_CAP, buildAdoptPrompt, selectAdoptSource } from "../src/index.js";
+import continualHarness, {
+  ADOPT_BATCH_CAP,
+  buildAdoptPrompt,
+  selectAdoptSource,
+} from "../src/index.js";
 import { applyDeltas, getState, reconstruct, setActiveModelKey } from "../src/store.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import type { Delta, HarnessItem } from "../src/types.js";
@@ -67,17 +71,31 @@ describe("selectAdoptSource — filter, importance order, batch cap", () => {
   it("the cap matches harness_mutate's per-call delta limit (ONE batch)", async () => {
     const { pi, tools } = makeFakePi([]);
     continualHarness(pi);
-    const schema = (tools.get("harness_mutate")!.parameters as {
-      properties: { deltas: { maxItems?: number } };
-    }).properties.deltas;
+    const schema = (
+      tools.get("harness_mutate")!.parameters as {
+        properties: { deltas: { maxItems?: number } };
+      }
+    ).properties.deltas;
     expect(schema?.maxItems).toBe(ADOPT_BATCH_CAP);
   });
 });
 
 describe("buildAdoptPrompt — pure steering builder", () => {
   const items = [
-    item({ id: "h_src1", content: "prefer splice-free rewrites", evidence: "review #42", kind: "prompt", importance: 0.62 }),
-    item({ id: "h_src2", content: "PS7 path quirk", evidence: "saw it twice", scope: "project", project: "relay" }),
+    item({
+      id: "h_src1",
+      content: "prefer splice-free rewrites",
+      evidence: "review #42",
+      kind: "prompt",
+      importance: 0.62,
+    }),
+    item({
+      id: "h_src2",
+      content: "PS7 path quirk",
+      evidence: "saw it twice",
+      scope: "project",
+      project: "relay",
+    }),
   ];
 
   it("lists every item verbatim with kind/importance/scope and evidence", () => {
@@ -131,7 +149,9 @@ describe("/harness adopt handler — guards", () => {
     await commands.get("harness")!.handler("adopt", ctx());
     await commands.get("harness")!.handler("adopt --all", ctx());
     expect(sentMessages).toHaveLength(0);
-    expect(notifications.filter((n) => n.level === "warning" && /requires --from/.test(n.msg))).toHaveLength(2);
+    expect(
+      notifications.filter((n) => n.level === "warning" && /requires --from/.test(n.msg)),
+    ).toHaveLength(2);
   });
 
   it("empty store → warning, nothing sent", async () => {
@@ -139,7 +159,9 @@ describe("/harness adopt handler — guards", () => {
     continualHarness(pi);
     await commands.get("harness")!.handler("adopt --from anthropic/claude", ctx());
     expect(sentMessages).toHaveLength(0);
-    expect(notifications.some((n) => /No active items in the harness — nothing to adopt/.test(n.msg))).toBe(true);
+    expect(
+      notifications.some((n) => /No active items in the harness — nothing to adopt/.test(n.msg)),
+    ).toBe(true);
   });
 
   it("unknown model → warning listing the owners actually present", async () => {
@@ -147,8 +169,20 @@ describe("/harness adopt handler — guards", () => {
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "a", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "prompt", content: "b", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "a",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "b",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
         { op: "create", kind: "memory", content: "c", evidence: "e", ownerModel: "google/gemini" },
       ] as Delta[],
       () => {},
@@ -159,7 +193,9 @@ describe("/harness adopt handler — guards", () => {
       notifications.some(
         (n) =>
           n.level === "warning" &&
-          /No active items owned by openai\/gpt\. Model\(s\) in the store: anthropic\/sonnet \(2\), google\/gemini \(1\)\./.test(n.msg),
+          /No active items owned by openai\/gpt\. Model\(s\) in the store: anthropic\/sonnet \(2\), google\/gemini \(1\)\./.test(
+            n.msg,
+          ),
       ),
     ).toBe(true);
   });
@@ -168,7 +204,9 @@ describe("/harness adopt handler — guards", () => {
     const { pi, commands, ctx, sentMessages, notifications } = makeFakePi([]);
     continualHarness(pi);
     applyDeltas(
-      [{ op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "test/main" }] as Delta[],
+      [
+        { op: "create", kind: "memory", content: "mine", evidence: "e", ownerModel: "test/main" },
+      ] as Delta[],
       () => {},
     );
     // the fake ctx drives model test/main
@@ -186,9 +224,27 @@ describe("/harness adopt handler — steering", () => {
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "kept", evidence: "src ev", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "inactive", evidence: "src ev", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "other model", evidence: "e", ownerModel: "google/gemini" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "kept",
+          evidence: "src ev",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "inactive",
+          evidence: "src ev",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "other model",
+          evidence: "e",
+          ownerModel: "google/gemini",
+        },
       ] as Delta[],
       () => {},
     );
@@ -200,7 +256,11 @@ describe("/harness adopt handler — steering", () => {
     expect(sentMessages[0]).not.toContain("inactive");
     expect(sentMessages[0]).not.toContain("other model");
     expect(sentMessages[0]).toContain("adopted from anthropic/sonnet");
-    expect(notifications.some((n) => /Steering agent to review for adoption 1 item\(s\) from anthropic\/sonnet\./.test(n.msg))).toBe(true);
+    expect(
+      notifications.some((n) =>
+        /Steering agent to review for adoption 1 item\(s\) from anthropic\/sonnet\./.test(n.msg),
+      ),
+    ).toBe(true);
   });
 
   it("caps an oversized source batch and says so", async () => {
@@ -219,7 +279,13 @@ describe("/harness adopt handler — steering", () => {
     await commands.get("harness")!.handler("adopt --from anthropic/sonnet --all", ctx());
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).toContain(`${ADOPT_BATCH_CAP} item(s) up for adoption`);
-    expect(notifications.some((n) => /adopt 20 item\(s\) from anthropic\/sonnet \(capped to the 20 highest-importance of 25\)/.test(n.msg))).toBe(true);
+    expect(
+      notifications.some((n) =>
+        /adopt 20 item\(s\) from anthropic\/sonnet \(capped to the 20 highest-importance of 25\)/.test(
+          n.msg,
+        ),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -231,8 +297,22 @@ describe("/harness adopt — store-level: copy, not move; stamped to the ACTIVE 
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "prompt", content: "verify flags before push", evidence: "postmortem #7", importance: 0.8, ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "sonnet over-explains JSON", evidence: "observed", importance: 0.4, ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "prompt",
+          content: "verify flags before push",
+          evidence: "postmortem #7",
+          importance: 0.8,
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "sonnet over-explains JSON",
+          evidence: "observed",
+          importance: 0.4,
+          ownerModel: "anthropic/sonnet",
+        },
       ] as Delta[],
       () => {},
     );
@@ -275,7 +355,9 @@ describe("/harness adopt — store-level: copy, not move; stamped to the ACTIVE 
     expect(copy.importance).toBe(0.8);
     // source harness untouched: both original items remain, owned by the source
     expect(all.filter((i) => i.ownerModel === "anthropic/sonnet")).toHaveLength(2);
-    expect(all.find((i) => i.content === "sonnet over-explains JSON")!.ownerModel).toBe("anthropic/sonnet");
+    expect(all.find((i) => i.content === "sonnet over-explains JSON")!.ownerModel).toBe(
+      "anthropic/sonnet",
+    );
     // audited as harness-state snapshots (→ /tree rollback covers adoption)
     expect(entries.some((e) => e.customType === "harness-state")).toBe(true);
   });
@@ -289,9 +371,31 @@ describe("/harness adopt handler — project + ownership filters (review #25)", 
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "global fact", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "this-project fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "tmp" },
-        { op: "create", kind: "memory", content: "alpha-project fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "alpha" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "global fact",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "this-project fact",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+          scope: "project",
+          project: "tmp",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "alpha-project fact",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+          scope: "project",
+          project: "alpha",
+        },
       ] as Delta[],
       () => {},
     );
@@ -301,7 +405,13 @@ describe("/harness adopt handler — project + ownership filters (review #25)", 
     expect(sentMessages[0]).toContain("global fact");
     expect(sentMessages[0]).toContain("this-project fact");
     expect(sentMessages[0]).not.toContain("alpha-project fact");
-    expect(notifications.some((n) => /review for adoption 2 item\(s\) from anthropic\/sonnet \(1 foreign-project skipped\)\./.test(n.msg))).toBe(true);
+    expect(
+      notifications.some((n) =>
+        /review for adoption 2 item\(s\) from anthropic\/sonnet \(1 foreign-project skipped\)\./.test(
+          n.msg,
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("nothing left after the filters → warning attributing every skip", async () => {
@@ -309,18 +419,41 @@ describe("/harness adopt handler — project + ownership filters (review #25)", 
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "mine already", evidence: "e", ownerModel: "test/main" },
-        { op: "create", kind: "memory", content: "mine already", evidence: "e", ownerModel: "anthropic/sonnet" },
-        { op: "create", kind: "memory", content: "alpha fact", evidence: "e", ownerModel: "anthropic/sonnet", scope: "project", project: "alpha" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "mine already",
+          evidence: "e",
+          ownerModel: "test/main",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "mine already",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "alpha fact",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+          scope: "project",
+          project: "alpha",
+        },
       ] as Delta[],
       () => {},
     );
     await commands.get("harness")!.handler("adopt --from anthropic/sonnet", ctx());
     expect(sentMessages).toHaveLength(0);
     expect(
-      notifications.some((n) =>
-        n.level === "warning" &&
-        /Nothing to adopt from anthropic\/sonnet: of 2 active item\(s\), 1 already owned \(identical content\), 1 scoped to another project\./.test(n.msg),
+      notifications.some(
+        (n) =>
+          n.level === "warning" &&
+          /Nothing to adopt from anthropic\/sonnet: of 2 active item\(s\), 1 already owned \(identical content\), 1 scoped to another project\./.test(
+            n.msg,
+          ),
       ),
     ).toBe(true);
   });
@@ -339,13 +472,25 @@ describe("/harness adopt handler — project + ownership filters (review #25)", 
       ownerModel: "anthropic/sonnet",
       importance: n / 100,
     }));
-    srcDeltas.push({ op: "create", kind: "memory", content: ownedContent, evidence: "e", ownerModel: "test/main" });
+    srcDeltas.push({
+      op: "create",
+      kind: "memory",
+      content: ownedContent,
+      evidence: "e",
+      ownerModel: "test/main",
+    });
     applyDeltas(srcDeltas, () => {});
     await commands.get("harness")!.handler("adopt --from anthropic/sonnet --all", ctx());
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0]).not.toContain("src 24");
     // pool = 24 unowned → capped to 20, owned skip surfaced
-    expect(notifications.some((n) => /adopt 20 item\(s\) from anthropic\/sonnet \(capped to the 20 highest-importance of 24; 1 already owned\)\./.test(n.msg))).toBe(true);
+    expect(
+      notifications.some((n) =>
+        /adopt 20 item\(s\) from anthropic\/sonnet \(capped to the 20 highest-importance of 24; 1 already owned\)\./.test(
+          n.msg,
+        ),
+      ),
+    ).toBe(true);
     const numbered = sentMessages[0]!.match(/^\d+\. \[/gm) ?? [];
     expect(numbered).toHaveLength(20);
   });
@@ -363,7 +508,10 @@ describe("/harness adopt — binding-aware self-adopt guard (review #25)", () =>
       },
       sessionManager: {
         getBranch: () => [
-          { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [] } },
+          {
+            type: "message",
+            message: { role: "assistant", provider: "anthropic", model: "claude-x", content: [] },
+          },
         ],
       },
       cwd: "/tmp",
@@ -380,14 +528,26 @@ describe("/harness adopt — binding-aware self-adopt guard (review #25)", () =>
     await loadConfig(cfgFile);
     try {
       applyDeltas(
-        [{ op: "create", kind: "memory", content: "claude note", evidence: "e", ownerModel: "anthropic/claude-x" }] as Delta[],
+        [
+          {
+            op: "create",
+            kind: "memory",
+            content: "claude note",
+            evidence: "e",
+            ownerModel: "anthropic/claude-x",
+          },
+        ] as Delta[],
         () => {},
       );
       // the raw ctx key is openai-codex/auto (not the source); the RESOLVED key
       // is anthropic/claude-x — the guard must compare against the latter
-      await commands.get("harness")!.handler("adopt --from anthropic/claude-x", routerCtx(notifications));
+      await commands
+        .get("harness")!
+        .handler("adopt --from anthropic/claude-x", routerCtx(notifications));
       expect(sentMessages).toHaveLength(0);
-      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(true);
+      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(
+        true,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
       resetConfigCache();
@@ -404,14 +564,26 @@ describe("/harness adopt — binding-aware self-adopt guard (review #25)", () =>
     await loadConfig(cfgFile);
     try {
       applyDeltas(
-        [{ op: "create", kind: "memory", content: "router-era note", evidence: "e", ownerModel: "openai-codex/auto" }] as Delta[],
+        [
+          {
+            op: "create",
+            kind: "memory",
+            content: "router-era note",
+            evidence: "e",
+            ownerModel: "openai-codex/auto",
+          },
+        ] as Delta[],
         () => {},
       );
       // resolved key = anthropic/claude-x ≠ openai-codex/auto → valid adoption
-      await commands.get("harness")!.handler("adopt --from openai-codex/auto", routerCtx(notifications));
+      await commands
+        .get("harness")!
+        .handler("adopt --from openai-codex/auto", routerCtx(notifications));
       expect(sentMessages).toHaveLength(1);
       expect(sentMessages[0]).toContain("router-era note");
-      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(false);
+      expect(notifications.some((n) => /already the active model's harness/.test(n.msg))).toBe(
+        false,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
       resetConfigCache();
@@ -443,7 +615,13 @@ describe("/harness adopt completions", () => {
     continualHarness(pi);
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "a", evidence: "e", ownerModel: "anthropic/sonnet" },
+        {
+          op: "create",
+          kind: "memory",
+          content: "a",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
         { op: "create", kind: "memory", content: "b", evidence: "e", ownerModel: "google/gemini" },
         { op: "create", kind: "memory", content: "c", evidence: "e", ownerModel: "google/gemini" },
         // orphans are not adoption sources (adopted automatically instead)
@@ -457,12 +635,24 @@ describe("/harness adopt completions", () => {
     applyDeltas([{ op: "update", id: inactiveId, active: false }] as Delta[], () => {});
     const complete = async (p: string) => await commands.get("harness")!.getArgumentCompletions!(p);
     expect(await complete("adopt --from ")).toEqual([
-      { value: "adopt --from anthropic/sonnet", label: "anthropic/sonnet", description: "1 active item(s) owned by this model" },
-      { value: "adopt --from google/gemini", label: "google/gemini", description: "2 active item(s) owned by this model" },
+      {
+        value: "adopt --from anthropic/sonnet",
+        label: "anthropic/sonnet",
+        description: "1 active item(s) owned by this model",
+      },
+      {
+        value: "adopt --from google/gemini",
+        label: "google/gemini",
+        description: "2 active item(s) owned by this model",
+      },
     ]);
     // prefix filtering, replacing the whole argument text
     expect(await complete("adopt --from go")).toEqual([
-      { value: "adopt --from google/gemini", label: "google/gemini", description: expect.any(String) },
+      {
+        value: "adopt --from google/gemini",
+        label: "google/gemini",
+        description: expect.any(String),
+      },
     ]);
     expect(await complete("adopt --from nope")).toBeNull();
   });

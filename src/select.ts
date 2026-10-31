@@ -27,9 +27,11 @@
 // factoring pattern remind.ts / auto-refine.ts / outcome.ts use).
 
 import type { ComponentKind, HarnessItem } from "./types.js";
+import { KIND_ORDER } from "./types.js";
 
-/** Canonical kind order (shared with inject.ts so there is one source of truth). */
-export const KIND_ORDER: ComponentKind[] = ["prompt", "memory", "skill", "subagent"];
+// Re-exported for the existing import site (inject.ts); the canonical order
+// lives in types.ts beside KIND_VALUES/KIND_LABEL.
+export { KIND_ORDER };
 
 /** User-facing injection config (all optional; defaults applied on read). */
 export interface InjectionConfig {
@@ -81,7 +83,10 @@ export function normalizeInjection(cfg?: Partial<InjectionConfig>): NormalizedIn
 }
 
 /** Rough token estimate for a string. Exported for tests/companions. */
-export function estimateTokens(text: string, charsPerToken = DEFAULT_INJECTION.charsPerToken): number {
+export function estimateTokens(
+  text: string,
+  charsPerToken = DEFAULT_INJECTION.charsPerToken,
+): number {
   return Math.ceil(text.length / charsPerToken);
 }
 

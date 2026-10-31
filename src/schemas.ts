@@ -18,8 +18,25 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 // startup graph (see module header). It remains a peerDependency for exactly
 // this typing plus companion packages that build schemas themselves.
 import type { TSchema } from "typebox";
+import { KIND_VALUES } from "./types.js";
 
-export const KIND_VALUES = ["prompt", "memory", "skill", "subagent"] as const;
+// Re-exported for existing imports (tests, companions); the one list now
+// lives in types.ts so every module shares it.
+export { KIND_VALUES };
+
+/** Max deltas in one harness_mutate call. Also the /harness adopt batch cap
+ *  (harness.ts ADOPT_BATCH_CAP derives from this constant, not a hand-synced
+ *  copy): an adoption must land in ONE audited call. */
+export const MAX_DELTAS = 20;
+
+/** Length caps on model-supplied text fields. The injection block is bounded
+ *  by token budget at render time, but the STORE and the durable files had no
+ *  ceiling — a model could create unbounded-size items that flow into
+ *  harness-state.md verbatim. Caps are generous (a whole prompt note fits);
+ *  the runtime boundary guard (tools.ts) enforces them for non-pi hosts too. */
+export const MAX_CONTENT_CHARS = 8000;
+export const MAX_EVIDENCE_CHARS = 4000;
+export const MAX_REASON_CHARS = 1000;
 
 /** Local StringEnum shape — { type: "string", enum: [...] }, the same schema
  *  pi-ai's helper emits (for providers without anyOf/const support). */
@@ -39,9 +56,14 @@ const CreateShape = {
   properties: {
     op: { const: "create", type: "string" },
     kind: stringEnum(KIND_VALUES),
-    content: { type: "string", description: "The note/fact/description/spec text." },
+    content: {
+      type: "string",
+      maxLength: MAX_CONTENT_CHARS,
+      description: "The note/fact/description/spec text.",
+    },
     evidence: {
       type: "string",
+      maxLength: MAX_EVIDENCE_CHARS,
       description: "Why this belongs in the harness state, grounded in trajectory evidence.",
     },
     importance: { type: "number", minimum: 0, maximum: 1 },
@@ -50,7 +72,7 @@ const CreateShape = {
     // turn without the agent having to (or being able to) name it.
     scope: stringEnum(["global", "project"], {
       description:
-        "Durable-layer scope (default global). \"project\" binds the item to this session's project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.",
+        'Durable-layer scope (default global). "project" binds the item to this session\'s project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.',
     }),
   },
   required: ["op", "kind", "content", "evidence"],
@@ -61,8 +83,8 @@ const UpdateShape = {
   properties: {
     op: { const: "update", type: "string" },
     id: { type: "string", description: "Existing item id, e.g. h_..." },
-    content: { type: "string" },
-    evidence: { type: "string" },
+    content: { type: "string", maxLength: MAX_CONTENT_CHARS },
+    evidence: { type: "string", maxLength: MAX_EVIDENCE_CHARS },
     importance: { type: "number", minimum: 0, maximum: 1 },
     active: { type: "boolean" },
     scope: stringEnum(["global", "project"], {
@@ -78,7 +100,11 @@ const DeleteShape = {
   properties: {
     op: { const: "delete", type: "string" },
     id: { type: "string" },
-    reason: { type: "string", description: "Why this item is being removed." },
+    reason: {
+      type: "string",
+      maxLength: MAX_REASON_CHARS,
+      description: "Why this item is being removed.",
+    },
   },
   required: ["op", "id", "reason"],
 };
@@ -161,7 +187,7 @@ const ListParams = {
 const MutateParams = {
   type: "object",
   properties: {
-    deltas: { type: "array", items: DeltaShape, minItems: 1, maxItems: 20 },
+    deltas: { type: "array", items: DeltaShape, minItems: 1, maxItems: MAX_DELTAS },
   },
   required: ["deltas"],
 };

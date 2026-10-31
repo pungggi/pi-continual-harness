@@ -14,7 +14,9 @@ import { STATE_ENTRY } from "../src/store.js";
 import { resetInjectionStats, getInjectionStats, renderHarnessBlock } from "../src/inject.js";
 import { reconstruct } from "../src/store.js";
 
-function item(over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">): HarnessItem {
+function item(
+  over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">,
+): HarnessItem {
   const now = 10_000;
   return {
     evidence: "e",
@@ -49,11 +51,23 @@ describe("buildStatusReport — impact from the audit trail", () => {
   it("counts lifecycle events, runs, merges, and direct-apply updates (whole store)", () => {
     const a = (imp: number, owner = "test/main") =>
       item({ id: "h_a", kind: "prompt", content: "note a", importance: imp, ownerModel: owner });
-    const b = (imp: number) => item({ id: "h_b", kind: "memory", content: "fact b", importance: imp, ownerModel: "test/main" });
+    const b = (imp: number) =>
+      item({
+        id: "h_b",
+        kind: "memory",
+        content: "fact b",
+        importance: imp,
+        ownerModel: "test/main",
+      });
     const entries = [
       refineEntry(), // manual run, steering, nothing applied
       stateEntry([a(0.5)]), // implicit empty baseline → a created (review #27)
-      refineEntry({ source: "auto", proposer: "dedupe", applied: 1, appliedDeltas: [{ op: "update", id: "h_a", importance: 0.7 }] }),
+      refineEntry({
+        source: "auto",
+        proposer: "dedupe",
+        applied: 1,
+        appliedDeltas: [{ op: "update", id: "h_a", importance: 0.7 }],
+      }),
       stateEntry([a(0.5), b(0.4)]), // created b
       stateEntry([a(0.6), b(0.4)]), // kept a
       stateEntry([a(0.63), b(0.4)]), // cited a
@@ -85,8 +99,17 @@ describe("buildStatusReport — impact from the audit trail", () => {
   });
 
   it("a fresh session's first snapshot IS the create batch: implicit empty baseline (review #27)", () => {
-    const a = item({ id: "h_a", kind: "prompt", content: "first lesson", importance: 0.5, ownerModel: "test/main" });
-    const r = buildStatusReport({ items: [] }, [stateEntry([a])], { config: cfg(), modelKey: "test/main" });
+    const a = item({
+      id: "h_a",
+      kind: "prompt",
+      content: "first lesson",
+      importance: 0.5,
+      ownerModel: "test/main",
+    });
+    const r = buildStatusReport({ items: [] }, [stateEntry([a])], {
+      config: cfg(),
+      modelKey: "test/main",
+    });
     expect(r.impact.created).toBe(1); // was 0 when the first snapshot was skipped
     expect(r.modelImpact?.created).toBe(1);
   });
@@ -150,7 +173,11 @@ describe("buildStatusReport — impact from the audit trail", () => {
   });
 
   it("legacy count-only refine entries count as runs without crashing", () => {
-    const legacy = { type: "custom", customType: "harness-refinement", data: { proposer: "dedupe", applied: 2 } };
+    const legacy = {
+      type: "custom",
+      customType: "harness-refinement",
+      data: { proposer: "dedupe", applied: 2 },
+    };
     const r = buildStatusReport({ items: [] }, [legacy], { config: cfg() });
     expect(r.impact.manualRuns).toBe(1);
     expect(r.impact.autoRuns).toBe(0);
@@ -162,7 +189,14 @@ describe("buildStatusReport — counts, scopes, model annotation", () => {
   it("mirrors the classic counts band", () => {
     const items = [
       item({ id: "1", kind: "prompt", content: "a", ownerModel: "test/main" }),
-      item({ id: "2", kind: "memory", content: "b", ownerModel: "test/main", scope: "project", project: "p" }),
+      item({
+        id: "2",
+        kind: "memory",
+        content: "b",
+        ownerModel: "test/main",
+        scope: "project",
+        project: "p",
+      }),
       item({ id: "3", kind: "memory", content: "c", ownerModel: "other/model", active: false }),
     ];
     const r = buildStatusReport({ items }, [], { config: cfg(), modelKey: "test/main" });
@@ -190,7 +224,11 @@ describe("buildStatusReport — zero-state guidance", () => {
     expect(empty.zeroState!.join(" ")).not.toContain("inactive");
     const r = buildStatusReport({ items: [inactive] }, [], { config: cfg() });
     expect(r.zeroState!.join(" ")).toContain("1 inactive item");
-    const active = buildStatusReport({ items: [item({ id: "2", kind: "prompt", content: "x" })] }, [], { config: cfg() });
+    const active = buildStatusReport(
+      { items: [item({ id: "2", kind: "prompt", content: "x" })] },
+      [],
+      { config: cfg() },
+    );
     expect(active.zeroState).toBeUndefined();
   });
 });
@@ -210,20 +248,45 @@ describe("buildStatusReport — contextual hints", () => {
     const memoryGlobal = item({ id: "1", kind: "memory", content: "m", ownerModel: "t/m" });
     const withModelOnly = cfg({ classifier: { model: "typesafe/jev" } });
     // classifier.model alone changes nothing gating-wise — the gate is off
-    expect(buildStatusReport({ items: [memoryGlobal] }, [], { config: withModelOnly }).hints.map((h) => h.id)).toContain("classifier-gate");
+    expect(
+      buildStatusReport({ items: [memoryGlobal] }, [], { config: withModelOnly }).hints.map(
+        (h) => h.id,
+      ),
+    ).toContain("classifier-gate");
     const withGate = cfg({
       classifier: { model: "typesafe/jev" },
-      autoRefine: { enabled: true, everyTurns: 100, commit: false, gate: true, omitStaleDrafts: true },
+      autoRefine: {
+        enabled: true,
+        everyTurns: 100,
+        commit: false,
+        gate: true,
+        omitStaleDrafts: true,
+      },
     });
-    expect(buildStatusReport({ items: [memoryGlobal] }, [], { config: withGate }).hints.map((h) => h.id)).not.toContain("classifier-gate");
+    expect(
+      buildStatusReport({ items: [memoryGlobal] }, [], { config: withGate }).hints.map((h) => h.id),
+    ).not.toContain("classifier-gate");
   });
 
   it("each driver appears only while its condition holds", () => {
     const memoryGlobal = item({ id: "1", kind: "memory", content: "m", ownerModel: "t/m" });
-    const promptProject = item({ id: "2", kind: "prompt", content: "p", ownerModel: "t/m", scope: "project", project: "p" });
+    const promptProject = item({
+      id: "2",
+      kind: "prompt",
+      content: "p",
+      ownerModel: "t/m",
+      scope: "project",
+      project: "p",
+    });
     const base = cfg({
       classifier: { model: "typesafe/jev" },
-      autoRefine: { enabled: true, everyTurns: 100, commit: false, gate: true, omitStaleDrafts: true },
+      autoRefine: {
+        enabled: true,
+        everyTurns: 100,
+        commit: false,
+        gate: true,
+        omitStaleDrafts: true,
+      },
       remindRefine: { enabled: true, everyTurns: 50 },
     });
     const r = buildStatusReport({ items: [memoryGlobal, promptProject] }, [], { config: base });
@@ -261,11 +324,19 @@ describe("hint rotation (hints.ts)", () => {
   });
 
   it("a single hint always shows even when it was the last one", () => {
-    expect(pickHint([{ id: "only", text: "x" }], 3, "only")).toEqual({ hint: { id: "only", text: "x" }, next: 0 });
+    expect(pickHint([{ id: "only", text: "x" }], 3, "only")).toEqual({
+      hint: { id: "only", text: "x" },
+      next: 0,
+    });
   });
 
   it("nextHint rotates through the list and never repeats back-to-back", () => {
-    const seen = [nextHint(hints)!.id, nextHint(hints)!.id, nextHint(hints)!.id, nextHint(hints)!.id];
+    const seen = [
+      nextHint(hints)!.id,
+      nextHint(hints)!.id,
+      nextHint(hints)!.id,
+      nextHint(hints)!.id,
+    ];
     expect(seen).toEqual(["a", "b", "c", "a"]);
     const two = [nextHint(hints)!.id, nextHint(hints)!.id];
     expect(two[0]).not.toBe(two[1]);
@@ -285,7 +356,9 @@ describe("injection stats (inject.ts)", () => {
     expect(getInjectionStats()).toBeUndefined();
 
     reconstruct([
-      stateEntry([item({ id: "h_1", kind: "prompt", content: "hello world note", ownerModel: "test/main" })]),
+      stateEntry([
+        item({ id: "h_1", kind: "prompt", content: "hello world note", ownerModel: "test/main" }),
+      ]),
     ] as unknown as Iterable<unknown>);
     const block = renderHarnessBlock("test/main");
     expect(block).toContain("hello world note");
@@ -313,9 +386,13 @@ describe("renderStatusReport", () => {
     const text = renderStatusReport(r, { durable: " Durable: global none at ~/.x.", hint });
     expect(text).toContain("Harness: 1 active / 1 total — prompt 0, memory 1, skill 0, subagent 0");
     expect(text).toContain("1 active for [test/main] across 1 model(s)");
-    expect(text).toContain("Impact: 0 refine run(s) (0 manual, 0 auto) — created 1, updated 0, kept 0, cited 0");
+    expect(text).toContain(
+      "Impact: 0 refine run(s) (0 manual, 0 auto) — created 1, updated 0, kept 0, cited 0",
+    );
     expect(text).toContain("For [test/main]: created 1");
-    expect(text).toContain("Injection: 3 render(s) this session, 7 item(s) surfaced, ~612/1500 tokens, 2 omitted by selection");
+    expect(text).toContain(
+      "Injection: 3 render(s) this session, 7 item(s) surfaced, ~612/1500 tokens, 2 omitted by selection",
+    );
     expect(text).toContain(`Hint: ${hint.text}`);
     expect(text).toContain("Durable: global none at ~/.x.");
     expect(text.split("\n").length).toBeLessThanOrEqual(8); // stays one compact report

@@ -55,5 +55,16 @@ export async function onSessionStart(pi: ExtensionAPI, ctx: ExtensionContext): P
   // Opt-in durable sync (issue #7): layered auto-import on top of the
   // branch-restored state, so refinements made in OTHER sessions reach this
   // one. No-op (and quiet) when autoImport is off or nothing changed.
-  await syncDurableOnStart(pi, ctx);
+  // Soft-fail like the equivalent turn_end path (durable.ts): a throw here
+  // (unexpected merge error, unreadable-but-present layer file) must not
+  // escape the session_start handler — the session still starts with the
+  // branch-restored state.
+  try {
+    await syncDurableOnStart(pi, ctx);
+  } catch (err) {
+    ctx.ui.notify(
+      `Continual Harness: durable auto-import failed: ${(err as Error).message}`,
+      "warning",
+    );
+  }
 }

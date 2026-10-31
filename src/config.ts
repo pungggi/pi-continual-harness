@@ -18,7 +18,12 @@ import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_DURABLE_PATH, PROJECT_DURABLE_DIR, type LayerFile, type ScopeInfo } from "./store.js";
+import {
+  DEFAULT_DURABLE_PATH,
+  PROJECT_DURABLE_DIR,
+  type LayerFile,
+  type ScopeInfo,
+} from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 import { DEDUPE_THRESHOLD } from "./proposer.js";
 
@@ -64,10 +69,10 @@ export interface HarnessConfig {
     everyTurns?: number;
   };
   /** /refine cadence nudge (ON by default, issue #19 — activation nudge, notify-only):
- *  every `everyTurns` completed turns a one-line reminder fires; every
- *  `detailEvery`-th reminder escalates to a rotating educational guide
- *  (see src/remind.ts). Never mutates state; `enabled: false` restores the
- *  old silence. */
+   *  every `everyTurns` completed turns a one-line reminder fires; every
+   *  `detailEvery`-th reminder escalates to a rotating educational guide
+   *  (see src/remind.ts). Never mutates state; `enabled: false` restores the
+   *  old silence. */
   remindRefine?: {
     enabled?: boolean;
     everyTurns?: number;
@@ -124,8 +129,19 @@ export interface HarnessConfig {
 export const DEFAULT_CONFIG: HarnessConfig = {
   autoImport: false,
   importRemind: { enabled: true, everyTurns: DEFAULT_IMPORT_REMIND_TURNS },
-  remindRefine: { enabled: true, everyTurns: DEFAULT_EVERY_TURNS, detailEvery: DEFAULT_DETAIL_EVERY },
-  autoRefine: { enabled: false, everyTurns: DEFAULT_AUTO_EVERY_TURNS, commit: false, gate: false, omitStaleDrafts: true, refineNoOpSkip: DEFAULT_REFINE_NOOP_SKIP },
+  remindRefine: {
+    enabled: true,
+    everyTurns: DEFAULT_EVERY_TURNS,
+    detailEvery: DEFAULT_DETAIL_EVERY,
+  },
+  autoRefine: {
+    enabled: false,
+    everyTurns: DEFAULT_AUTO_EVERY_TURNS,
+    commit: false,
+    gate: false,
+    omitStaleDrafts: true,
+    refineNoOpSkip: DEFAULT_REFINE_NOOP_SKIP,
+  },
   classifier: { model: undefined },
   virtualBinding: "virtual",
   proposer: "steering",
@@ -145,6 +161,14 @@ export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
 // Single process-lifetime cache (config is read once per session; tests warm
 // it with an injected path and every later caller shares it — by contract).
 let cached: HarnessConfig | undefined;
+// Single-flight: concurrent cold callers share one read instead of racing
+// duplicate I/O (and duplicate malformed-path writes).
+let inFlight: Promise<HarnessConfig> | undefined;
+// Cache generation. resetConfigCache bumps it, so a read that was already in
+// flight when the cache was reset can resolve afterwards WITHOUT repopulating
+// the cache with its (now stale) result — without the guard, an unawaited
+// pre-reset load could overwrite whatever the next explicit load cached.
+let epoch = 0;
 // Path whose JSON existed but failed to parse on the last load — the
 // effective config silently fell back to defaults there (review finding #6).
 let malformedPath: string | undefined;
@@ -171,12 +195,16 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       gate: over.autoRefine?.gate === true,
       omitStaleDrafts: over.autoRefine?.omitStaleDrafts !== false,
       refineNoOpSkip:
-        typeof over.autoRefine?.refineNoOpSkip === "number" && Number.isFinite(over.autoRefine.refineNoOpSkip)
+        typeof over.autoRefine?.refineNoOpSkip === "number" &&
+        Number.isFinite(over.autoRefine.refineNoOpSkip)
           ? Math.max(0, Math.floor(over.autoRefine.refineNoOpSkip))
           : DEFAULT_REFINE_NOOP_SKIP,
     },
     classifier: {
-      model: typeof over.classifier?.model === "string" && over.classifier.model ? over.classifier.model : undefined,
+      model:
+        typeof over.classifier?.model === "string" && over.classifier.model
+          ? over.classifier.model
+          : undefined,
     },
     virtualBinding: over.virtualBinding === "physical" ? "physical" : "virtual",
     proposer: over.proposer ?? "steering",
@@ -187,7 +215,16 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
     // normalizeInjection is defensive (bad types → defaults), so a partial or
     // malformed `injection` object degrades to the shipped defaults rather than
     // corrupting the block sizing arithmetic.
-    injection: normalizeInjection(over.injection as Partial<{ enabled: boolean; maxTokens: number; maxPerKind: number; charsPerToken: number }> | undefined),
+    injection: normalizeInjection(
+      over.injection as
+        | Partial<{
+            enabled: boolean;
+            maxTokens: number;
+            maxPerKind: number;
+            charsPerToken: number;
+          }>
+        | undefined,
+    ),
     dedupe: {
       threshold: coerceThreshold(over.dedupe?.threshold),
       merge: over.dedupe?.merge !== false,
@@ -199,7 +236,8 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
  *  default. Cadence arithmetic divides/compares against it; 0 or a fraction
  *  would fire every turn (spam) and NaN never fires. */
 function coerceMinTurns(raw: unknown, def: number): number {
-  if (typeof raw === "number" && Number.isFinite(raw) && Number.isInteger(raw) && raw >= 1) return raw;
+  if (typeof raw === "number" && Number.isFinite(raw) && Number.isInteger(raw) && raw >= 1)
+    return raw;
   return def;
 }
 
@@ -216,7 +254,9 @@ function coerceBump(raw: unknown): number {
  *  out-of-range or non-numeric values must degrade to the default rather than
  *  silently matching everything (0/-1) or nothing (>1). */
 function coerceThreshold(raw: unknown): number {
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEDUPE_THRESHOLD;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1
+    ? raw
+    : DEDUPE_THRESHOLD;
 }
 
 /** Result of a reviewed config write (see saveConfig). */
@@ -337,28 +377,43 @@ export async function saveConfig(
  *  silently (expected for a fresh setup); a MALFORMED file → defaults too, but
  *  flagged via configMalformed() so the session can warn instead of every
  *  setting silently stopping (review finding #6). Cached for the process
- *  lifetime (config is read once per session). */
+ *  lifetime (config is read once per session); concurrent cold callers share
+ *  one in-flight read. */
 export async function loadConfig(path: string = CONFIG_PATH): Promise<HarnessConfig> {
   if (cached) return cached;
+  if (inFlight) return inFlight;
+  const myEpoch = epoch;
+  inFlight = readConfigFile(path, myEpoch).finally(() => {
+    if (myEpoch === epoch) inFlight = undefined;
+  });
+  return inFlight;
+}
+
+/** The one cold read (no cache): file → parsed-and-merged config. A read from
+ *  a superseded cache generation (see `epoch`) returns its result to the
+ *  caller but leaves the cache untouched. */
+async function readConfigFile(path: string, myEpoch: number): Promise<HarnessConfig> {
   let raw: string | undefined;
   try {
     raw = await readFile(path, "utf8");
   } catch {
     // Missing/unreadable file → defaults, by design.
   }
-  if (raw === undefined) {
-    cached = { ...DEFAULT_CONFIG };
-    return cached;
-  }
+  const commit = (config: HarnessConfig): HarnessConfig => {
+    if (myEpoch !== epoch) return config; // reset raced this read — do not cache
+    cached = config;
+    return config;
+  };
+  if (raw === undefined) return commit({ ...DEFAULT_CONFIG });
   try {
-    cached = mergeConfig(JSON.parse(raw) as Partial<HarnessConfig>);
+    const parsed = mergeConfig(JSON.parse(raw) as Partial<HarnessConfig>);
     // Parse succeeded — clear the flag (a previous load may have failed).
-    malformedPath = undefined;
+    if (myEpoch === epoch) malformedPath = undefined;
+    return commit(parsed);
   } catch {
-    malformedPath = path;
-    cached = { ...DEFAULT_CONFIG };
+    if (myEpoch === epoch) malformedPath = path;
+    return commit({ ...DEFAULT_CONFIG });
   }
-  return cached;
 }
 
 /** True when the file at `path` existed but failed to parse on the last
@@ -367,10 +422,13 @@ export function configMalformed(path: string = CONFIG_PATH): boolean {
   return malformedPath === path;
 }
 
-/** Test hook: drop the in-process cache. */
+/** Test hook: drop the in-process cache — including any in-flight read (it
+ *  resolves to its caller but can no longer populate the cache). */
 export function resetConfigCache(): void {
   cached = undefined;
   malformedPath = undefined;
+  inFlight = undefined;
+  epoch += 1;
 }
 
 /** Path of a project's durable layer file: <projectDir>/<slug>.md. */
@@ -385,7 +443,10 @@ export function projectDurablePath(cwd?: string): string {
 export function layerFilesFor(cwd?: string): LayerFile[] {
   return [
     { path: DEFAULT_DURABLE_PATH, defaultScope: { scope: "global" } },
-    { path: projectDurablePath(cwd), defaultScope: { scope: "project", project: projectSlug(cwd) } },
+    {
+      path: projectDurablePath(cwd),
+      defaultScope: { scope: "project", project: projectSlug(cwd) },
+    },
   ];
 }
 
@@ -402,6 +463,10 @@ export function defaultScopeForPath(path: string): ScopeInfo {
   return { scope: "global" };
 }
 
+/** Cap on a derived project slug: file-system-friendly and unique enough for
+ *  every realistic path, while keeping `<slug>.md` filenames short. */
+const MAX_SLUG_LEN = 80;
+
 /** Stable, filesystem-safe slug from a directory path. Falls back to "default". */
 export function projectSlug(cwd?: string): string {
   const base = (cwd ?? "").trim();
@@ -412,6 +477,6 @@ export function projectSlug(cwd?: string): string {
     .replace(/-{2,}/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase()
-    .slice(-80);
+    .slice(-MAX_SLUG_LEN);
   return slug || "default";
 }

@@ -1,14 +1,20 @@
 import { describe, it, expect } from "vitest";
 import type { HarnessItem, HarnessState } from "../src/types.js";
-import {
-  buildCorpus,
-  NOT_DUP_FLOOR,
-  parseDedupeDelete,
-} from "../src/corpus.js";
+import { buildCorpus, NOT_DUP_FLOOR, parseDedupeDelete } from "../src/corpus.js";
 
-function item(over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">): HarnessItem {
+function item(
+  over: Partial<HarnessItem> & Pick<HarnessItem, "id" | "kind" | "content">,
+): HarnessItem {
   const now = 10_000;
-  return { evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: now, updatedAt: now, ...over };
+  return {
+    evidence: "e",
+    importance: 0.5,
+    active: true,
+    ownerModel: "",
+    createdAt: now,
+    updatedAt: now,
+    ...over,
+  };
 }
 
 const stateEntry = (items: HarnessItem[]) => ({
@@ -33,7 +39,10 @@ const legacyRefineEntry = (applied: number, proposer = "dedupe") => ({
 
 describe("parseDedupeDelete", () => {
   it("parses merge and delete-only reasons", () => {
-    expect(parseDedupeDelete("merged into h_k (overlap 0.71)")).toEqual({ keeperId: "h_k", overlap: 0.71 });
+    expect(parseDedupeDelete("merged into h_k (overlap 0.71)")).toEqual({
+      keeperId: "h_k",
+      overlap: 0.71,
+    });
     expect(parseDedupeDelete("near-duplicate of h_ab12_cd (overlap 1.00)")).toEqual({
       keeperId: "h_ab12_cd",
       overlap: 1,
@@ -48,7 +57,12 @@ describe("parseDedupeDelete", () => {
 
 describe("buildCorpus — lifecycle", () => {
   it("the branch's FIRST snapshot diffs against an implicit empty baseline (review finding #1)", () => {
-    const a = item({ id: "h_a", kind: "memory", content: "born in the first snapshot", importance: 0.5 });
+    const a = item({
+      id: "h_a",
+      kind: "memory",
+      content: "born in the first snapshot",
+      importance: 0.5,
+    });
     const { lifecycle } = buildCorpus([stateEntry([a])]);
     // A fresh session persists no empty harness-state entry, so the first
     // create batch IS the first snapshot — its created events were silently
@@ -58,8 +72,10 @@ describe("buildCorpus — lifecycle", () => {
   });
 
   it("classifies created/kept/cited/dropped/pruned from snapshot diffs", () => {
-    const a = (imp: number) => item({ id: "h_a", kind: "prompt", content: "note a", importance: imp });
-    const b = (imp: number) => item({ id: "h_b", kind: "memory", content: "fact b", importance: imp });
+    const a = (imp: number) =>
+      item({ id: "h_a", kind: "prompt", content: "note a", importance: imp });
+    const b = (imp: number) =>
+      item({ id: "h_b", kind: "memory", content: "fact b", importance: imp });
     const entries = [
       stateEntry([a(0.5)]), // baseline
       stateEntry([a(0.5), b(0.4)]), // created b
@@ -72,7 +88,14 @@ describe("buildCorpus — lifecycle", () => {
     expect(pairs).toHaveLength(0);
     const events = lifecycle.map((r) => `${r.event}:${r.item_kind}`);
     // The first snapshot's own created event leads (implicit empty baseline).
-    expect(events).toEqual(["created:prompt", "created:memory", "kept:prompt", "cited:prompt", "dropped:prompt", "pruned:memory"]);
+    expect(events).toEqual([
+      "created:prompt",
+      "created:memory",
+      "kept:prompt",
+      "cited:prompt",
+      "dropped:prompt",
+      "pruned:memory",
+    ]);
     // hashes, not contents, in lifecycle records
     expect(lifecycle[0]!.content_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(lifecycle[3]!.importance).toBeCloseTo(0.63);
@@ -109,7 +132,10 @@ describe("buildCorpus — review fixes (PR #14)", () => {
   it("classifies citations with the CONFIGURED bump; keep/drop win collisions", () => {
     const a = (imp: number) => item({ id: "h_a", kind: "prompt", content: "n", importance: imp });
     const run = (from: number, to: number, citeBump?: number) =>
-      buildCorpus([stateEntry([a(from)]), stateEntry([a(to)])], citeBump !== undefined ? { citeBump } : {});
+      buildCorpus(
+        [stateEntry([a(from)]), stateEntry([a(to)])],
+        citeBump !== undefined ? { citeBump } : {},
+      );
     expect(run(0.5, 0.55, 0.05).lifecycle.map((r) => r.event)).toEqual(["created", "cited"]); // configured bump
     expect(run(0.5, 0.6, 0.1).lifecycle.map((r) => r.event)).toEqual(["created", "kept"]); // collision: keep wins
     expect(run(0.5, 0.53).lifecycle.map((r) => r.event)).toEqual(["created", "cited"]); // default 0.03
@@ -117,8 +143,20 @@ describe("buildCorpus — review fixes (PR #14)", () => {
   });
 
   it("reconstructs dup pairs from the enriched audit entry (appliedDeltas with reasons)", () => {
-    const k = item({ id: "h_k", kind: "prompt", content: "same fact text", importance: 0.9, evidence: "e1" });
-    const d = item({ id: "h_d", kind: "prompt", content: "same fact text", importance: 0.4, evidence: "e2" });
+    const k = item({
+      id: "h_k",
+      kind: "prompt",
+      content: "same fact text",
+      importance: 0.9,
+      evidence: "e1",
+    });
+    const d = item({
+      id: "h_d",
+      kind: "prompt",
+      content: "same fact text",
+      importance: 0.4,
+      evidence: "e2",
+    });
     const merged = { ...k, evidence: "e1\ne2" };
     const { pairs } = buildCorpus([
       stateEntry([k, d]),
@@ -131,8 +169,20 @@ describe("buildCorpus — review fixes (PR #14)", () => {
 });
 
 describe("buildCorpus — dedupe pairs", () => {
-  const keeper = item({ id: "h_k", kind: "prompt", content: "always use the foo pattern", importance: 0.9, evidence: "e1" });
-  const dup = item({ id: "h_d", kind: "prompt", content: "use the foo pattern always", importance: 0.4, evidence: "e2" });
+  const keeper = item({
+    id: "h_k",
+    kind: "prompt",
+    content: "always use the foo pattern",
+    importance: 0.9,
+    evidence: "e1",
+  });
+  const dup = item({
+    id: "h_d",
+    kind: "prompt",
+    content: "use the foo pattern always",
+    importance: 0.4,
+    evidence: "e2",
+  });
   const mergedKeeper = { ...keeper, evidence: "e1\ne2" };
 
   it("emits a dup pair from a merged dedupe run (pre snapshot supplies dup content)", () => {
@@ -177,7 +227,13 @@ describe("buildCorpus — dedupe pairs", () => {
   it("ignores non-dedupe refinement runs and cross-key-field pairs", () => {
     const a1 = item({ id: "h_1", kind: "prompt", content: "a b c d e f", importance: 0.9 });
     const a2 = item({ id: "h_2", kind: "memory", content: "a b c d e f", importance: 0.5 }); // different kind
-    const a3 = item({ id: "h_3", kind: "prompt", content: "a b c d g h", importance: 0.4, ownerModel: "other/model" });
+    const a3 = item({
+      id: "h_3",
+      kind: "prompt",
+      content: "a b c d g h",
+      importance: 0.4,
+      ownerModel: "other/model",
+    });
     const { pairs } = buildCorpus([
       stateEntry([a1, a2, a3]),
       stateEntry([a1, a2, a3]),

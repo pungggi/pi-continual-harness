@@ -923,6 +923,8 @@ editors that support JSON schemas offer completion and flag typos. The loader
 ignores unknown keys — `$schema` included — and a `/harness setup` rewrite
 preserves it.
 
+The long-form, key-by-key reference lives in [CONFIG.md](CONFIG.md).
+
 ### Keys
 
 | Key | Default | Values | Effect |

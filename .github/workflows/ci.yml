@@ -1,0 +1,30 @@
+name: CI
+
+# PR/push gate: typecheck + lint + tests (+ coverage) + build. Publish-time
+# verification lives in release.yml; this workflow catches breakage before a
+# release tag is ever cut.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:coverage
+      - run: npm run build
+      - name: Verify the shipped entry is precompiled
+        run: test -f dist/entry.js && test -f dist/index.js
