@@ -28,13 +28,9 @@ import type { AppliedDelta, ComponentKind, Delta } from "./types.js";
 export type { HarnessListParams, HarnessMutateParams };
 
 export function registerTools(pi: ExtensionAPI): void {
+  pi.registerTool(harnessListTool(async (_toolCallId, params) => executeHarnessList(params)));
   pi.registerTool(
-    harnessListTool(async (_toolCallId, params) => executeHarnessList(params as HarnessListParams)),
-  );
-  pi.registerTool(
-    harnessMutateTool(async (_toolCallId, params) =>
-      executeHarnessMutate(pi, params as HarnessMutateParams),
-    ),
+    harnessMutateTool(async (_toolCallId, params) => executeHarnessMutate(pi, params)),
   );
 }
 

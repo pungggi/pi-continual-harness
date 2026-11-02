@@ -454,7 +454,9 @@ implementation on first `propose()`) directly into
 
 ## Status
 
-0.20.x. Requires **pi ≥ 1.2.0**. Implemented:
+0.20.x. Requires **pi ≥ 1.2.0** (tool schemas are plain JSON Schema, so pi
+1.5's move to `@earendil-works/pi-schema` argument validation needs no
+migration; developed and tested against pi 1.5). Implemented:
 
 - Unified harness-state store with branch-local snapshots (`/tree` rollback).
 - Online `/refine` + `harness_mutate` / `harness_list` tools.
