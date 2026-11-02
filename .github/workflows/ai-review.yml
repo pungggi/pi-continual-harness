@@ -1,0 +1,38 @@
+name: AI PR Review
+
+# Dünner Stub — die Logik liegt zentral in pungggi/ai-review (reusable workflow).
+# Vorteile: Script-Updates kommen automatisch mit, Regeln pro Repo in
+# .github/ai-review-instructions.md.
+#
+# Dieser Stub braucht in DIESEM Repo beide Secrets (reusable Workflows erben
+# nur Caller-Secrets):
+#   - CHEAPESTINFERENCE_API_KEY  (BYOK-Key des Modells)
+#   - AI_REVIEW_TOKEN            (fine-grained PAT: Contents:Read-only +
+#                                 Pull requests:R/W — Checkout des privaten
+#                                 Zentral-Repos + Review-Posting)
+#
+# Zeitblock (CheapestInference, Americas 18–2 UTC) steht in den Repo-Variablen
+# AI_REVIEW_SLOT_START/END. Pushes außerhalb des Blocks skipped dieser Stub
+# (bleibt grün); der zentrale Sweep in pungggi/ai-review ("AI PR Review Sweep
+# (alle Repos)") holt sie beim nächsten Fenster nach.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR-Nummer (optional; leer = PR des aktuellen Branches)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    uses: pungggi/ai-review/.github/workflows/review.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+    secrets: inherit
