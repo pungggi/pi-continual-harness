@@ -1,0 +1,4 @@
+# Biome enforces LF (biome.json formatter.lineEnding); core.autocrlf=true on
+# Windows otherwise checks out CRLF and `npm run check` fails locally while CI
+# (LF checkout) stays green. Pin LF in the working tree on every platform.
+* text=auto eol=lf

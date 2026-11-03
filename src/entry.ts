@@ -30,12 +30,7 @@ import type {
   TurnEndEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { HARNESS_COMMAND_DESCRIPTION, REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
-import {
-  harnessListTool,
-  harnessMutateTool,
-  type HarnessListParams,
-  type HarnessMutateParams,
-} from "./schemas.js";
+import { harnessListTool, harnessMutateTool } from "./schemas.js";
 
 /** One lazily-loaded turn_end subscriber. `run` dynamic-imports its feature
  *  module on first fire, so the entry stays thin. */
@@ -98,12 +93,12 @@ export default function continualHarness(pi: ExtensionAPI): void {
   // lazy-load the store-backed implementation on first call.
   pi.registerTool(
     harnessListTool(async (_toolCallId, params) =>
-      (await import("./tools.js")).executeHarnessList(params as HarnessListParams),
+      (await import("./tools.js")).executeHarnessList(params),
     ),
   );
   pi.registerTool(
     harnessMutateTool(async (_toolCallId, params) =>
-      (await import("./tools.js")).executeHarnessMutate(pi, params as HarnessMutateParams),
+      (await import("./tools.js")).executeHarnessMutate(pi, params),
     ),
   );
 

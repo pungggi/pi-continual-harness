@@ -6,6 +6,7 @@
 // cannot silently drift from what pi and the providers expect.
 
 import { describe, it, expect } from "vitest";
+import { compile, type JsonSchema } from "@earendil-works/pi-schema";
 import { Type } from "typebox";
 import {
   harnessListTool,
@@ -155,5 +156,95 @@ describe("hand-written schemas match TypeBox output (issue #36)", () => {
   it("harness_mutate outputSchema is identical", () => {
     const shipped = harnessMutateTool(stub).outputSchema!;
     expect(stable(shipped)).toEqual(stable(MutateOutputSchema));
+  });
+});
+
+// pi 1.5 moved tool-argument validation to @earendil-works/pi-schema (a
+// breaking change: TypeBox-only features no longer apply, JSON-Schema tools
+// gain the coercion TypeBox tools had, and failure messages changed format).
+// These tests run the SHIPPED hand-written schemas through the same
+// compile({ coerce: true }) path pi applies to tool arguments, so the package
+// is certified against the validator that actually guards harness_mutate —
+// not just against TypeBox's emitted JSON (the suite above).
+describe("pi-schema tool-argument validation (pi 1.5)", () => {
+  // parameters is typed TSchema (typebox); pi-schema has its own JsonSchema
+  // type over the same JSON — the shapes are asserted identical to TypeBox
+  // output in the suite above.
+  const paramsOf = (tool: { parameters: object }) => tool.parameters as unknown as JsonSchema;
+  const mutate = compile(paramsOf(harnessMutateTool(stub)), { coerce: true });
+  const list = compile(paramsOf(harnessListTool(stub)), { coerce: true });
+
+  const create = (over: Record<string, unknown> = {}) => ({
+    op: "create",
+    kind: "memory",
+    content: "prefers tab indentation",
+    evidence: "user corrected indentation twice this session",
+    ...over,
+  });
+
+  it("accepts a well-formed batch", () => {
+    const r = mutate.parse({ deltas: [create(), { op: "delete", id: "h_1", reason: "stale" }] });
+    expect(r.ok).toBe(true);
+  });
+
+  it("coerces loosely typed args like TypeBox tools now do", () => {
+    const r = mutate.parse({
+      deltas: [
+        create({ importance: "0.8" }),
+        { op: "update", id: "h_1", active: "true", importance: "0" },
+      ],
+    });
+    expect(r).toEqual({
+      ok: true,
+      value: {
+        deltas: [
+          create({ importance: 0.8 }),
+          { op: "update", id: "h_1", active: true, importance: 0 },
+        ],
+      },
+    });
+  });
+
+  it("wraps a bare delta in a one-item array", () => {
+    const r = mutate.parse({ deltas: create() });
+    if (!r.ok) throw new Error(`expected coercion: ${JSON.stringify(r.errors)}`);
+    expect((r.value as { deltas: unknown[] }).deltas).toHaveLength(1);
+  });
+
+  it("still rejects schema violations after coercion", () => {
+    // One failure per keyword; assert path+keyword, not the message text —
+    // pi-schema message wording is not this package's contract.
+    const expectReject = (input: unknown, path: string, keyword: string) => {
+      const r = mutate.parse(input);
+      if (r.ok) throw new Error("expected rejection");
+      expect(r.errors[0]).toMatchObject({ path, keyword });
+    };
+
+    expectReject({ deltas: [create({ importance: 1.5 })] }, "/deltas/0/importance", "maximum");
+    expectReject({ deltas: [create({ importance: -0.1 })] }, "/deltas/0/importance", "minimum");
+    expectReject(
+      { deltas: [{ op: "create", kind: "memory", content: "no why" }] },
+      "/deltas/0/evidence",
+      "required",
+    );
+    expectReject({ deltas: [create({ kind: "bogus" })] }, "/deltas/0/kind", "enum");
+    expectReject({ deltas: [] }, "/deltas", "minItems");
+    expectReject(
+      {
+        deltas: Array.from({ length: MAX_DELTAS + 1 }, () => ({
+          op: "delete",
+          id: "h_1",
+          reason: "r",
+        })),
+      },
+      "/deltas",
+      "maxItems",
+    );
+  });
+
+  it("harness_list params validate", () => {
+    expect(list.parse({}).ok).toBe(true);
+    expect(list.parse({ kind: "memory", model: "anthropic/claude-sonnet-4" }).ok).toBe(true);
+    expect(list.parse({ kind: "bogus" }).ok).toBe(false);
   });
 });

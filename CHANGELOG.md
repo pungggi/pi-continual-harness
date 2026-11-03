@@ -36,6 +36,23 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - `test/hardening.test.ts` covers the new hardening behaviors (corrupt
   snapshot coercion, ENOENT vs real read errors, flag validation, the
   boundary guard).
+- **pi 1.5 conformance tests** (`test/schemas.test.ts`): pi 1.5 moved
+  tool-argument validation to `@earendil-works/pi-schema` (breaking change —
+  new coercion rules for JSON-Schema tools, new failure-message format). The
+  shipped hand-written schemas are now run through the same
+  `compile({ coerce: true })` path pi applies to tool arguments: well-formed
+  batches pass, loosely typed args coerce (`importance: "0.8"` → `0.8`,
+  `active: "true"` → `true`, a bare delta wraps into a one-item array), and
+  schema violations still reject after coercion (range/required/enum/
+  minItems/maxItems asserted by path+keyword, not message text).
+- **`CHANGELOG.md` is published** (added to npm `files`): pi ≥ 1.5 shows
+  users what changed after an extension update, reading the installed
+  package's changelog — which was previously never shipped. Timely, because
+  1.5 also fixed `-e npm:` extensions to actually update on start.
+- **`.gitattributes` pins LF** (`* text=auto eol=lf`): with
+  `core.autocrlf=true` on Windows, a fresh clone checks out CRLF while
+  biome.json enforces `lf`, so `npm run check` failed locally (50 format
+  errors) while Linux CI stayed green. New clones now check out LF.
 
 ### Fixed
 
@@ -103,7 +120,23 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 - `ProposeInput`'s optional fields are now explicitly `| undefined`-tolerant
   (matches the package's `exactOptionalPropertyTypes` convention; type-level
   only).
-
+- **Adopted pi 1.5 in the toolchain**: devDependencies
+  `@earendil-works/pi-ai` / `pi-coding-agent` `^1.3.0` → `^1.5.0` (+ explicit
+  `@earendil-works/pi-schema` devDependency for the conformance tests), so CI
+  runs against the validator pi 1.5 actually applies to tool arguments. No
+  runtime code changes were needed — the tool schemas have been plain JSON
+  Schema since the issue-#36 startup refactor, which is exactly what 1.5's
+  pi-schema migration validates — and `peerDependencies` stay `>=1.2.0`
+  because nothing 1.5-only is imported at runtime. README Status notes
+  tested-against-pi-1.5.
+- **Typed tool factories** (schemas.ts): `harnessListTool` /
+  `harnessMutateTool` now type their `execute` argument with the hand-written
+  `Static<>` params (a `ToolExecute<P>` derived from pi's own `execute`
+  signature, so rest/return types cannot drift), and the one cast back to
+  pi's `Static<TSchema>` slot lives inside the factories. The four
+  `params as Harness*Params` casts at the registration sites (entry.ts,
+  tools.ts) are gone. Type-level only — the emitted dist is byte-identical
+  (verified: the #36 startup graph and timings are unchanged).
 
 ## [0.20.0] — 2026-10-21
 

@@ -205,9 +205,25 @@ function asSchema(s: object): TSchema {
   return s as TSchema;
 }
 
-/** Full harness_list definition around an `execute` supplied by the caller. */
+/** pi's execute slot with params narrowed to P. Derived from pi's own
+ *  signature (only the params position is swapped), so the rest/return types
+ *  cannot drift from ToolDefinition. */
+type ToolExecute<P> = ToolDefinition<TSchema, unknown>["execute"] extends (
+  toolCallId: string,
+  _params: infer _P,
+  ...rest: infer R
+) => infer Ret
+  ? (toolCallId: string, params: P, ...rest: R) => Ret
+  : never;
+
+/** Full harness_list definition around an `execute` supplied by the caller.
+ *  execute is typed with the hand-written Static<> above; the one cast back
+ *  to pi's Static<TSchema> (unknown) slot lives in the factories — the
+ *  schema↔type correspondence is guarded by test/schemas.test.ts (TypeBox
+ *  equivalence + pi-schema conformance), not re-asserted at every
+ *  registration site. */
 export function harnessListTool(
-  execute: ToolDefinition<TSchema, unknown>["execute"],
+  execute: ToolExecute<HarnessListParams>,
 ): ToolDefinition<TSchema, unknown> {
   return {
     name: "harness_list",
@@ -220,13 +236,14 @@ export function harnessListTool(
     ],
     parameters: asSchema(ListParams),
     outputSchema: asSchema(ListOutputSchema),
-    execute,
+    execute: execute as ToolDefinition<TSchema, unknown>["execute"],
   };
 }
 
-/** Full harness_mutate definition around an `execute` supplied by the caller. */
+/** Full harness_mutate definition around an `execute` supplied by the caller
+ *  (typing contract as in harnessListTool above). */
 export function harnessMutateTool(
-  execute: ToolDefinition<TSchema, unknown>["execute"],
+  execute: ToolExecute<HarnessMutateParams>,
 ): ToolDefinition<TSchema, unknown> {
   return {
     name: "harness_mutate",
@@ -239,6 +256,6 @@ export function harnessMutateTool(
     ],
     parameters: asSchema(MutateParams),
     outputSchema: asSchema(MutateOutputSchema),
-    execute,
+    execute: execute as ToolDefinition<TSchema, unknown>["execute"],
   };
 }
