@@ -116,6 +116,23 @@
         "charsPerToken": { "type": "number", "exclusiveMinimum": 0, "default": 4 }
       }
     },
+    "provenance": {
+      "type": "object",
+      "description": "Provenance trust boundary (agent-authored items are unverified). Gates PRESENTATION only — stamping always happens server-side.",
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "type": "boolean",
+          "default": true,
+          "description": "false hides the (unverified: agent-authored) marker + intro line in the injected block and the (unverified) chip in /harness list."
+        },
+        "priority": {
+          "type": "boolean",
+          "default": true,
+          "description": "false restores pure importance order: agent-authored items compete for the injection budget equally with trusted ones."
+        }
+      }
+    },
     "dedupe": {
       "type": "object",
       "description": "The rule-based dedupe proposer's policy.",

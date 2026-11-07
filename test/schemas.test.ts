@@ -86,6 +86,12 @@ const ItemSchema = Type.Object({
   ownerModel: Type.String(),
   scope: Type.Optional(StringEnum(["global", "project"])),
   project: Type.Optional(Type.String()),
+  provenance: Type.Optional(
+    StringEnum(["owner", "agent"], {
+      description:
+        'Trust class of the content. Absent = trusted. "agent" = last written by the model itself.',
+    }),
+  ),
   support: Type.Optional(
     Type.Object({
       citations: Type.Optional(Type.Number()),

@@ -26,6 +26,7 @@ import {
 } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
 import { DEDUPE_THRESHOLD } from "./proposer.js";
+import { DEFAULT_PROVENANCE, normalizeProvenance, type NormalizedProvenance } from "./types.js";
 
 export const DEFAULT_EVERY_TURNS = 25;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
@@ -121,6 +122,10 @@ export interface HarnessConfig {
   /** Injection selection policy (on by default). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/select.ts. */
   injection?: NormalizedInjection;
+  /** Provenance trust-boundary policy (label + selection priority, both on by
+   *  default). Gates only PRESENTATION — stamping always happens server-side.
+   *  Resolved by loadConfig. See src/select.ts / src/inject.ts. */
+  provenance?: NormalizedProvenance;
   /** Dedupe proposer policy (merge-capable). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/proposer.ts. */
   dedupe?: NormalizedDedupe;
@@ -154,6 +159,11 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
   injection: DEFAULT_INJECTION,
+  // Provenance gates ON: agent-authored items are marked unverified and lose
+  // budget contention to trusted items. Stamping is unconditional; set
+  // `provenance: { label: false }` / `{ priority: false }` to disable either
+  // presentation effect.
+  provenance: DEFAULT_PROVENANCE,
 };
 
 export const CONFIG_PATH = join(homedir(), ".pi", "agent", "harness.json");
@@ -225,6 +235,10 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
           }>
         | undefined,
     ),
+    // normalizeProvenance is defensive (bad types → defaults-on), so a partial
+    // or malformed `provenance` object degrades to the shipped gates rather
+    // than silently disabling the trust boundary.
+    provenance: normalizeProvenance(over.provenance),
     dedupe: {
       threshold: coerceThreshold(over.dedupe?.threshold),
       merge: over.dedupe?.merge !== false,

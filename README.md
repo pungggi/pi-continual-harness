@@ -191,6 +191,7 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
   "proposer": "steering",
   "dedupe": { "threshold": 0.6, "merge": true },
   "injection": { "enabled": true, "maxTokens": 1500, "maxPerKind": 10, "charsPerToken": 4 },
+  "provenance": { "label": true, "priority": true },
   "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
@@ -211,6 +212,7 @@ schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
 | `autoImport` | `false` | Opt-in durable sync: session_start layered auto-import + turn_end auto-export — `/refine` output survives into new sessions. |
 | `importRemind` | on, every 25 turns | Awareness reminders for the sync (what arrived; bounded re-surfacings). Effective only with `autoImport`. |
 | `injection` | on, 1500 tokens / 10 per kind | The per-turn prompt selection policy ([below](#injection-selection-on-by-default)). |
+| `provenance` | on, both gates | Trust boundary: label agent-authored items unverified + let trusted items win budget contention ([below](#provenance-and-trust-boundary)). Stamping always happens; the gates only affect presentation. |
 | `proposer` | `"steering"` | Which delta proposer `/refine` uses ([below](#proposers)). |
 | `dedupe` | threshold 0.6, merge on | The rule-based dedupe proposer's policy. |
 | `remindRefine` | on, every 25 turns | The notify-only `/refine` activation nudge; every 4th one is a detailed educational guide. |
@@ -374,6 +376,49 @@ Selection is factored into a pure function (`selectForInjection`) and
 re-exported from the package entry, so a companion package can layer richer
 policies (e.g. relevance to the current turn, via the shared `tokenize` /
 `tokenOverlap` helpers) without touching `inject.ts`.
+
+## Provenance and trust boundary
+
+Almost every item in a running store was written by the **model itself** (via
+`harness_mutate` or a `/refine` proposer). Without a trust boundary, a stale,
+wrong, or injected note steers future sessions with the same authority as your
+own instructions. Since 0.21 each item records **who last wrote its content**:
+
+- **`provenance: "agent"`** — the content was last written by the model
+  (harness_mutate create, or any content rewrite through the tool or a
+  proposer). Stamped **server-side**: the model can never set it, and the
+  tool strips attempts (a smuggled `provenance: "owner"` cannot upgrade trust).
+- **absent** — trusted. Owner-authored items, AGENTS.md imports, legacy
+  snapshots, and durable files without the marker. **No migration needed**:
+  existing stores keep today's rendering until new agent items appear.
+- **Flip rule** — provenance follows the last content write. An agent rewrite
+  of a trusted item flips it to agent (losing trust is the safe direction;
+  nothing the model does can ever flip it back). Importance/keep/drop/scope
+  updates never flip it.
+
+Two presentation effects, both on by default (`harness.json`):
+
+```json
+{ "provenance": { "label": true, "priority": true } }
+```
+
+- **Label** — agent items render in the block as
+  `- [h_ab12] (unverified: agent-authored) …`, with one intro line defining
+  the marker (paid only when such an item is actually surfaced). `/harness
+  list` rows carry an `(unverified)` chip; `-f` spells it out.
+- **Priority** — trusted items fill the injection budget **first**; agent
+  items only compete for what remains. An agent note can never crowd an owner
+  note out of the block. Stores without agent items queue identically to
+  before.
+
+Stamping always happens regardless of the knobs; they gate only presentation.
+The durable file carries a `  - provenance: agent` sub-line for agent items
+(legacy files stay byte-identical), and **durable wins** on import: hand-
+deleting the line is the documented way to trust an item again.
+
+**This is a visibility convention, not authentication.** It makes agent
+authority explicit so you can review it; it cannot stop a model that already
+runs commands from writing files or persuading you to import its text.
 
 ## Proposers
 

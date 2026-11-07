@@ -60,6 +60,12 @@ keys — `$schema` included — and a `/harness setup` rewrite preserves it.
   (default 10) per kind and `maxTokens` (default 1500) total. Set
   `enabled: false` to restore the legacy "inject all items, in store order"
   behaviour.
+- **`provenance`** — the trust boundary's presentation gates (default
+  `{ "label": true, "priority": true }`; see the README's
+  [Provenance and trust boundary](../README.md#provenance-and-trust-boundary)
+  section). Stamping is server-side and unconditional; `label: false` hides
+  the `(unverified: agent-authored)` marker + intro line and the list chip,
+  `priority: false` restores pure importance order under budget contention.
 - **`proposer`** — which delta proposer `/refine` and auto-refine use. Defaults
   to `steering` (the agent reasons via a steering message). `dedupe` applies a
   rule-based merge directly. See the README's

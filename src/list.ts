@@ -72,12 +72,14 @@ export function selectListItems(items: HarnessItem[], opts: ListOptions): Harnes
 }
 
 /** Compact row: `[id] kind importance scope preview` (issue #31's table);
- *  inactive items carry an `(inactive)` marker so the row stays one line. */
+ *  inactive items carry an `(inactive)` marker so the row stays one line.
+ *  Agent-authored items carry an `(unverified)` marker: the row-level view of
+ *  the provenance trust boundary (same class the injected block marks). */
 function row(i: HarnessItem): string {
   const scope = i.scope === "project" ? `project:${i.project ?? "?"}` : "global";
   return `[${i.id}] ${i.kind.padEnd(8)} ${i.importance.toFixed(2)} ${scope} ${
     i.active ? "" : "(inactive) "
-  }${preview(i.content)}`;
+  }${i.provenance === "agent" ? "(unverified) " : ""}${preview(i.content)}`;
 }
 
 /** Compact support summary for one line: "cited 3, kept 1, dropped 0" —
@@ -100,6 +102,7 @@ function fullRow(i: HarnessItem): string {
     i.active ? "active" : "inactive",
     `model ${i.ownerModel || "(orphan)"}`,
     i.scope === "project" ? `project "${i.project ?? ""}"` : "global",
+    ...(i.provenance === "agent" ? ["agent-authored (unverified)"] : []),
   ];
   const sup = supportSummary(i.support);
   return (
