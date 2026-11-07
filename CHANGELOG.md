@@ -22,6 +22,25 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   v8 provider with thresholds — 95% statements package-wide, and 100% for the
   pure policy modules (`select.ts`, `lessons.ts`, `cadence.ts`, `vmodel.ts`)
   whose "pure, deterministic, unit-tested" property the README advertises.
+- **Provenance trust boundary**: every item now records who last wrote its
+  content. `harness_mutate` creates and content rewrites (plus all `/refine`
+  proposer writes) are stamped `provenance: "agent"` server-side; the model
+  can never set the field (smuggled values are stripped at the tool boundary,
+  and agent writes can only ever lose trust, never gain it). Absent provenance
+  means trusted, so owner-authored items, AGENTS.md imports, and existing
+  stores need no migration. Two on-by-default gates under
+  `harness.json { "provenance": { "label": true, "priority": true } }`:
+  **label** renders agent items as `(unverified: agent-authored)` in the
+  injected block (plus one defining intro line, paid only when such an item is
+  surfaced) and `(unverified)` chips in `/harness list` (both hidden by
+  `label: false`); **priority** fills each kind's item slots and the injection
+  budget with trusted items first, so an agent note can never crowd
+  an owner note out of the block (stores without agent items queue identically
+  to before). The durable file carries a `- provenance: agent` sub-line
+  (durable wins on import: hand-deleting the line trusts the item); legacy
+  files stay byte-identical. Stamping always happens — the gates only affect
+  presentation. Inspired by Protect-Context's forced agent trust level.
+  New tests: `test/provenance.test.ts` (22).
 - **`makePersist(pi)`** (store.ts): the one factory for the
   `appendEntry("harness-state", …)` snapshot callback every mutation path
   uses. The entry-type literal and persist closure were previously

@@ -29,6 +29,40 @@ export const KIND_ORDER: ComponentKind[] = [...KIND_VALUES];
  *  harness.ts/corpus.ts hand-synced pair). */
 export const KEEP_DROP_BUMP = 0.1;
 
+/**
+ * Provenance trust classes for harness items (Protect-Context pattern: the
+ * agent's own notes are DATA, not owner instructions). "agent" marks an item
+ * whose content was last written by the model itself (harness_mutate or a
+ * /refine proposer); absence means trusted — owner-authored content, legacy
+ * snapshots, and durable files without the marker all stay trusted with no
+ * migration. The field is stamped SERVER-SIDE only: the model-facing tool
+ * schema never exposes it, and agent writes can only ever flip trusted →
+ * agent (never back), so provenance can lose trust but never gain it.
+ */
+export type Provenance = "owner" | "agent";
+
+/** The shipped provenance policy gates (harness.json `provenance`). Stamping
+ *  always runs; these knobs gate only the PRESENTATION: `label` renders the
+ *  unverified marker + intro line and list chips, `priority` makes trusted
+ *  items win injection-budget contention (see select.ts). Both default on. */
+export interface NormalizedProvenance {
+  label: boolean;
+  priority: boolean;
+}
+
+export const DEFAULT_PROVENANCE: NormalizedProvenance = { label: true, priority: true };
+
+/** Resolve a (possibly partial / absent / malformed) provenance config against
+ *  the defaults. Defensive, like normalizeInjection: only an explicit boolean
+ *  `false` disables a gate; anything else keeps the default-on behavior. */
+export function normalizeProvenance(raw?: unknown): NormalizedProvenance {
+  const v = (raw ?? {}) as { label?: unknown; priority?: unknown };
+  return {
+    label: v.label !== false,
+    priority: v.priority !== false,
+  };
+}
+
 /** Minimal loose shape of a pi session entry, shared by every branch walker
  *  (refine evidence, outcome scanning, status/corpus audit walks). Kept
  *  structural on purpose: pi's real entry types are richer and versioned;
@@ -101,6 +135,10 @@ export interface HarnessItem {
   project?: string;
   /** Post-adoption support signals (see SupportInfo). Absent = no feedback yet. */
   support?: SupportInfo | undefined;
+  /** Trust class of the item's CURRENT content (see Provenance). Absent =
+   *  trusted: owner-authored, or legacy. Stamped server-side only — the
+   *  model can never set it. */
+  provenance?: Provenance | undefined;
   createdAt: number;
   updatedAt: number;
 }

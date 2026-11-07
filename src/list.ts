@@ -32,6 +32,11 @@ export interface ListOptions {
   /** The active project's slug (from the session cwd); selects the default
    *  view and labels the header. */
   slug: string;
+  /** The `provenance.label` gate (default true): false hides the compact
+   *  `(unverified)` chip and the full row's `agent-authored (unverified)`
+   *  segment — the same gate that hides the injected block's marker, so one
+   *  knob controls the whole trust-boundary presentation. */
+  markUnverified?: boolean;
 }
 
 /** Default char cap for one-line previews (menu rows, notifications). */
@@ -72,12 +77,17 @@ export function selectListItems(items: HarnessItem[], opts: ListOptions): Harnes
 }
 
 /** Compact row: `[id] kind importance scope preview` (issue #31's table);
- *  inactive items carry an `(inactive)` marker so the row stays one line. */
-function row(i: HarnessItem): string {
+ *  inactive items carry an `(inactive)` marker so the row stays one line.
+ *  Agent-authored items carry an `(unverified)` marker — the row-level view
+ *  of the provenance trust boundary (same class the injected block marks),
+ *  hidden when the `provenance.label` gate is off (`markUnverified`). */
+function row(i: HarnessItem, opts: ListOptions): string {
   const scope = i.scope === "project" ? `project:${i.project ?? "?"}` : "global";
   return `[${i.id}] ${i.kind.padEnd(8)} ${i.importance.toFixed(2)} ${scope} ${
     i.active ? "" : "(inactive) "
-  }${preview(i.content)}`;
+  }${opts.markUnverified !== false && i.provenance === "agent" ? "(unverified) " : ""}${preview(
+    i.content,
+  )}`;
 }
 
 /** Compact support summary for one line: "cited 3, kept 1, dropped 0" —
@@ -92,14 +102,18 @@ export function supportSummary(s?: SupportInfo): string | undefined {
 }
 
 /** Full row (`-f`): the harness_list rendering, scope-aware — the same
- *  parenthetical the split/adopt prompts use, plus the evidence line. */
-function fullRow(i: HarnessItem): string {
+ *  parenthetical the split/adopt prompts use, plus the evidence line. The
+ *  trust segment follows the same `markUnverified` gate as the chip. */
+function fullRow(i: HarnessItem, opts: ListOptions): string {
   const bits = [
     i.kind,
     `importance ${i.importance.toFixed(2)}`,
     i.active ? "active" : "inactive",
     `model ${i.ownerModel || "(orphan)"}`,
     i.scope === "project" ? `project "${i.project ?? ""}"` : "global",
+    ...(opts.markUnverified !== false && i.provenance === "agent"
+      ? ["agent-authored (unverified)"]
+      : []),
   ];
   const sup = supportSummary(i.support);
   return (
@@ -173,7 +187,7 @@ export function renderListReport(items: HarnessItem[], opts: ListOptions): strin
       ...(foreignNote ? [foreignNote] : []),
     ].join("\n");
   }
-  const lines = [header, ...shown.map(opts.full ? fullRow : row)];
+  const lines = [header, ...shown.map((i) => (opts.full ? fullRow(i, opts) : row(i, opts)))];
   if (foreignNote) lines.push(foreignNote);
   return lines.join("\n");
 }

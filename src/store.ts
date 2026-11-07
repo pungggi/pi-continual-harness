@@ -20,6 +20,7 @@ import type {
   Delta,
   HarnessItem,
   HarnessState,
+  Provenance,
   SupportInfo,
 } from "./types.js";
 
@@ -137,8 +138,17 @@ function clamp(n: number): number {
 
 /** Apply a single delta against the in-memory state. Does not persist.
  *  `actorModel`, when set, stamps creates and restricts update/delete to that
- *  model's items (per-model isolation at the model-facing tool boundary). */
-function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
+ *  model's items (per-model isolation at the model-facing tool boundary).
+ *  `opts.authoredBy`, when set, is the WRITING SURFACE's trust class: creates
+ *  stamp it, and updates flip an item's provenance to it ONLY when the delta
+ *  rewrites content (provenance = last content write). The flip only ever
+ *  moves trusted → agent, so an agent edit can never upgrade trust; owner
+ *  surfaces pass no opts and never stamp (absence = trusted). */
+function applyOne(
+  delta: Delta,
+  actorModel?: string,
+  opts?: { authoredBy?: Provenance },
+): AppliedDelta {
   if (delta.op === "create") {
     const now = Date.now();
     const item: HarnessItem = {
@@ -158,6 +168,7 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       updatedAt: now,
     };
     applyDeltaScope(item, delta);
+    if (opts?.authoredBy) item.provenance = opts.authoredBy;
     state.items.push(item);
     return { op: "create", item };
   }
@@ -184,6 +195,10 @@ function applyOne(delta: Delta, actorModel?: string): AppliedDelta {
       updatedAt: Date.now(),
     };
     applyDeltaScope(after, delta);
+    // Provenance follows the last CONTENT write: an agent-authored rewrite
+    // makes the current text agent-authored, so the item loses trust. Updates
+    // without content (importance/active/scope/support) never flip it.
+    if (opts?.authoredBy && delta.content !== undefined) after.provenance = opts.authoredBy;
     state.items[idx] = after;
     return { op: "update", before, after };
   }
@@ -237,17 +252,21 @@ function assertOwnsItem(
 
 /**
  * Apply a batch of deltas. All-or-nothing: if any delta throws, nothing is
- * applied. Returns the applied deltas and the new version.
+ * applied. Returns the applied deltas and the new version. `opts.authoredBy`
+ * (see applyOne) is passed by agent surfaces — the harness_mutate tool and
+ * /refine's direct-apply proposers — so their creates/rewrites stamp
+ * `provenance: "agent"`; owner surfaces omit it.
  */
 export function applyDeltas(
   deltas: Delta[],
   persist: PersistFn,
   actorModel?: string,
+  opts?: { authoredBy?: Provenance },
 ): AppliedDelta[] {
   const snapshotBefore = { items: state.items.map((i) => ({ ...i })) };
   const applied: AppliedDelta[] = [];
   try {
-    for (const d of deltas) applied.push(applyOne(d, actorModel));
+    for (const d of deltas) applied.push(applyOne(d, actorModel, opts));
   } catch (err) {
     // Roll back in-memory state on failure.
     state = snapshotBefore;
@@ -296,6 +315,9 @@ function normalizeItem(raw: unknown): HarnessItem | undefined {
   // Support must be a plain object if present; anything else (a corrupt
   // snapshot) drops the field rather than poisoning the digest/list.
   if (i.support === undefined || typeof i.support !== "object") delete item.support;
+  // Provenance must be a known trust class; anything else (a corrupt or
+  // future-unknown snapshot value) drops the field → trusted.
+  if (i.provenance !== "agent" && i.provenance !== "owner") delete item.provenance;
   return item;
 }
 
@@ -454,6 +476,9 @@ function renderDurable(items: HarnessItem[]): string {
       lines.push(`  - evidence: ${i.evidence}`);
       if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
       if (i.scope === "project") lines.push(`  - scope: project (${i.project ?? ""})`);
+      // Trust marker: only agent-authored items carry the line, so files for
+      // all-trusted stores stay byte-identical to pre-provenance exports.
+      if (i.provenance === "agent") lines.push("  - provenance: agent");
       const sup = renderSupport(i.support);
       if (sup) lines.push(`  - support: ${sup}`);
     }
@@ -614,6 +639,9 @@ export interface ParsedItem {
   project?: string;
   /** Parsed from a `support:` sub-line (post-adoption feedback counters). */
   support?: SupportInfo | undefined;
+  /** Parsed from a `provenance: agent|owner` sub-line. Absent = trusted
+   *  (legacy files, or a hand-edited file that removed the line). */
+  provenance?: Provenance | undefined;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -640,6 +668,7 @@ const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
 const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
 const RE_SCOPE = /^\s+-\s+scope:\s*(global|project)\b\s*(?:\(([^)]*)\))?/i;
+const RE_PROVENANCE = /^\s+-\s+provenance:\s*(agent|owner)\s*$/i;
 
 /** Parse a durable markdown export into items. Tolerant of pi-reflect's edits. */
 export function parseDurable(text: string): ParsedItem[] {
@@ -694,6 +723,12 @@ export function parseDurable(text: string): ParsedItem[] {
     const sup = line.match(RE_SUPPORT);
     if (sup) {
       if (pending) pending.support = parseSupport(sup[1]!);
+      continue;
+    }
+
+    const prov = line.match(RE_PROVENANCE);
+    if (prov) {
+      if (pending) pending.provenance = prov[1]!.toLowerCase() as Provenance;
       continue;
     }
 
@@ -797,7 +832,9 @@ function applyImportUpdate(existing: HarnessItem, p: ParsedItem & ScopeInfo, now
     existing.ownerModel === ownerModel &&
     (existing.scope ?? "global") === p.scope &&
     (existing.scope === "project" ? existing.project : undefined) === p.project &&
-    supportEqual(existing.support, p.support);
+    supportEqual(existing.support, p.support) &&
+    // Provenance compares by exact value (absent on BOTH sides = trusted).
+    existing.provenance === p.provenance;
   if (unchanged) return false;
   existing.content = p.content;
   existing.evidence = p.evidence;
@@ -813,6 +850,11 @@ function applyImportUpdate(existing: HarnessItem, p: ParsedItem & ScopeInfo, now
   // Durable wins on support too (offline edits / cross-session sync).
   if (p.support) existing.support = p.support;
   else delete existing.support;
+  // Durable wins on provenance as well: a present sub-line stamps the class;
+  // an absent line clears to trusted. Hand-deleting the `- provenance: agent`
+  // line is therefore the documented way for an owner to trust an item.
+  if (p.provenance) existing.provenance = p.provenance;
+  else delete existing.provenance;
   existing.updatedAt = now;
   return true;
 }
@@ -835,6 +877,7 @@ function applyImportCreate(p: ParsedItem & ScopeInfo, now: number, lookups: Merg
       ? { scope: "project" as const, project: p.project }
       : { scope: "global" as const }),
     ...(p.support ? { support: p.support } : {}),
+    ...(p.provenance ? { provenance: p.provenance } : {}),
     createdAt: now,
     updatedAt: now,
   });

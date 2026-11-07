@@ -15,7 +15,13 @@
 //      isolation, same rule inject.ts always enforced).
 //   2. ORDER  — importance desc; ties keep store/insertion order (stable), so
 //      the highest-fitness notes lead each section.
-//   3. CAP    — `maxPerKind` (balanced sections: no single kind drowns the
+//   3. TRUST  — with `provenance.priority` (default on), trusted items win
+//      EVERY contention: they fill each kind's `maxPerKind` slots first AND
+//      the token budget before agent-authored ones (importance order
+//      preserved within each class): an agent note can never crowd an owner
+//      note out of the block. No agent items → queue identical to the
+//      pre-trust order.
+//   4. CAP    — `maxPerKind` (balanced sections: no single kind drowns the
 //      block), then `maxTokens` (total budget). The budget is filled
 //      round-robin across kinds by importance rank, so one kind cannot starve
 //      the others; within that order an item that does not fit is *skipped*
@@ -26,8 +32,8 @@
 // the decision is fully unit-testable without a live pi runtime (the same
 // factoring pattern remind.ts / auto-refine.ts / outcome.ts use).
 
-import type { ComponentKind, HarnessItem } from "./types.js";
-import { KIND_ORDER } from "./types.js";
+import type { ComponentKind, HarnessItem, NormalizedProvenance } from "./types.js";
+import { DEFAULT_PROVENANCE, KIND_ORDER } from "./types.js";
 
 // Re-exported for the existing import site (inject.ts); the canonical order
 // lives in types.ts beside KIND_VALUES/KIND_LABEL.
@@ -69,6 +75,7 @@ export const DEFAULT_INJECTION: NormalizedInjection = {
 const INTRO_TOKENS = 55; // "## Continual Harness state" + the two description lines
 const SECTION_HEADER_TOKENS = 8; // "### <title>" per present section
 const FOOTER_TOKENS = 18; // the omitted-count footer, when it renders
+const UNVERIFIED_INTRO_TOKENS = 40; // the agent-unverified intro line, when it renders
 
 /** Resolve a (possibly partial / absent / malformed) config against the defaults.
  *  Defensive: bad types fall back to defaults, never throws. */
@@ -115,14 +122,19 @@ function byImportance(a: Ranked, b: Ranked): number {
  * decision. See the module doc for the policy.
  *
  * `items` is read-only here — callers (inject.ts) pass `getState().items` plus
- * the active model key; nothing is mutated.
+ * the active model key; nothing is mutated. `prov` is the resolved provenance
+ * policy (defaults on): `priority` trust-partitions the queue, `label` makes
+ * the cost estimate include the unverified markers/intro that inject.ts will
+ * render.
  */
 export function selectForInjection(
   items: HarnessItem[],
   ownerKey: string,
   cfg?: Partial<InjectionConfig>,
+  prov?: NormalizedProvenance,
 ): SelectionResult {
   const n = normalizeInjection(cfg);
+  const provPolicy = prov ?? DEFAULT_PROVENANCE;
 
   // 1. FILTER: group active items bound to the active model, per kind, in
   //    store order. (Importance ranking happens below, only when enabled.)
@@ -144,12 +156,29 @@ export function selectForInjection(
   // Importance desc, stable on store index (ties keep insertion order).
   for (const arr of groups.values()) arr.sort(byImportance);
 
-  // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each kind.
+  // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each
+  //     kind. With `provenance.priority` (default on) the trim itself is
+  //     TRUSTED-FIRST: trusted items fill a kind's slots before any
+  //     agent-authored item of that kind does. Without this, a kind holding
+  //     ≥ maxPerKind higher-importance agent items would drop every trusted
+  //     item of that kind here — the very crowd-out the priority gate
+  //     promises cannot happen, just one stage earlier than the budget pass.
+  //     Both classes stay importance-ordered (the arrays are sorted above;
+  //     filtering preserves that order). priority:false keeps the pure
+  //     importance trim.
   let omitted = 0;
   const capped = new Map<ComponentKind, Ranked[]>();
   for (const kind of KIND_ORDER) {
     const arr = groups.get(kind)!;
-    const kept = arr.slice(0, n.maxPerKind);
+    let kept: Ranked[];
+    if (provPolicy.priority) {
+      const trusted = arr.filter((r) => r.item.provenance !== "agent");
+      const agent = arr.filter((r) => r.item.provenance === "agent");
+      const trustedKept = trusted.slice(0, n.maxPerKind);
+      kept = [...trustedKept, ...agent.slice(0, n.maxPerKind - trustedKept.length)];
+    } else {
+      kept = arr.slice(0, n.maxPerKind);
+    }
     omitted += arr.length - kept.length;
     capped.set(kind, kept);
   }
@@ -160,24 +189,50 @@ export function selectForInjection(
   // does not fit, so a large item never blocks smaller higher-priority ones.
   const presentKinds = KIND_ORDER.filter((k) => capped.get(k)!.length > 0);
   const maxRank = presentKinds.reduce((m, k) => Math.max(m, capped.get(k)!.length), 0);
+  // Trust-partitioned queue (provenance.priority, default on): trusted items
+  // round-robin FIRST, agent-authored items only compete for whatever budget
+  // remains, so an agent note can never crowd an owner note out of the block.
+  // Within each class the importance round-robin order is untouched, and a
+  // store with no agent items (the common legacy case) queues exactly as
+  // before — the partition is a no-op there.
   const queue: Ranked[] = [];
+  const agentQueue: Ranked[] = [];
   for (let rank = 0; rank < maxRank; rank++) {
     for (const kind of presentKinds) {
       const r = capped.get(kind)![rank];
-      if (r) queue.push(r);
+      if (!r) continue;
+      if (provPolicy.priority && r.item.provenance === "agent") agentQueue.push(r);
+      else queue.push(r);
     }
   }
+  if (agentQueue.length > 0) queue.push(...agentQueue);
 
   // FOOTER_TOKENS is reserved unconditionally: the footer renders whenever
   // ANY pass omits an item (the token pass below can be the first to omit),
   // and a test pins "rendered block never exceeds the budget". Paying 18
   // tokens always keeps that guarantee exact (review simplification —
   // reverted: the conditional reserve broke the budget invariant).
-  const overhead = INTRO_TOKENS + presentKinds.length * SECTION_HEADER_TOKENS + FOOTER_TOKENS;
+  // UNVERIFIED_INTRO_TOKENS is reserved only when the queue could surface an
+  // agent item (knowable BEFORE the token pass, unlike the footer): then the
+  // intro line may render, so reserving keeps the budget exact. An all-
+  // trusted queue pays nothing — the budget matches pre-provenance exactly.
+  const maySurfaceAgent = queue.some((r) => r.item.provenance === "agent");
+  const overhead =
+    INTRO_TOKENS +
+    presentKinds.length * SECTION_HEADER_TOKENS +
+    FOOTER_TOKENS +
+    (provPolicy.label && maySurfaceAgent ? UNVERIFIED_INTRO_TOKENS : 0);
   let remaining = Math.max(0, n.maxTokens - overhead);
+  // The cost estimate includes the rendered marker text so agent items pay
+  // for their own " (unverified: agent-authored)" suffix.
+  const markerFor = (item: HarnessItem): string =>
+    provPolicy.label && item.provenance === "agent" ? " (unverified: agent-authored)" : "";
   const taken: Ranked[] = [];
   for (const r of queue) {
-    const cost = estimateTokens(`- [${r.item.id}] ${r.item.content}`, n.charsPerToken);
+    const cost = estimateTokens(
+      `- [${r.item.id}]${markerFor(r.item)} ${r.item.content}`,
+      n.charsPerToken,
+    );
     if (cost <= remaining) {
       remaining -= cost;
       taken.push(r);

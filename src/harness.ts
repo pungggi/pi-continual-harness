@@ -583,12 +583,16 @@ async function handleList(ctx: ExtensionCommandContext, rest: string[]): Promise
     );
     return;
   }
+  // The provenance.label gate rides along (the same knob that hides the
+  // injected block's marker): label:false hides the list chips too.
+  const { provenance } = await loadConfig();
   ctx.ui.notify(
     renderListReport(getState().items, {
       ...(kind ? { kind } : {}),
       ...(scope ? { scope } : {}),
       ...(full ? { full } : {}),
       slug: projectSlug(ctx.cwd),
+      markUnverified: provenance?.label !== false,
     }),
     "info",
   );

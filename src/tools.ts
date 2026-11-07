@@ -181,20 +181,31 @@ export async function executeHarnessMutate(
     };
   }
   const incoming = params.deltas as Delta[];
-  // `support` and `ownerModel` are SERVER-ONLY (support: review r4341960971;
-  // ownerModel: per-model isolation promises the model can never choose the
-  // owner — creates stamp to the active model, updates keep theirs). The
-  // shapes tolerate additional properties, so a schema-valid call could
-  // otherwise carry `support: { citations: 999 }` (fabricated feedback for
-  // the lessons digest) or `ownerModel: "someone/else"` (a cross-model
-  // smuggle). Strip both at the tool boundary — the only model-facing write
-  // path. Internal writers (dedupe merge, keep/drop, outcome loop, direct-
-  // apply proposers) call applyDeltas directly and keep them.
+  // `support`, `ownerModel` and `provenance` are SERVER-ONLY (support: review
+  // r4341960971; ownerModel: per-model isolation promises the model can never
+  // choose the owner — creates stamp to the active model, updates keep theirs;
+  // provenance: the trust class is stamped from the writing SURFACE, never
+  // taken from the model — agent writes can only lose trust, never gain it).
+  // The shapes tolerate additional properties, so a schema-valid call could
+  // otherwise carry `support: { citations: 999 }` (fabricated feedback),
+  // `ownerModel: "someone/else"` (a cross-model smuggle) or
+  // `provenance: "owner"` (a trust upgrade). Strip all three at the tool
+  // boundary — the only model-facing write path. Internal writers (dedupe
+  // merge, keep/drop, outcome loop, direct-apply proposers) call applyDeltas
+  // directly and keep them; the proposers pass authoredBy:"agent" instead.
   const deltas = incoming.map((d): Delta => {
-    if ((d.op === "create" || d.op === "update") && ("support" in d || "ownerModel" in d)) {
-      const copy: Delta & { support?: unknown; ownerModel?: unknown } = { ...d };
+    if (
+      (d.op === "create" || d.op === "update") &&
+      ("support" in d || "ownerModel" in d || "provenance" in d)
+    ) {
+      const copy: Delta & {
+        support?: unknown;
+        ownerModel?: unknown;
+        provenance?: unknown;
+      } = { ...d };
       delete copy.support;
       delete copy.ownerModel;
+      delete copy.provenance;
       return copy;
     }
     return d;
@@ -203,7 +214,11 @@ export async function executeHarnessMutate(
   // scoped to it (per-model isolation). When the active model is unknown (no
   // turn started) there is no actor — creates become orphans, adopted next
   // turn, and update/delete are unscoped (graceful fallback).
-  const applied: AppliedDelta[] = applyDeltas(deltas, makePersist(pi), getActiveModelKey());
+  // authoredBy:"agent" is the trust boundary: everything written through this
+  // tool (creates AND content rewrites) stamps provenance: "agent".
+  const applied: AppliedDelta[] = applyDeltas(deltas, makePersist(pi), getActiveModelKey(), {
+    authoredBy: "agent",
+  });
   const created = applied.filter((a) => a.op === "create").length;
   const updated = applied.filter((a) => a.op === "update").length;
   const deleted = applied.filter((a) => a.op === "delete").length;
