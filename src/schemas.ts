@@ -127,6 +127,10 @@ const ItemSchema = {
     ownerModel: { type: "string" },
     scope: stringEnum(["global", "project"]),
     project: { type: "string" },
+    provenance: stringEnum(["owner", "agent"], {
+      description:
+        'Trust class of the content. Absent = trusted. "agent" = last written by the model itself.',
+    }),
     support: {
       type: "object",
       properties: {
@@ -249,7 +253,7 @@ export function harnessMutateTool(
     name: "harness_mutate",
     label: "Mutate harness state",
     description:
-      "Apply a batch of structured CRUD deltas to the Continual Harness state. Each create requires evidence grounded in trajectory. Prefer many small surgical deltas over wholesale rewrites.",
+      "Apply a batch of structured CRUD deltas to the Continual Harness state. Each create requires evidence grounded in trajectory. Prefer many small surgical deltas over wholesale rewrites. Items you create or rewrite are stamped agent-authored (unverified) server-side; provenance is not model-controllable.",
     promptSnippet: "Propose evidence-backed CRUD deltas to self-improvement state",
     promptGuidelines: [
       "Use harness_mutate during /refine or when you notice a durable, reusable correction. Ground every create in evidence. Prefer small surgical deltas.",

@@ -220,6 +220,13 @@ function applyProposedDeltas(
           : delta;
       }),
       makePersist(pi),
+      undefined,
+      // Proposer-authored writes are agent content: stamp creates AND content
+      // rewrites "agent" so they render unverified and lose budget contention
+      // to trusted (owner) items. Same trust boundary as the harness_mutate
+      // tool; rule-based proposers (dedupe merge) rewrite content too, so a
+      // merged owner item honestly flips to agent.
+      { authoredBy: "agent" },
     );
     ctx.ui.notify(
       `Proposer "${proposerName}" applied ${appliedDeltas.length} delta(s) directly.`,
