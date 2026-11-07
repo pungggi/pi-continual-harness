@@ -222,6 +222,50 @@ describe("selection priority — trusted items win budget contention", () => {
     expect(def.selected.map((i) => i.id)).toEqual(off.selected.map((i) => i.id));
   });
 
+  it("the per-kind cap is trusted-first: 10 agent items cannot crowd out 1 owner item", () => {
+    // Regression (review follow-up): the maxPerKind trim runs BEFORE the
+    // budget pass, so 10 higher-importance agent items used to drop the
+    // owner item at the cap stage — the very crowd-out the priority gate
+    // promises cannot happen, one stage earlier than the token budget.
+    const items = [
+      trusted({ id: "h_owner", content: "owner note", importance: 0.4 }),
+      ...Array.from({ length: 10 }, (_, k) =>
+        trusted({
+          id: `h_a${k}`,
+          content: `agent ${k}`,
+          importance: 0.9,
+          provenance: "agent",
+        }),
+      ),
+    ];
+    const r = selectForInjection(items, MODEL, { maxPerKind: 10, maxTokens: 5000 });
+    expect(r.selected.map((i) => i.id)).toContain("h_owner");
+    expect(r.selected).toHaveLength(10); // 1 owner + 9 of the 10 agent items
+    expect(r.omitted).toBe(1);
+  });
+
+  it("priority: false keeps the pure importance trim at the cap", () => {
+    const items = [
+      trusted({ id: "h_owner", content: "owner note", importance: 0.4 }),
+      ...Array.from({ length: 10 }, (_, k) =>
+        trusted({
+          id: `h_a${k}`,
+          content: `agent ${k}`,
+          importance: 0.9,
+          provenance: "agent",
+        }),
+      ),
+    ];
+    const r = selectForInjection(
+      items,
+      MODEL,
+      { maxPerKind: 10, maxTokens: 5000 },
+      { label: true, priority: false },
+    );
+    expect(r.selected.map((i) => i.id)).not.toContain("h_owner"); // top-10 by importance
+    expect(r.omitted).toBe(1);
+  });
+
   it("enabled: false ignores provenance entirely (legacy store order)", () => {
     const items = [
       trusted({ id: "h_agent", content: "agent note", importance: 0.9, provenance: "agent" }),
@@ -374,6 +418,28 @@ describe("/harness list — provenance chips", () => {
     const full = renderListReport(items, { scope: "all", slug: "", full: true });
     expect(full).toContain("agent-authored (unverified)");
     expect(full).not.toMatch(/h_trust.*unverified/);
+  });
+
+  it("markUnverified: false (the provenance.label gate) hides both chips", () => {
+    const items = [
+      trusted({ id: "h_agent", content: "agent note", provenance: "agent" }),
+      trusted({ id: "h_trust", content: "owner note" }),
+    ];
+    const compact = renderListReport(items, {
+      scope: "all",
+      slug: "",
+      markUnverified: false,
+    });
+    expect(compact).not.toContain("(unverified)");
+    expect(compact).toContain("agent note"); // the row itself stays
+    const full = renderListReport(items, {
+      scope: "all",
+      slug: "",
+      full: true,
+      markUnverified: false,
+    });
+    expect(full).not.toContain("unverified");
+    expect(full).toContain("agent note");
   });
 });
 

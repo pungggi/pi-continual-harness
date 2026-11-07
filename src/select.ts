@@ -15,10 +15,12 @@
 //      isolation, same rule inject.ts always enforced).
 //   2. ORDER  — importance desc; ties keep store/insertion order (stable), so
 //      the highest-fitness notes lead each section.
-//   3. TRUST  — with `provenance.priority` (default on), trusted items fill
-//      the budget BEFORE agent-authored ones (importance order preserved
-//      within each class): an agent note can never crowd an owner note out
-//      of the block. No agent items → queue identical to the pre-trust order.
+//   3. TRUST  — with `provenance.priority` (default on), trusted items win
+//      EVERY contention: they fill each kind's `maxPerKind` slots first AND
+//      the token budget before agent-authored ones (importance order
+//      preserved within each class): an agent note can never crowd an owner
+//      note out of the block. No agent items → queue identical to the
+//      pre-trust order.
 //   4. CAP    — `maxPerKind` (balanced sections: no single kind drowns the
 //      block), then `maxTokens` (total budget). The budget is filled
 //      round-robin across kinds by importance rank, so one kind cannot starve
@@ -154,12 +156,29 @@ export function selectForInjection(
   // Importance desc, stable on store index (ties keep insertion order).
   for (const arr of groups.values()) arr.sort(byImportance);
 
-  // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each kind.
+  // 2a. CAP per kind (maxPerKind): drop the lowest-importance tail of each
+  //     kind. With `provenance.priority` (default on) the trim itself is
+  //     TRUSTED-FIRST: trusted items fill a kind's slots before any
+  //     agent-authored item of that kind does. Without this, a kind holding
+  //     ≥ maxPerKind higher-importance agent items would drop every trusted
+  //     item of that kind here — the very crowd-out the priority gate
+  //     promises cannot happen, just one stage earlier than the budget pass.
+  //     Both classes stay importance-ordered (the arrays are sorted above;
+  //     filtering preserves that order). priority:false keeps the pure
+  //     importance trim.
   let omitted = 0;
   const capped = new Map<ComponentKind, Ranked[]>();
   for (const kind of KIND_ORDER) {
     const arr = groups.get(kind)!;
-    const kept = arr.slice(0, n.maxPerKind);
+    let kept: Ranked[];
+    if (provPolicy.priority) {
+      const trusted = arr.filter((r) => r.item.provenance !== "agent");
+      const agent = arr.filter((r) => r.item.provenance === "agent");
+      const trustedKept = trusted.slice(0, n.maxPerKind);
+      kept = [...trustedKept, ...agent.slice(0, n.maxPerKind - trustedKept.length)];
+    } else {
+      kept = arr.slice(0, n.maxPerKind);
+    }
     omitted += arr.length - kept.length;
     capped.set(kind, kept);
   }

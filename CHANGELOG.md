@@ -32,8 +32,9 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
   `harness.json { "provenance": { "label": true, "priority": true } }`:
   **label** renders agent items as `(unverified: agent-authored)` in the
   injected block (plus one defining intro line, paid only when such an item is
-  surfaced) and `(unverified)` chips in `/harness list`; **priority** fills the
-  injection budget with trusted items first, so an agent note can never crowd
+  surfaced) and `(unverified)` chips in `/harness list` (both hidden by
+  `label: false`); **priority** fills each kind's item slots and the injection
+  budget with trusted items first, so an agent note can never crowd
   an owner note out of the block (stores without agent items queue identically
   to before). The durable file carries a `- provenance: agent` sub-line
   (durable wins on import: hand-deleting the line trusts the item); legacy

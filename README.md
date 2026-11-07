@@ -406,10 +406,11 @@ Two presentation effects, both on by default (`harness.json`):
   `- [h_ab12] (unverified: agent-authored) …`, with one intro line defining
   the marker (paid only when such an item is actually surfaced). `/harness
   list` rows carry an `(unverified)` chip; `-f` spells it out.
-- **Priority** — trusted items fill the injection budget **first**; agent
-  items only compete for what remains. An agent note can never crowd an owner
-  note out of the block. Stores without agent items queue identically to
-  before.
+- **Priority** — trusted items fill each kind's item slots and the injection
+  budget **first**; agent items only compete for what remains. An agent note
+  can never crowd an owner note out of the block — neither at the per-kind
+  cap nor at the token budget. Stores without agent items queue identically
+  to before.
 
 Stamping always happens regardless of the knobs; they gate only presentation.
 The durable file carries a `  - provenance: agent` sub-line for agent items
