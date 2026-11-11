@@ -202,11 +202,17 @@ function applicableHints(
   // Classifier/gate not fully configured → the cheapest activation lever is
   // invisible to the user. `classifier.model` ALONE changes nothing gating-wise
   // (the gate needs `autoRefine.gate: true` too — review #27), so the hint
-  // stays until both are set and the copy names both keys.
-  if (!config.classifier?.model || config.autoRefine?.gate !== true) {
+  // stays until the gate is on and the copy names the keys. Since auto-
+  // discovery (0.22.0) a classifier may resolve with `classifier.model` unset
+  // (hosted default on pi ≥ 1.5.1 + Copilot auth), so the copy treats the
+  // model as optional.
+  if (
+    config.autoRefine?.gate !== true ||
+    (!config.classifier?.model && config.classifier?.auto === false)
+  ) {
     hints.push({
       id: "classifier-gate",
-      text: 'the auto-refine gate is available: set `classifier.model` and `autoRefine: { "gate": true }` in harness.json so cadenced refines skip when nothing durable happened',
+      text: 'the auto-refine gate is available: set `autoRefine: { "gate": true }` in harness.json so cadenced refines skip when nothing durable happened (a classifier resolves automatically on pi ≥ 1.5.1 with GitHub Copilot; otherwise also set `classifier.model`)',
     });
   }
   // Zero citations ever and the loop is off → the outcome half of the fitness

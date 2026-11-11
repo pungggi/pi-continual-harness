@@ -102,12 +102,18 @@ export interface HarnessConfig {
      *  DEFAULT_REFINE_NOOP_SKIP (3); 0 disables the history gate. */
     refineNoOpSkip?: number;
   };
-  /** Classifier model for the cheap gated paths (pi ≥ 0.99): "provider/id" or
+  /** Classifier for the cheap gated paths (pi ≥ 0.99): "provider/id" or
    *  a bare id of a classifier catalog entry (e.g. "typesafe/jev-latest" or a
-   *  local llama.cpp classifier). When unset or unresolvable, every classifier
-   *  feature degrades to its no-classifier behavior. */
+   *  local llama.cpp classifier). When `model` is unset or unresolvable,
+   *  `auto` (default true) falls back to a hosted zero-setup classifier when
+   *  the registry lists one — pi ≥ 1.5.1 ships
+   *  "github-copilot/microsoft-decision-1" with GitHub Copilot auth. When
+   *  nothing resolves, every classifier feature degrades to its no-classifier
+   *  behavior. */
   classifier?: {
     model?: string | undefined;
+    /** Default true (opt-out). Set false to require an explicit `model`. */
+    auto?: boolean;
   };
   /** Virtual-model binding policy (pi ≥ 0.99). Default "virtual". */
   virtualBinding?: VirtualBinding;
@@ -147,7 +153,7 @@ export const DEFAULT_CONFIG: HarnessConfig = {
     omitStaleDrafts: true,
     refineNoOpSkip: DEFAULT_REFINE_NOOP_SKIP,
   },
-  classifier: { model: undefined },
+  classifier: { model: undefined, auto: true },
   virtualBinding: "virtual",
   proposer: "steering",
   outcomeImportance: { enabled: false, bump: DEFAULT_REF_BUMP },
@@ -215,6 +221,7 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
         typeof over.classifier?.model === "string" && over.classifier.model
           ? over.classifier.model
           : undefined,
+      auto: over.classifier?.auto !== false,
     },
     virtualBinding: over.virtualBinding === "physical" ? "physical" : "virtual",
     proposer: over.proposer ?? "steering",

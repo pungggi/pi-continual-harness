@@ -4,7 +4,10 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  DEFAULT_CLASSIFIER,
+  buildClassify,
   buildGateRequest,
+  discoverClassifierModel,
   gateDecision,
   makeClassifyFn,
   resolveClassifierModel,
@@ -12,6 +15,7 @@ import {
 } from "../src/classify.js";
 
 const jev = { provider: "typesafe", id: "jev-latest" };
+const copilotDecision = { provider: "github-copilot", id: "microsoft-decision-1" };
 
 type FakeRegistry = Parameters<typeof makeClassifyFn>[0];
 
@@ -41,6 +45,59 @@ describe("resolveClassifierModel", () => {
     expect(resolveClassifierModel(registryWith([jev]) as never, undefined)).toBeUndefined();
     expect(resolveClassifierModel(undefined, "typesafe/jev-latest")).toBeUndefined();
     expect(resolveClassifierModel(registryWith([]) as never, "nope")).toBeUndefined();
+  });
+});
+
+describe("discoverClassifierModel (auto-discovery default)", () => {
+  it("resolves the hosted default when the registry lists it; never other entries", () => {
+    expect(discoverClassifierModel(registryWith([jev, copilotDecision]) as never)).toEqual(
+      copilotDecision,
+    );
+    // Only the ONE known-good hosted id is picked, not the first catalog entry.
+    expect(discoverClassifierModel(registryWith([jev]) as never)).toBeUndefined();
+    expect(discoverClassifierModel(registryWith([]) as never)).toBeUndefined();
+    expect(discoverClassifierModel(undefined)).toBeUndefined();
+    expect(DEFAULT_CLASSIFIER).toBe("github-copilot/microsoft-decision-1");
+  });
+});
+
+describe("buildClassify (explicit model > auto-discovery > none)", () => {
+  const questions = {
+    gate: { instructions: "i", trueCriteria: "t", falseCriteria: "f" },
+  };
+  const ctxOf = (reg: FakeRegistry) =>
+    ({ modelRegistry: reg, signal: undefined }) as Parameters<typeof buildClassify>[0];
+
+  it("falls back to discovery when model is unset and auto is on (default)", async () => {
+    const reg = registryWith([copilotDecision], async () => ({
+      stopReason: "stop",
+      answers: { gate: { type: "bool", probability: 0.9 } },
+    }));
+    const fn = buildClassify(ctxOf(reg));
+    expect(fn).toBeDefined();
+    const res = await fn!({ state: {}, questions });
+    expect(res.model).toBe("github-copilot/microsoft-decision-1");
+    expect(res.answers.gate?.value).toBe(true);
+  });
+
+  it("an explicit model always wins over discovery; auto:false requires it", async () => {
+    const reg = registryWith([jev, copilotDecision], async () => ({
+      stopReason: "stop",
+      answers: { gate: { type: "bool", probability: 0.1 } },
+    }));
+    // Explicit jev beats the discovered Copilot entry even with auto on.
+    const explicit = await buildClassify(ctxOf(reg), {
+      model: "typesafe/jev-latest",
+      auto: true,
+    })!({ state: {}, questions });
+    expect(explicit.model).toBe("typesafe/jev-latest");
+    // auto:false + unset model → no classifier at all, even though discovery would hit.
+    expect(buildClassify(ctxOf(reg), { auto: false })).toBeUndefined();
+  });
+
+  it("returns undefined when nothing resolves (no registry / empty catalog)", () => {
+    expect(buildClassify({} as Parameters<typeof buildClassify>[0])).toBeUndefined();
+    expect(buildClassify(ctxOf(registryWith([jev])) as never)).toBeUndefined();
   });
 });
 
