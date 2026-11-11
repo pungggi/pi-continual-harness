@@ -266,6 +266,36 @@ describe("buildStatusReport — contextual hints", () => {
     expect(
       buildStatusReport({ items: [memoryGlobal] }, [], { config: withGate }).hints.map((h) => h.id),
     ).not.toContain("classifier-gate");
+    // Auto-discovery (0.22.0): with `auto` on (default), the gate alone is a
+    // complete config — the hosted classifier may resolve without a model.
+    const gateOnly = cfg({
+      autoRefine: {
+        enabled: true,
+        everyTurns: 100,
+        commit: false,
+        gate: true,
+        omitStaleDrafts: true,
+      },
+    });
+    expect(
+      buildStatusReport({ items: [memoryGlobal] }, [], { config: gateOnly }).hints.map((h) => h.id),
+    ).not.toContain("classifier-gate");
+    // …but auto:false with no model leaves the gate classifier-less → hint stays.
+    const gateOnlyNoAuto = cfg({
+      classifier: { auto: false },
+      autoRefine: {
+        enabled: true,
+        everyTurns: 100,
+        commit: false,
+        gate: true,
+        omitStaleDrafts: true,
+      },
+    });
+    expect(
+      buildStatusReport({ items: [memoryGlobal] }, [], { config: gateOnlyNoAuto }).hints.map(
+        (h) => h.id,
+      ),
+    ).toContain("classifier-gate");
   });
 
   it("each driver appears only while its condition holds", () => {

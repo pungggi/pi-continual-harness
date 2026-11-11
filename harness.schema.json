@@ -71,12 +71,17 @@
     },
     "classifier": {
       "type": "object",
-      "description": "Classifier model for the cheap gated paths.",
+      "description": "Classifier for the cheap gated paths.",
       "additionalProperties": true,
       "properties": {
         "model": {
           "type": "string",
           "description": "\"provider/id\" or a bare id of a classifier catalog entry (e.g. \"typesafe/jev-latest\" or a local llama.cpp classifier). Unset/unresolvable → every classifier feature degrades to its no-classifier behavior."
+        },
+        "auto": {
+          "type": "boolean",
+          "default": true,
+          "description": "When model is unset (default), fall back to a hosted zero-setup classifier when the registry lists one — pi ≥ 1.5.1 ships github-copilot/microsoft-decision-1 with GitHub Copilot auth. Set false to require an explicit model."
         }
       }
     },

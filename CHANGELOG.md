@@ -8,7 +8,32 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
-## [Unreleased]
+## [0.22.0] — 2026-11-11
+
+### Added
+
+- **Classifier auto-discovery** (pi ≥ 1.5.1 interplay): when `classifier.model`
+  is unset, the classifier seam now falls back to a single known-good hosted
+  classifier — `github-copilot/microsoft-decision-1`, shipped by pi 1.5.1+
+  with GitHub Copilot auth — so classifier-confirmed dedupe and the auto-refine
+  gate work with zero setup for Copilot users. Discovery deliberately never
+  picks a local llama.cpp entry (the catalog can list one while no server
+  runs). An explicit `classifier.model` always wins; `"classifier": { "auto":
+  false }` restores explicit-only. `/harness status` and the setup/reminder
+  copy now treat the gate as the only required key when discovery is on.
+- **Determinism contract for the injected block** (pinned by a test): for an
+  unchanged store + config, `renderHarnessBlock` is byte-identical. This is
+  what lets pi 1.5.1+'s Anthropic message threads `continue` a conversation —
+  the thread-prefix hash covers the system prompt, so unchanged harness state
+  rides the server-side thread and the warmed prompt cache, while any harness
+  change mismatches the hash and pi correctly falls back to a full resend.
+  Idle prompt-cache warming (pi 1.5.1) similarly keeps the injected system
+  prefix warm between runs — no package change needed, both verified against
+  the pi-ai 1.5.2 source.
+- Dev dependencies bumped to `@earendil-works/pi-*` `^1.5.2` (runtime peers
+  stay `>=1.2.0`; nothing 1.5-only is imported at runtime).
+
+## [0.21.0] — 2026-11-07
 
 ### Added
 

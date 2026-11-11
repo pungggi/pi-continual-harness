@@ -201,9 +201,9 @@ export const DETAIL_GUIDES: Array<(g: GuideInput) => string> = [
       '  "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },',
       '  "autoRefine": { "enabled": true, "everyTurns": 100, "gate": true, "commit": false },',
       '  "outcomeImportance": { "enabled": true, "bump": 0.03 },',
-      '  "classifier": { "model": "typesafe/jev-latest" }',
+      '  "classifier": { "auto": true }',
       "}",
-      `Guidance: gate (needs classifier.model) spends one cheap yes/no question before each auto-refine, so cadence becomes signal. Durable writes are autonomous in this config: with autoImport on, the layers re-export on every store change (that is what makes /refine output survive into new sessions); commit only adds a flush at each auto-run and matters when autoImport is off. Prefer autoImport off + manual /harness export until you trust the refinements, then opt in. This nudge fires every ${state.everyTurns} completed turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} completed turns).`,
+      `Guidance: gate spends one cheap yes/no question before each auto-refine, so cadence becomes signal. With classifier.auto (default true) and no explicit classifier.model, the hosted github-copilot/microsoft-decision-1 resolves automatically on pi >= 1.5.1 with Copilot auth; otherwise set classifier.model to any classifier catalog entry (e.g. a local llama.cpp classifier). Durable writes are autonomous in this config: with autoImport on, the layers re-export on every store change (that is what makes /refine output survive into new sessions); commit only adds a flush at each auto-run and matters when autoImport is off. Prefer autoImport off + manual /harness export until you trust the refinements, then opt in. This nudge fires every ${state.everyTurns} completed turns and shows a guide every ${state.detailEvery}th reminder (about every ${state.everyTurns * state.detailEvery} completed turns).`,
     ].join("\n"),
 ];
 

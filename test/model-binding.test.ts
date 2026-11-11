@@ -99,6 +99,47 @@ describe("renderHarnessBlock — strict per-model isolation", () => {
     );
     expect(renderHarnessBlock(undefined)).toBe("");
   });
+
+  // pi ≥ 1.5.1 interplay pin (see renderHarnessBlock's DETERMINISM CONTRACT):
+  // Anthropic message threads hash the system prompt into the thread prefix;
+  // an unchanged store must render a byte-identical block or every request
+  // would mismatch the hash and silently degrade to full resends (also
+  // busting the prompt cache). Anything volatile (timestamps, random ids,
+  // unordered iteration) entering the render breaks this test on purpose.
+  it("is byte-stable across renders while the store is unchanged (thread/cache safety)", () => {
+    applyDeltas(
+      [
+        {
+          op: "create",
+          kind: "prompt",
+          content: "note one",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "fact two",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+        {
+          op: "create",
+          kind: "skill",
+          content: "skill three",
+          evidence: "e",
+          ownerModel: "anthropic/sonnet",
+        },
+      ],
+      () => {},
+    );
+    const first = renderHarnessBlock("anthropic/sonnet");
+    const second = renderHarnessBlock("anthropic/sonnet");
+    const third = renderHarnessBlock("anthropic/sonnet", { maxTokens: 10_000 });
+    expect(first).not.toBe("");
+    expect(second).toBe(first);
+    expect(third).toBe(first); // same selection under a non-binding budget too
+  });
 });
 
 describe("before_agent_start bridge + context_with_system render — adopt + cache + isolate", () => {

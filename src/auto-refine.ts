@@ -179,7 +179,7 @@ export async function handleAutoRefineTurnEnd(
 
   // Opt-in classifier gate: cheap yes/no before spending the refine.
   if (config.autoRefine?.gate) {
-    const classify = buildClassify(ctx, config.classifier?.model);
+    const classify = buildClassify(ctx, config.classifier);
     if (classify) {
       const evidence = gatherEvidence(ctx, DEFAULT_LOOKBACK_TURNS);
       const res = await classify(buildGateRequest(evidence));

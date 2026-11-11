@@ -195,7 +195,7 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
   "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
-  "classifier": { "model": "typesafe/jev-latest" },
+  "classifier": { "model": "github-copilot/microsoft-decision-1", "auto": true },
   "virtualBinding": "virtual"
 }
 ```
@@ -218,7 +218,7 @@ schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
 | `remindRefine` | on, every 25 turns | The notify-only `/refine` activation nudge; every 4th one is a detailed educational guide. |
 | `autoRefine` | off, every 100 turns | Opt-in autonomous `/refine` on a cadence; `gate` adds the classifier question, `refineNoOpSkip` the free history gate. |
 | `outcomeImportance` | off, bump 0.03 | Opt-in promotion of items you cite by `[h_xxxx]` tag. Promotion only — never deletes. |
-| `classifier` | unset | Classifier model (pi ≥ 0.99) enabling classifier-confirmed dedupe + the auto-refine gate. |
+| `classifier` | `model` unset, `auto: true` | Classifier enabling classifier-confirmed dedupe + the auto-refine gate. With `auto` (default), an unset `model` auto-resolves the hosted `github-copilot/microsoft-decision-1` on pi ≥ 1.5.1 with Copilot auth; set `model` to pin any classifier, or `auto: false` to require it. |
 | `virtualBinding` | `"virtual"` | Per-model isolation key for router (virtual) models; `"physical"` keys by the routed model. |
 
 The package's autonomous paths (`autoImport`, `autoRefine`, `outcomeImportance`)
@@ -542,8 +542,12 @@ migration; developed and tested against pi 1.5). Implemented:
   config key; the store is never changed by selection. Rendered on **every
   provider request** (`context_with_system`), so a mid-run `harness_mutate`
   shows up on the very next request.
-- **Classifier features (pi ≥ 0.99, opt-in)**: `"classifier": { "model": … }`
-  enables (1) classifier-confirmed dedupe — candidate merge pairs confirmed by
+- **Classifier features (pi ≥ 0.99, opt-in)**: a classifier resolves via
+  `"classifier": { "model": … }`, or — when `model` is unset — via
+  auto-discovery (default on, `"classifier": { "auto": false }` opts out)
+  of the hosted `github-copilot/microsoft-decision-1` that pi ≥ 1.5.1 ships
+  with GitHub Copilot auth. A resolved classifier enables (1)
+  classifier-confirmed dedupe — candidate merge pairs confirmed by
   one batched yes/no call (errors fall back to the rule-based plan) — and (2)
   the auto-refine gate `"autoRefine": { "gate": true }`, which skips a cadenced
   refine when the trajectory holds no durable correction.

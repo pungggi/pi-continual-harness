@@ -148,7 +148,7 @@ export const PRESETS: Record<PresetName, Preset> = {
     description:
       "autoImport on (refinements survive into new sessions) paired with the importRemind awareness reminders.",
     notes: [
-      "Gate-ready: to make refinement signal-driven later, set classifier.model + autoRefine.gate (pi >= 0.99). This preset leaves the gate off.",
+      "Gate-ready: to make refinement signal-driven later, set autoRefine.gate (pi >= 0.99; a classifier resolves automatically on pi >= 1.5.1 with Copilot, else set classifier.model). This preset leaves the gate off.",
     ],
     deltas: recommendedDeltas(),
   },

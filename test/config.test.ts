@@ -202,6 +202,32 @@ describe("config", () => {
     });
   });
 
+  describe("classifier (auto-discovery, 0.22.0)", () => {
+    it("defaults to auto-discovery on with no pinned model", () => {
+      expect(DEFAULT_CONFIG.classifier).toEqual({ model: undefined, auto: true });
+    });
+
+    it("retains auto:true when the file only pins a model", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({ classifier: { model: "typesafe/jev-latest" } }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.classifier).toEqual({ model: "typesafe/jev-latest", auto: true });
+      });
+    });
+
+    it("honors the auto:false opt-out", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ classifier: { auto: false } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.classifier).toEqual({ model: undefined, auto: false });
+      });
+    });
+  });
+
   describe("dedupe (merge policy, 0.10.0)", () => {
     it("DEFAULT_CONFIG ships merge ON at the historical 0.6 threshold", () => {
       expect(DEFAULT_CONFIG.dedupe).toEqual({ threshold: 0.6, merge: true });

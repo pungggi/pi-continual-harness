@@ -187,7 +187,7 @@ async function buildProposeInput(
     complete: buildComplete(ctx),
     // Inject the classifier adapter when `classifier.model` is configured and
     // resolvable (pi ≥ 0.99) — the dedupe proposer uses it to confirm merges.
-    classify: buildClassify(ctx, config.classifier?.model),
+    classify: buildClassify(ctx, config.classifier),
     ownerKey,
     lessons,
     evidence,

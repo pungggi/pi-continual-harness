@@ -97,6 +97,14 @@ export function resetInjectionStats(): void {
  * defining the marker when any such item is surfaced; `priority` is honored
  * inside the selection (trusted items win budget contention).
  *
+ * DETERMINISM CONTRACT: for an unchanged store + config the returned block is
+ * byte-identical (stable item ids, no timestamps, no random ordering — pinned
+ * by test/model-binding.test.ts). This is what lets pi ≥ 1.5.1 Anthropic message
+ * threads `continue` a conversation: the thread-prefix hash covers the system
+ * message, so an unchanged harness rides the server-side thread (and the
+ * warmed prompt cache) while any harness change mismatches the hash and pi
+ * correctly falls back to a full resend. Never add volatile content here.
+ *
  * Note: every non-empty render folds into the session injection stats
  * (InjectionStats above; /harness status surfaces them). Tests that render
  * directly reset with resetInjectionStats().

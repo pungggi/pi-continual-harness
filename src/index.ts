@@ -144,14 +144,18 @@ export {
 } from "./remind.js";
 
 // Classifier seam (pi ≥ 0.99, 0.12.0): the minimal structural ClassifyFn
-// contract proposers see, plus the gate builders (pure, testable).
+// contract proposers see, plus the gate builders (pure, testable) and the
+// auto-discovery default (0.22.0: hosted fallback for unset classifier.model).
 export {
+  DEFAULT_CLASSIFIER,
   buildGateRequest,
+  discoverClassifierModel,
   gateDecision,
   type ClassifyBoolAnswer,
   type ClassifyBoolQuestion,
   type ClassifyBoolResult,
   type ClassifyFn,
+  type ClassifierConfigSlice,
 } from "./classify.js";
 
 // Auto-refine boundary helpers (pi ≥ 0.87, 0.12.0–0.13.0): the steering draft,

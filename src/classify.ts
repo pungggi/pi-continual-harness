@@ -10,6 +10,15 @@
 //  2. dedupe confirmation (proposer.ts): a precision filter on candidate merge
 //     pairs — see classifyConfirmPairs().
 //
+// Model resolution has two tiers (buildClassify): an explicitly configured
+// `classifier.model` always wins; when it is unset, auto-discovery (default on,
+// `classifier.auto: false` opts out) falls back to ONE known hosted classifier —
+// github-copilot/microsoft-decision-1, shipped by pi ≥ 1.5.1 with GitHub
+// Copilot auth — so the gated paths work with zero setup for Copilot users.
+// Discovery deliberately never picks a local llama.cpp entry: the catalog can
+// list one while no server is running, and an unreachable classifier is worse
+// than none (the gates would soft-fail every time).
+//
 // The pi-ai classifier shapes (ClassifierContext/ClassifierQuestion/…) are kept
 // OUT of the public proposer interface: ClassifyFn below is a minimal structural
 // contract so proposers stay testable without pi runtime types.
@@ -106,6 +115,25 @@ export function resolveClassifierModel(
   }) ?? undefined) as ClassifierModelLike | undefined;
 }
 
+/**
+ * The auto-discovered default classifier: a hosted bool/score classifier that
+ * pi ≥ 1.5.1 ships with GitHub Copilot authentication (billed to the user's
+ * Copilot plan; no local server, no extra API key). Keeping this a single
+ * known-good id — not "first classifier in the catalog" — makes discovery
+ * deterministic and reviewable; widen it only deliberately.
+ */
+export const DEFAULT_CLASSIFIER = "github-copilot/microsoft-decision-1";
+
+/**
+ * Auto-discovery fallback for buildClassify: the hosted default above when the
+ * registry lists it, otherwise undefined (degrade to no-classifier behavior).
+ */
+export function discoverClassifierModel(
+  registry: RegistryLike | undefined,
+): ClassifierModelLike | undefined {
+  return resolveClassifierModel(registry, DEFAULT_CLASSIFIER);
+}
+
 /** Build the ClassifyFn adapter over a resolved classifier model. */
 export function makeClassifyFn(
   registry: RegistryLike,
@@ -177,18 +205,31 @@ export function makeClassifyFn(
   };
 }
 
+/** Structural slice of the normalized `classifier` config (config.ts). */
+export interface ClassifierConfigSlice {
+  model?: string | undefined;
+  /** Default true (opt-out): when `model` is unset, fall back to the hosted
+   *  default classifier when the registry lists one. */
+  auto?: boolean;
+}
+
 /**
  * Resolve the ClassifyFn for a session from config + ctx, or undefined.
  * The single construction point shared by refine (ProposeInput.classify) and
- * the auto-refine gate.
+ * the auto-refine gate. An explicit `classifier.model` always wins; with
+ * `auto` (default) an unset model falls back to discovery (see
+ * discoverClassifierModel).
  */
 export function buildClassify(
   ctx: ExtensionContext,
-  configuredModel?: string,
+  classifier?: ClassifierConfigSlice,
 ): ClassifyFn | undefined {
   const registry = ctx.modelRegistry as RegistryLike | undefined;
-  const model = resolveClassifierModel(registry, configuredModel);
-  if (!registry || !model) return undefined;
+  if (!registry) return undefined;
+  const model =
+    resolveClassifierModel(registry, classifier?.model) ??
+    (classifier?.auto !== false ? discoverClassifierModel(registry) : undefined);
+  if (!model) return undefined;
   return makeClassifyFn(registry, model, ctx.signal);
 }
 
