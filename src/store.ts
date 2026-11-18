@@ -22,6 +22,7 @@ import type {
   HarnessState,
   Provenance,
   SupportInfo,
+  TrialDecayPlan,
 } from "./types.js";
 
 /** Resolved durable-layer scope for a parsed item. */
@@ -380,6 +381,36 @@ export function decayAndPrune(
     persist(state, version);
   }
   return { pruned, decayed };
+}
+
+/** Apply one trial-decay pass (see decay.ts for the policy; the PLAN is pure,
+ *  this is the store side). Like decayAndPrune: direct mutation, `updatedAt`
+ *  deliberately NOT touched (a decaying item must not restart its own
+ *  staleness window), persist ONCE and only when something changed (no-op
+ *  idempotency — a quiet pass appends no /tree noise). Items that vanished
+ *  between plan and apply are skipped, not errors. */
+export function applyTrialDecay(
+  plan: TrialDecayPlan,
+  persist: PersistFn,
+): { decayed: number; expired: number } {
+  let decayed = 0;
+  let expired = 0;
+  for (const action of plan.actions) {
+    const item = state.items.find((i) => i.id === action.id);
+    if (!item) continue;
+    if (action.op === "decay") {
+      item.importance = clamp(action.to);
+      decayed += 1;
+    } else {
+      state.items = state.items.filter((i) => i.id !== action.id);
+      expired += 1;
+    }
+  }
+  if (decayed > 0 || expired > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  return { decayed, expired };
 }
 
 /** Nudge an item's importance by delta (clamped to [0,1]) and touch updatedAt.

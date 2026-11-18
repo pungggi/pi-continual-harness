@@ -14,6 +14,7 @@
 
 import { classifyTransition, parseDedupeDelete, walkAuditTrail } from "./corpus.js";
 import { DEFAULT_REF_BUMP, type HarnessConfig } from "./config.js";
+import { isOnTrial } from "./decay.js";
 import type { InjectionStats } from "./inject.js";
 import type { StatusHint } from "./hints.js";
 import type { ComponentKind, HarnessState } from "./types.js";
@@ -184,6 +185,9 @@ export interface StatusReport {
   modelImpact?: ImpactCounts;
   /** Injection stats for this session (band 2), when a render happened. */
   injection?: InjectionStats;
+  /** Count of active on-trial items (unverified, no support yet) — the
+   *  self-grown share of the store that trial decay bounds. */
+  trial: number;
   /** Applicable hints in stable priority order; the caller picks one
    *  (rotation lives in hints.ts — keeps this builder pure). */
   hints: StatusHint[];
@@ -244,6 +248,15 @@ function applicableHints(
       text: "`/harness split` classifies items global vs project in one audited batch",
     });
   }
+  // On-trial items exist but the automatic pass is off → they only ever leave
+  // via manual pruning. The unverified share is the "self-grown state" budget
+  // the trial-decay loop exists to bound.
+  if (active.some((i) => isOnTrial(i)) && config.trialDecay?.enabled !== true) {
+    hints.push({
+      id: "trial-decay",
+      text: `${active.filter((i) => isOnTrial(i)).length} active item(s) are unverified with no support yet — set \`trialDecay: { "enabled": true }\` in harness.json so stale ones decay and expire instead of accumulating`,
+    });
+  }
   return hints;
 }
 
@@ -291,6 +304,7 @@ export function buildStatusReport(
     impact: whole,
     ...(opts.modelKey ? { modelImpact: byOwner.get(opts.modelKey) ?? emptyImpact() } : {}),
     ...(opts.injection ? { injection: opts.injection } : {}),
+    trial: active.filter((i) => isOnTrial(i)).length,
     hints: applicableHints(state, opts.config, whole),
     ...(active.length === 0 ? { zeroState: zeroStateGuidance(items.length) } : {}),
   };
@@ -341,9 +355,18 @@ export function renderStatusReport(
   if (r.injection && r.injection.renders > 0) {
     const inj = r.injection;
     const budget = `~${inj.lastTokens}/${inj.maxTokens} tokens`;
+    const agent =
+      inj.agentSurfaced > 0 ? `, ${inj.agentSurfaced} of them agent-authored (unverified)` : "";
     const omitted = inj.omitted > 0 ? `, ${inj.omitted} omitted by selection` : "";
     lines.push(
-      `Injection: ${inj.renders} render(s) this session, ${inj.surfaced} item(s) surfaced, ${budget}${omitted}.`,
+      `Injection: ${inj.renders} render(s) this session, ${inj.surfaced} item(s) surfaced (${budget}${agent}${omitted}).`,
+    );
+  }
+  // Trial band — the self-grown share (between bands 2 and 3): how many
+  // active items are unverified with no support yet, and what bounds them.
+  if (r.trial > 0) {
+    lines.push(
+      `Trial: ${r.trial} active item(s) unverified with no support yet — they decay toward expiry only while \`trialDecay\` is enabled; \`/harness keep <id>\` confirms one now.`,
     );
   }
   // Band 3 — the rotating one-line hint.

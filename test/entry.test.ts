@@ -1,29 +1,33 @@
 // The thin entry's registration behavior (issue #36) and, most importantly,
 // the turn_end ORDERING INVARIANT: durable sync's export must run BEFORE
-// outcome/auto-refine, so a refine's deltas are visible to that same turn's
-// export check. The order used to live only in a comment; TURN_END_CHAIN is
-// the executable form of it (pinned here so a future insertion cannot
-// silently reorder the chain).
+// outcome/trial-decay/auto-refine, so a refine's deltas are visible to that
+// same turn's export check (and trial-decay runs after outcome so same-turn
+// citations exempt the cited items). The order used to live only in a
+// comment; TURN_END_CHAIN is the executable form of it (pinned here so a
+// future insertion cannot silently reorder the chain).
 
 import { describe, it, expect } from "vitest";
 import continualHarness, { TURN_END_CHAIN } from "../src/entry.js";
 import { makeFakePi } from "./helpers.js";
 
 describe("TURN_END_CHAIN ordering invariant", () => {
-  it("registers the five turn_end subscribers in the load-bearing order", () => {
+  it("registers the six turn_end subscribers in the load-bearing order", () => {
     expect(TURN_END_CHAIN.map((h) => h.name)).toEqual([
       "remind",
-      "auto-export", // durable sync's export BEFORE outcome/auto-refine
+      "auto-export", // durable sync's export BEFORE outcome/trial-decay/auto-refine
       "import-reminder",
       "outcome",
+      "trial-decay", // AFTER outcome: same-turn citations exempt from the pass
       "auto-refine",
     ]);
   });
 
-  it("auto-export precedes outcome and auto-refine", () => {
+  it("auto-export precedes outcome, trial-decay, and auto-refine", () => {
     const names = TURN_END_CHAIN.map((h) => h.name);
     expect(names.indexOf("auto-export")).toBeLessThan(names.indexOf("outcome"));
+    expect(names.indexOf("auto-export")).toBeLessThan(names.indexOf("trial-decay"));
     expect(names.indexOf("auto-export")).toBeLessThan(names.indexOf("auto-refine"));
+    expect(names.indexOf("outcome")).toBeLessThan(names.indexOf("trial-decay"));
   });
 
   it("handler names are unique", () => {

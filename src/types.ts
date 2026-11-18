@@ -143,6 +143,22 @@ export interface HarnessItem {
   updatedAt: number;
 }
 
+/** One trial-decay decision for a stale on-trial item (see decay.ts: active,
+ *  agent-authored, no positive support, older than the staleness gate).
+ *  "decay" steps importance down; "expire" deletes the item — the next step
+ *  would have landed below the prune floor, so the trial failed. */
+export type TrialAction =
+  | { op: "decay"; id: string; from: number; to: number }
+  | { op: "expire"; id: string; from: number };
+
+/** A full trial-decay pass plan: pure input → pure output (planTrialDecay in
+ *  decay.ts); the store applies it via applyTrialDecay. */
+export interface TrialDecayPlan {
+  actions: TrialAction[];
+  /** Stale on-trial items found (== actions.length; kept for readable copy). */
+  stale: number;
+}
+
 export interface HarnessState {
   items: HarnessItem[];
 }

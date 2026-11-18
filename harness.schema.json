@@ -106,6 +106,33 @@
         "bump": { "type": "number", "default": 0.03 }
       }
     },
+    "trialDecay": {
+      "type": "object",
+      "description": "Opt-in turn_end trial-decay pass: stale unverified (agent-authored) items with no positive support decay toward the importance floor and are deleted below it. Owner-authored items are never touched.",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "everyTurns": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20,
+          "description": "Cadence in completed turns between passes. Aborted/error turns are inert."
+        },
+        "afterDays": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 14,
+          "description": "Staleness gate, measured from the item's CREATION (createdAt): an on-trial item older than this starts decaying. Creation is the one timestamp no delta can rewind; only a citation or a /harness keep exempts."
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.05,
+          "description": "Importance lost per pass, applied every pass while the item is stale and unsupported until it expires below the floor."
+        }
+      }
+    },
     "injection": {
       "type": "object",
       "description": "Selection policy for WHAT gets surfaced in the system block each provider request.",

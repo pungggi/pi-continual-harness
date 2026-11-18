@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resetAutoRefine } from "./auto-refine.js";
+import { resetTrialDecay } from "./decay.js";
 import { resetReminder } from "./remind.js";
 import { resetOutcome } from "./outcome.js";
 import { resetDurableSync, syncDurableOnStart } from "./durable.js";
@@ -24,6 +25,7 @@ export async function onSessionStart(pi: ExtensionAPI, ctx: ExtensionContext): P
   // A new/resumed/forked session starts from a fresh cadence baseline: reset
   // the turn_end counters so a fork does not inherit the parent's window.
   resetAutoRefine();
+  resetTrialDecay();
   resetReminder();
   resetOutcome();
   resetDurableSync();

@@ -202,3 +202,20 @@ export {
 // source selection. Re-exported for tests and companion packages without
 // reaching into internal paths.
 export { ADOPT_BATCH_CAP, buildAdoptPrompt, selectAdoptSource } from "./harness.js";
+
+// Trial decay (the expiry half of the provenance trust boundary): the pure
+// planner + eligibility predicates, so companions and tests reuse the exact
+// policy the turn_end pass runs instead of re-implementing it.
+export {
+  hasPositiveSupport,
+  isOnTrial,
+  planTrialDecay,
+  type TrialAction,
+  type TrialDecayOptions,
+  type TrialDecayPlan,
+} from "./decay.js";
+
+// Evidence grounding (self-reported-success detector, the hidden-grader
+// lesson): non-blocking warning for create evidence with no trajectory
+// artifact. Re-exported for tests and companion packages.
+export { groundingWarning } from "./tools.js";

@@ -195,6 +195,7 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
   "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
+  "trialDecay": { "enabled": false, "everyTurns": 20, "afterDays": 14, "step": 0.05 },
   "classifier": { "model": "github-copilot/microsoft-decision-1", "auto": true },
   "virtualBinding": "virtual"
 }
@@ -218,11 +219,12 @@ schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
 | `remindRefine` | on, every 25 turns | The notify-only `/refine` activation nudge; every 4th one is a detailed educational guide. |
 | `autoRefine` | off, every 100 turns | Opt-in autonomous `/refine` on a cadence; `gate` adds the classifier question, `refineNoOpSkip` the free history gate. |
 | `outcomeImportance` | off, bump 0.03 | Opt-in promotion of items you cite by `[h_xxxx]` tag. Promotion only — never deletes. |
+| `trialDecay` | off, every 20 turns / 14 days / step 0.05 | Opt-in trial expiry: stale **unverified** items with no support decay toward the importance floor and are deleted below it ([below](#trial-decay-for-unverified-items)). Owner-authored items are never touched. |
 | `classifier` | `model` unset, `auto: true` | Classifier enabling classifier-confirmed dedupe + the auto-refine gate. With `auto` (default), an unset `model` auto-resolves the hosted `github-copilot/microsoft-decision-1` on pi ≥ 1.5.1 with Copilot auth; set `model` to pin any classifier, or `auto: false` to require it. |
 | `virtualBinding` | `"virtual"` | Per-model isolation key for router (virtual) models; `"physical"` keys by the routed model. |
 
-The package's autonomous paths (`autoImport`, `autoRefine`, `outcomeImportance`)
-are all opt-in and off by default; everything else is notify-only or
+The package's autonomous paths (`autoImport`, `autoRefine`, `outcomeImportance`,
+`trialDecay`) are all opt-in and off by default; everything else is notify-only or
 human-triggered. Removed keys: the store-wide `durableScope` (0.9.0) — items
 carry their own scope (`/harness move`, `/harness split`); see
 [docs/CONFIG.md](docs/CONFIG.md) for the migration note.
@@ -421,6 +423,41 @@ deleting the line is the documented way to trust an item again.
 authority explicit so you can review it; it cannot stop a model that already
 runs commands from writing files or persuading you to import its text.
 
+### Trial decay (for unverified items)
+
+Label and priority bound how agent items are **presented**, but on their own
+they never retire anything: an unverified note with no owner confirmation and
+no organic use lives in the store forever, and a long-lived self-improving
+session accumulates them without bound. The optional `trialDecay` pass is the
+expiry half of the trust boundary:
+
+- **On trial** — an active `provenance: "agent"` item with no positive support
+  yet: no citations (the outcome loop never saw the agent use it) and no
+  `/harness keep`. Being cited or kept once is permanent exemption — the item
+  was re-grounded in a later trajectory or confirmed by the owner.
+- **Decay** — when the pass fires (every `everyTurns` completed turns), each
+  on-trial item older than `afterDays` since its **creation** loses `step`
+  importance. The trial clock is `createdAt`, not `updatedAt`: every update
+  path touches `updatedAt` (rewrites, importance nudges, dedupe merges,
+  imports), so a last-update clock only ever reaped *abandoned* notes — a
+  session that kept touching its own notes never aged out. Creation is the
+  one timestamp no agent delta can rewind, so the only way off the trial is
+  earned: a citation or a keep.
+- **Expire** — the moment the next step would land below the prune floor
+  (0.3), the item is **deleted**: the trial failed. Owner-authored items are
+  never considered — the trusted core is yours to prune, not the loop's.
+
+Why: the recurring failure mode of self-improving harnesses is that self-grown
+state slowly eats the context and attention it was supposed to save; the fix
+is not more checks but a hard lifecycle — unverified additions must *earn*
+retention (a citation, a keep) or expire. Like the other autonomous paths it
+is **off by default**, cadence-gated on completed turns (aborted/error turns
+are inert), persisted through the same branch-local snapshots (`/tree`
+rollback), and quiet on noise: an item's **first** decay and every expiry
+notify once per session; the silent steps between say nothing.
+`/harness status` shows the current on-trial count in its **Trial** band and
+the share of agent-authored items among everything injected this session.
+
 ## Proposers
 
 `/refine` is split into two stages: **propose** (given evidence + state, decide
@@ -520,8 +557,8 @@ migration; developed and tested against pi 1.5). Implemented:
   default; every action visible and `/tree`-rollback-able.
 - Optional config (`~/.pi/agent/harness.json`): the durable-sync opt-in, a
   default-on `turn_end` reminder (notify-only; the activation nudge), and the
-  opt-in `turn_end` auto-refine and outcome-importance loops. The package's
-  autonomous paths stay opt-in and off by default.
+  opt-in `turn_end` auto-refine, outcome-importance, and trial-decay loops. The
+  package's autonomous paths stay opt-in and off by default.
 - **Pluggable delta proposers** with a registry: `steering` (default) and
   `dedupe` (rule-based) shipped; `registerProposer()` for custom ones.
 - **Per-model isolation**: every item is bound to a `provider/id` and injected

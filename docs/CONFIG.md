@@ -18,6 +18,7 @@ wizard instead of hand-editing — see the
   "remindRefine": { "enabled": true, "everyTurns": 25, "detailEvery": 4 },
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
+  "trialDecay": { "enabled": false, "everyTurns": 20, "afterDays": 14, "step": 0.05 },
   "classifier": { "model": "typesafe/jev-latest" },
   "virtualBinding": "virtual"
 }
@@ -150,6 +151,32 @@ keys — `$schema` included — and a `/harness setup` rewrite preserves it.
   deletes, persisted/branchable like `harness_mutate`. Autonomous demotion from
   outcomes is intentionally NOT done (high false-positive); use `/harness drop`,
   `prune --decay`, or the `dedupe` proposer for that.
+- **`trialDecay`** — opt-in autonomous **expiry** loop for unverified items
+  (**off by default**), the completion of the provenance trust boundary:
+  `label` and `priority` bound how agent-authored items are *presented*, this
+  bound how long the unproven ones *stay*. When `enabled`, a `turn_end` pass
+  runs every `everyTurns` completed turns (default 20; aborted/error turns
+  inert) over **on-trial** items — active, `provenance: "agent"`, and with
+  no positive support yet (zero citations and zero `/harness keep`; a single
+  citation or keep exempts an item permanently — drops do not). Each on-trial
+  item older than `afterDays` (default 14) since its **creation** loses `step`
+  importance (default 0.05); when the next step would land below the prune
+  floor (0.3) the item is **deleted** (the trial failed) rather than decayed.
+  The trial clock is `createdAt`, deliberately: every update path touches
+  `updatedAt` (content rewrites, importance nudges, dedupe merges, durable
+  imports), so a last-update clock only ever reaped abandoned notes — a
+  session touching its own notes regularly never aged out. Creation is the
+  one timestamp no agent delta can rewind; only earned support (a citation
+  or a keep) or the owner's trust path (delete the `provenance` line in the
+  durable file) ends a trial. Owner-authored items are never considered —
+  the trusted core is the owner's to prune (`/harness prune --decay`). Every
+  changed pass persists through the same branch-local snapshots as
+  `harness_mutate` (`/tree` rollback); notifications are once per item per
+  session (first decay) plus every expiry. Why:
+  self-improving harnesses accumulate self-grown state until it eats the
+  context it was supposed to save — an expiry trial keeps the unverified
+  share bounded without giving up on genuinely useful agent notes (they earn
+  retention through use).
 
 > **Removed:** the store-wide `durableScope` config key (deprecated 0.9.0,
 > removed now). Items carry their own scope (`/harness move`), and durable I/O

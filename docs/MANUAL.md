@@ -366,15 +366,19 @@ created.
 
 **Injection** summarizes what the harness delivered this session (in-memory,
 reset on `session_start`): renders that served items, items surfaced, the
-last block's estimated-token usage vs `injection.maxTokens`, and how many
-items the selection policy dropped.
+last block's estimated-token usage vs `injection.maxTokens`, how many of the
+surfaced items were **agent-authored** (the unverified share of what you are
+actually reading), and how many items the selection policy dropped. When
+unverified items without support exist, a **Trial** line counts them and
+points at the confirm (`/harness keep <id>`) and expire (`trialDecay`)
+paths.
 
 When the store has **0 active items**, the counts are followed by zero-state
 guidance (run `/refine` after a working session; MANUAL §3's Quick start)
 instead of bare zeros. Finally, one rotating **hint** line cross-promotes an
 under-discovered feature that applies right now (classifier gate, outcome
-loop, `push-mem`, `remindRefine`, `split`) — never the hint shown on the
-previous call. The report builder is pure and exported
+loop, `push-mem`, `remindRefine`, `split`, `trialDecay`) — never the hint
+shown on the previous call. The report builder is pure and exported
 (`buildStatusReport`/`renderStatusReport`, plus the hint library in
 `src/hints.ts`) so companions reuse the same copy source.
 

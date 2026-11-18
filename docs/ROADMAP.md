@@ -292,6 +292,45 @@ Deferred by design: Harness²'s true probe step (re-execute under a candidate
 harness and contrast behavior) needs task re-execution infrastructure this
 package intentionally does not own — a candidate companion package.
 
+## Phase 14 — DONE (main; unreleased) — trial decay + lean metrics (the self-grown-state bound)
+
+Grounded in the failure modes observed in recursive self-improving harnesses
+(the "self-grown checklist ate the time it saved" lesson): unverified state
+that nothing ever retires slowly eats the context and attention it was
+supposed to save. Three scoped additions:
+
+- **Trial decay** (`src/decay.ts`, opt-in `trialDecay` config): the expiry
+  half of the 0.21 provenance boundary. On-trial = active + `provenance:
+  "agent"` + no positive support (citations/keeps exempt permanently — the
+  "re-grounded in later trajectories" signal this package already records).
+  A cadenced turn_end pass steps stale items down (`afterDays` 14 measured
+  from CREATION — `createdAt`, the one timestamp no agent delta can rewind;
+  an `updatedAt` clock would only ever reap abandoned notes — and DELETES
+  below the prune floor (the trial failed). Owner-authored items never
+  considered; pure planner (`planTrialDecay`) held at 100% statement
+  coverage; chain order pinned (outcome → trial-decay, so same-tick citations
+  exempt — also pinned behaviorally in decay.test.ts); notifications once
+  per item per session (first decay) plus every expiry.
+- **Lean metrics in `/harness status`**: a `Trial:` band (on-trial count)
+  plus `agentSurfaced` in the session injection stats — how much of the
+  served block is agent-authored — and a `trial-decay` hint when on-trial
+  items exist and the pass is off. The self-grown share of the store is now
+  visible, not just bounded.
+- **Evidence grounding warning** (`groundingWarning`, non-blocking): create
+  evidence that reads as self-reported success ("worked perfectly") with no
+  trajectory artifact (quote/path/command/code span) draws a warning line in
+  the `harness_mutate` result, and the steering prompt now demands verbatim
+  trajectory grounding. The hidden-grader lesson: outcomes must rest on
+  observable signal, not the agent's own satisfaction.
+
+Cache-stability lesson from the same source was already covered by the 0.22.0
+determinism contract (unchanged store + config → byte-identical block; all
+mutations are turn-boundary or model-initiated) — no change needed.
+
+**Effort:** ~340 lines (src) + 4 new/extended test files (+13 tests).
+**Risk:** low-medium — the new autonomous path is opt-in, cadence-gated,
+rollback-able, and notify-visible; the warning never blocks a write.
+
 ## Future extensions (not on the phase plan)
 
 Two items were flagged during the phases as deferred decisions. Neither needs

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   adoptOrphans,
   applyDeltas,
+  applyTrialDecay,
   bumpImportance,
   decayAndPrune,
   exportDurable,
@@ -243,6 +244,56 @@ describe("listItems", () => {
     expect(listItems("memory")).toHaveLength(1);
     expect(listItems("prompt")).toHaveLength(1);
     expect(listItems()).toHaveLength(2);
+  });
+});
+
+describe("applyTrialDecay (store side of the trial pass)", () => {
+  beforeEach(reset);
+
+  it("applies decay actions without touching updatedAt, and expires by delete", () => {
+    applyDeltas(
+      [
+        { op: "create", kind: "memory", content: "decays", evidence: "e", importance: 0.5 },
+        {
+          op: "create",
+          kind: "memory",
+          content: "expires",
+          evidence: "e",
+          importance: IMPORTANCE_FLOOR,
+        },
+      ],
+      vi.fn(),
+    );
+    const [decays, expires] = getState().items;
+    const persist = vi.fn();
+    const { decayed, expired } = applyTrialDecay(
+      {
+        actions: [
+          { op: "decay", id: decays!.id, from: 0.5, to: 0.45 },
+          { op: "expire", id: expires!.id, from: IMPORTANCE_FLOOR },
+        ],
+        stale: 2,
+      },
+      persist,
+    );
+    expect(decayed).toBe(1);
+    expect(expired).toBe(1);
+    expect(getState().items.map((i) => i.content)).toEqual(["decays"]);
+    expect(getState().items[0]!.importance).toBeCloseTo(0.45);
+    expect(getState().items[0]!.updatedAt).toBe(decays!.updatedAt); // untouched
+    expect(persist).toHaveBeenCalledTimes(1); // ONE persist per pass, not per action
+  });
+
+  it("skips actions whose item vanished between plan and apply; a quiet pass persists nothing", () => {
+    applyDeltas([{ op: "create", kind: "memory", content: "gone", evidence: "e" }], vi.fn());
+    const persist = vi.fn();
+    const res = applyTrialDecay(
+      { actions: [{ op: "decay", id: "h_missing", from: 0.5, to: 0.45 }], stale: 1 },
+      persist,
+    );
+    expect(res).toEqual({ decayed: 0, expired: 0 });
+    expect(persist).not.toHaveBeenCalled(); // no-op idempotency
+    expect(getState().items).toHaveLength(1);
   });
 });
 

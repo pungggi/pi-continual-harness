@@ -7,6 +7,9 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_REF_BUMP,
   DEFAULT_REFINE_NOOP_SKIP,
+  DEFAULT_TRIAL_AFTER_DAYS,
+  DEFAULT_TRIAL_EVERY_TURNS,
+  DEFAULT_TRIAL_STEP,
   defaultScopeForPath,
   layerFilesFor,
   loadConfig,
@@ -153,6 +156,67 @@ describe("config", () => {
         await writeFile(file, JSON.stringify({ outcomeImportance: { bump: NaN } }), "utf8");
         const cfg = await loadConfig(file);
         expect(cfg.outcomeImportance?.bump).toBe(DEFAULT_REF_BUMP);
+      });
+    });
+  });
+
+  describe("trialDecay (opt-in expiry pass for unverified items)", () => {
+    it("DEFAULT_CONFIG ships the pass OFF with conservative defaults", () => {
+      expect(DEFAULT_CONFIG.trialDecay).toEqual({
+        enabled: false,
+        everyTurns: DEFAULT_TRIAL_EVERY_TURNS,
+        afterDays: DEFAULT_TRIAL_AFTER_DAYS,
+        step: DEFAULT_TRIAL_STEP,
+      });
+    });
+
+    it("a missing file yields the resolved trialDecay defaults", async () => {
+      const cfg = await loadConfig(tempFile());
+      expect(cfg.trialDecay).toEqual(DEFAULT_CONFIG.trialDecay);
+    });
+
+    it("merges a partial trialDecay over the defaults", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(file, JSON.stringify({ trialDecay: { enabled: true, step: 0.1 } }), "utf8");
+        const cfg = await loadConfig(file);
+        expect(cfg.trialDecay).toEqual({
+          enabled: true,
+          everyTurns: DEFAULT_TRIAL_EVERY_TURNS, // default retained
+          afterDays: DEFAULT_TRIAL_AFTER_DAYS, // default retained
+          step: 0.1, // overridden
+        });
+      });
+    });
+
+    it("coerces bad numbers back to defaults (comparison operands)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({
+            trialDecay: { enabled: true, everyTurns: 0, afterDays: -5, step: 2 },
+          }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.trialDecay).toEqual({
+          enabled: true,
+          everyTurns: DEFAULT_TRIAL_EVERY_TURNS,
+          afterDays: DEFAULT_TRIAL_AFTER_DAYS,
+          step: DEFAULT_TRIAL_STEP,
+        });
+      });
+    });
+
+    it("enabled must be an explicit true (junk values stay off)", async () => {
+      await withTempDir(async (file) => {
+        await writeFile(
+          file,
+          JSON.stringify({ trialDecay: { enabled: "yes", everyTurns: 5 } }),
+          "utf8",
+        );
+        const cfg = await loadConfig(file);
+        expect(cfg.trialDecay?.enabled).toBe(false);
+        expect(cfg.trialDecay?.everyTurns).toBe(5); // sane sibling retained
       });
     });
   });

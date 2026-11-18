@@ -410,7 +410,14 @@ describe("renderStatusReport", () => {
     const r = buildStatusReport({ items }, [stateEntry([]), stateEntry(items)], {
       config: cfg(),
       modelKey: "test/main",
-      injection: { renders: 3, surfaced: 7, omitted: 2, lastTokens: 612, maxTokens: 1500 },
+      injection: {
+        renders: 3,
+        surfaced: 7,
+        agentSurfaced: 2,
+        omitted: 2,
+        lastTokens: 612,
+        maxTokens: 1500,
+      },
     });
     const hint = nextHint(r.hints)!;
     const text = renderStatusReport(r, { durable: " Durable: global none at ~/.x.", hint });
@@ -421,7 +428,7 @@ describe("renderStatusReport", () => {
     );
     expect(text).toContain("For [test/main]: created 1");
     expect(text).toContain(
-      "Injection: 3 render(s) this session, 7 item(s) surfaced, ~612/1500 tokens, 2 omitted by selection",
+      "Injection: 3 render(s) this session, 7 item(s) surfaced (~612/1500 tokens, 2 of them agent-authored (unverified), 2 omitted by selection)",
     );
     expect(text).toContain(`Hint: ${hint.text}`);
     expect(text).toContain("Durable: global none at ~/.x.");
@@ -439,5 +446,75 @@ describe("renderStatusReport", () => {
   it("omits the injection band before the first served render", () => {
     const r = buildStatusReport({ items: [] }, [], { config: cfg() });
     expect(renderStatusReport(r, { durable: " D" })).not.toContain("Injection:");
+  });
+
+  it("renders the trial band and hint only when on-trial items exist", () => {
+    const agentNote = item({
+      id: "h_2",
+      kind: "memory",
+      content: "self note",
+      ownerModel: "test/main",
+      provenance: "agent",
+    });
+    // Supported agent item + trusted item are NOT on trial; only h_2 is.
+    const items = [
+      agentNote,
+      item({
+        id: "h_3",
+        kind: "memory",
+        content: "cited note",
+        ownerModel: "test/main",
+        provenance: "agent",
+        support: { citations: 1 },
+      }),
+      item({ id: "h_4", kind: "memory", content: "owner note", ownerModel: "test/main" }),
+    ];
+    const r = buildStatusReport({ items }, [stateEntry(items)], {
+      config: cfg(), // trialDecay disabled (the default)
+      modelKey: "test/main",
+    });
+    expect(r.trial).toBe(1);
+    expect(r.hints.map((h) => h.id)).toContain("trial-decay");
+    const text = renderStatusReport(r, { durable: " Durable: x" });
+    expect(text).toContain("Trial: 1 active item(s) unverified with no support yet");
+
+    // Pass enabled → the hint disappears (the loop is bounding it already),
+    // the band stays (it is informational either way).
+    const on = buildStatusReport({ items }, [stateEntry(items)], {
+      config: cfg({ trialDecay: { enabled: true, everyTurns: 5, afterDays: 7, step: 0.05 } }),
+      modelKey: "test/main",
+    });
+    expect(on.trial).toBe(1);
+    expect(on.hints.map((h) => h.id)).not.toContain("trial-decay");
+
+    // All-trusted store → no trial band, no hint.
+    const quiet = buildStatusReport({ items: [items[2]!] }, [stateEntry([items[2]!])], {
+      config: cfg(),
+      modelKey: "test/main",
+    });
+    expect(quiet.trial).toBe(0);
+    expect(quiet.hints.map((h) => h.id)).not.toContain("trial-decay");
+    expect(renderStatusReport(quiet, { durable: " D" })).not.toContain("Trial:");
+  });
+
+  it("agentSurfaced counts unverified items the block actually served", () => {
+    resetInjectionStats();
+    reconstruct([
+      stateEntry([
+        item({
+          id: "h_a",
+          kind: "prompt",
+          content: "agent-authored note",
+          ownerModel: "test/main",
+          provenance: "agent",
+        }),
+        item({ id: "h_b", kind: "prompt", content: "owner note", ownerModel: "test/main" }),
+      ]),
+    ] as unknown as Iterable<unknown>);
+    const block = renderHarnessBlock("test/main");
+    expect(block).toContain("agent-authored note");
+    const s = getInjectionStats()!;
+    expect(s.surfaced).toBe(2);
+    expect(s.agentSurfaced).toBe(1);
   });
 });
