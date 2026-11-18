@@ -436,9 +436,13 @@ expiry half of the trust boundary:
   `/harness keep`. Being cited or kept once is permanent exemption — the item
   was re-grounded in a later trajectory or confirmed by the owner.
 - **Decay** — when the pass fires (every `everyTurns` completed turns), each
-  on-trial item older than `afterDays` since its last update loses `step`
-  importance. `updatedAt` is deliberately not touched, so a stale item keeps
-  stepping down instead of restarting its own window.
+  on-trial item older than `afterDays` since its **creation** loses `step`
+  importance. The trial clock is `createdAt`, not `updatedAt`: every update
+  path touches `updatedAt` (rewrites, importance nudges, dedupe merges,
+  imports), so a last-update clock only ever reaped *abandoned* notes — a
+  session that kept touching its own notes never aged out. Creation is the
+  one timestamp no agent delta can rewind, so the only way off the trial is
+  earned: a citation or a keep.
 - **Expire** — the moment the next step would land below the prune floor
   (0.3), the item is **deleted**: the trial failed. Owner-authored items are
   never considered — the trusted core is yours to prune, not the loop's.
@@ -449,7 +453,8 @@ is not more checks but a hard lifecycle — unverified additions must *earn*
 retention (a citation, a keep) or expire. Like the other autonomous paths it
 is **off by default**, cadence-gated on completed turns (aborted/error turns
 are inert), persisted through the same branch-local snapshots (`/tree`
-rollback), and visible: one notify per pass that changed something.
+rollback), and quiet on noise: an item's **first** decay and every expiry
+notify once per session; the silent steps between say nothing.
 `/harness status` shows the current on-trial count in its **Trial** band and
 the share of agent-authored items among everything injected this session.
 

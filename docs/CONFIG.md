@@ -159,16 +159,20 @@ keys — `$schema` included — and a `/harness setup` rewrite preserves it.
   inert) over **on-trial** items — active, `provenance: "agent"`, and with
   no positive support yet (zero citations and zero `/harness keep`; a single
   citation or keep exempts an item permanently — drops do not). Each on-trial
-  item whose `updatedAt` is older than `afterDays` (default 14) loses `step`
+  item older than `afterDays` (default 14) since its **creation** loses `step`
   importance (default 0.05); when the next step would land below the prune
   floor (0.3) the item is **deleted** (the trial failed) rather than decayed.
-  `updatedAt` is deliberately not touched by the pass, so a stale item keeps
-  stepping down each cadence instead of restarting its own window; a content
-  rewrite (which does touch it) is a re-grounding attempt and starts a fresh
-  trial. Owner-authored items are never considered — the trusted core is the
-  owner's to prune (`/harness prune --decay`). Every changed pass persists
-  through the same branch-local snapshots as `harness_mutate` (`/tree`
-  rollback) and notifies once; a quiet pass persists and says nothing. Why:
+  The trial clock is `createdAt`, deliberately: every update path touches
+  `updatedAt` (content rewrites, importance nudges, dedupe merges, durable
+  imports), so a last-update clock only ever reaped abandoned notes — a
+  session touching its own notes regularly never aged out. Creation is the
+  one timestamp no agent delta can rewind; only earned support (a citation
+  or a keep) or the owner's trust path (delete the `provenance` line in the
+  durable file) ends a trial. Owner-authored items are never considered —
+  the trusted core is the owner's to prune (`/harness prune --decay`). Every
+  changed pass persists through the same branch-local snapshots as
+  `harness_mutate` (`/tree` rollback); notifications are once per item per
+  session (first decay) plus every expiry. Why:
   self-improving harnesses accumulate self-grown state until it eats the
   context it was supposed to save — an expiry trial keeps the unverified
   share bounded without giving up on genuinely useful agent notes (they earn

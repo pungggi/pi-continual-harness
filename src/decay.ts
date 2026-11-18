@@ -12,10 +12,18 @@
 //                support yet (no citations from the outcome loop, no human
 //                /harness keep). Cited/kept items have been re-grounded in
 //                later trajectories, so they are off the hook.
-//   DECAY      — a stale on-trial item (updatedAt older than `afterDays`)
-//                loses `step` importance per cadence fire. updatedAt is NOT
-//                touched (same as decayAndPrune), so a stale item keeps
-//                stepping down instead of restarting its own window.
+//   DECAY      — a stale on-trial item (createdAt older than `afterDays`)
+//                loses `step` importance per cadence fire. The clock is
+//                CREATION, deliberately: every update path touches updatedAt
+//                (content rewrites, importance nudges, dedupe merges, durable
+//                imports), so an updatedAt-keyed trial only ever reaped
+//                ABANDONED notes — a session that kept touching its own
+//                notes never accumulated staleness (the review's finding:
+//                that is exactly the self-maintenance failure this pass
+//                exists to bound). createdAt is the one timestamp no delta
+//                can rewind; the only exemptions are EARNED (a citation or
+//                a keep), and the owner trust path is the durable file's
+//                provenance line (hand-delete → trusted → off trial).
 //   EXPIRE     — when the next step would land below IMPORTANCE_FLOOR, the
 //                item is deleted outright (the trial failed). Owner-authored
 //                items are never touched: the trusted core is the owner's to
@@ -69,7 +77,7 @@ export function isOnTrial(item: HarnessItem): boolean {
 export interface TrialDecayOptions {
   /** ms epoch "now" (defaults to Date.now() — pass explicitly in tests). */
   now?: number;
-  /** Staleness gate in days (default 14). */
+  /** Staleness gate in days, measured from each item's CREATION (default 14). */
   afterDays?: number | undefined;
   /** Importance lost per pass (default 0.05). */
   step?: number | undefined;
@@ -79,9 +87,11 @@ export interface TrialDecayOptions {
  * Plan one trial-decay pass. PURE: state in, decisions out — the store is
  * untouched, so this is fully unit-testable and the caller decides what to do
  * with the plan (the turn_end handler applies it via store.applyTrialDecay).
- * Eligibility is `isOnTrial` + `updatedAt` older than `afterDays`; the next
- * importance is `max(0, importance - step)`, and an item whose next value
- * lands below IMPORTANCE_FLOOR expires (is deleted) instead of decaying.
+ * Eligibility is `isOnTrial` + `createdAt` older than `afterDays` (see the
+ * module header for why creation, not last update, is the trial clock); the
+ * next importance is `max(0, importance - step)`, and an item whose next
+ * value lands below IMPORTANCE_FLOOR expires (is deleted) instead of
+ * decaying.
  */
 export function planTrialDecay(items: HarnessItem[], opts: TrialDecayOptions = {}): TrialDecayPlan {
   const now = opts.now ?? Date.now();
@@ -91,7 +101,7 @@ export function planTrialDecay(items: HarnessItem[], opts: TrialDecayOptions = {
   const actions: TrialAction[] = [];
   for (const item of items) {
     if (!isOnTrial(item)) continue;
-    if (item.updatedAt > cutoff) continue; // fresh trial: not stale yet
+    if (item.createdAt > cutoff) continue; // fresh trial: created recently
     const to = Math.max(0, item.importance - step);
     if (to < IMPORTANCE_FLOOR) {
       actions.push({ op: "expire", id: item.id, from: item.importance });
@@ -107,9 +117,19 @@ export function planTrialDecay(items: HarnessItem[], opts: TrialDecayOptions = {
 // The trial-decay cadence counter (shared implementation — see cadence.ts).
 const cadence = makeTurnCadence();
 
-/** Test/session hook: reset the cadence (fresh session → fresh window). */
+// Session-scoped: item ids whose decay already notified once this session.
+// A long sweep (one item stepping 0.5 → floor across several passes) would
+// otherwise re-notify every pass — notifications are context too (the same
+// lesson that motivated the pass). An item's FIRST decay notifies; every
+// expiry notifies; silent afterwards. Reset with the cadence at
+// session_start.
+const decayNotified = new Set<string>();
+
+/** Test/session hook: reset the cadence and the notify memory (fresh
+ *  session → fresh window, un-notified items). */
 export function resetTrialDecay(): void {
   cadence.reset();
+  decayNotified.clear();
 }
 
 /**
@@ -145,13 +165,20 @@ export async function handleTrialDecayTurnEnd(
     afterDays: config.trialDecay?.afterDays,
     step: config.trialDecay?.step,
   });
-  const { decayed, expired } = applyTrialDecay(plan, makePersist(pi));
-  if (decayed === 0 && expired === 0) return; // quiet no-op: nothing stale
+  const { expired } = applyTrialDecay(plan, makePersist(pi));
+  // Notify memory: first decay per item per session + every expiry.
+  const firstDecays = plan.actions.filter(
+    (a) => a.op === "decay" && !decayNotified.has(a.id),
+  ) as Array<{ op: "decay"; id: string; from: number; to: number }>;
+  for (const a of firstDecays) decayNotified.add(a.id);
+  if (expired === 0 && firstDecays.length === 0) return; // nothing new to say
 
   const step = config.trialDecay?.step ?? DEFAULT_TRIAL_STEP;
   const parts: string[] = [];
-  if (decayed > 0) {
-    parts.push(`${decayed} stale unverified item(s) decayed (−${step.toFixed(2)} importance)`);
+  if (firstDecays.length > 0) {
+    parts.push(
+      `${firstDecays.length} stale unverified item(s) now decaying (−${step.toFixed(2)} per pass)`,
+    );
   }
   if (expired > 0) {
     parts.push(`${expired} expired (trial failed — below the importance floor, deleted)`);

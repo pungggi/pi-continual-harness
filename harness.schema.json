@@ -122,14 +122,14 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "default": 14,
-          "description": "Staleness gate: an on-trial item older than this (since updatedAt) starts decaying."
+          "description": "Staleness gate, measured from the item's CREATION (createdAt): an on-trial item older than this starts decaying. Creation is the one timestamp no delta can rewind; only a citation or a /harness keep exempts."
         },
         "step": {
           "type": "number",
           "exclusiveMinimum": 0,
           "maximum": 1,
           "default": 0.05,
-          "description": "Importance lost per pass. updatedAt is not touched, so a stale item keeps stepping down."
+          "description": "Importance lost per pass, applied every pass while the item is stale and unsupported until it expires below the floor."
         }
       }
     },

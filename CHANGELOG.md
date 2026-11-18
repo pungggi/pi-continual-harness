@@ -14,15 +14,17 @@ the git tags (`git tag -l`) and the [GitHub release history](https://github.com/
 
 - **Trial decay** (opt-in `trialDecay` in harness.json): the expiry half of
   the provenance trust boundary. On-trial items — active, agent-authored,
-  with no positive support yet — decay (`afterDays` 14, `step` 0.05) on a
-  cadenced turn_end pass and are **deleted** once the next step would land
-  below the prune floor. A single citation or `/harness keep` exempts an item
-  permanently (re-grounded / owner-confirmed); owner-authored items are never
+  with no positive support yet — decay (`afterDays` 14, measured from
+  creation: every update path touches `updatedAt`, so a last-update clock
+  only reaps abandoned notes; `step` 0.05) on a cadenced turn_end pass and
+  are **deleted** once the next step would land below the prune floor. A
+  single citation or `/harness keep` exempts an item permanently
+  (re-grounded / owner-confirmed); owner-authored items are never
   considered. Pure planner (`planTrialDecay`, exported) + store applier
   (`applyTrialDecay`); persisted via the same branch-local snapshots (`/tree`
-  rollback), notify-visible per changed pass, quiet no-op otherwise. Runs
-  after the outcome handler in the turn_end chain so same-tick citations
-  exempt their items.
+  rollback); an item's first decay and every expiry notify once per session,
+  silent steps between. Runs after the outcome handler in the turn_end chain
+  so same-tick citations exempt their items.
 - **Lean metrics in `/harness status`**: a new `Trial:` band (active
   unverified-with-no-support count), `agentSurfaced` in the session injection
   stats (how much of the served block is agent-authored), and a `trial-decay`

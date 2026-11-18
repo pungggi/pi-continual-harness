@@ -130,9 +130,12 @@ export function validateDeltas(raw: unknown): string | undefined {
 const SELF_PRAISE =
   /\b(worked|works|working|went)\s+(perfectly|great|flawlessly|smoothly)\b|\bflawless(ly)?\b|\bgreat success\b|\beverything (passed|works|worked)\b|\ball (tests|checks) pass(ed)?\b|\bno issues (at all|whatsoever)\b/i;
 
-/** Characters that mark quoted trajectory material: quotes, code spans,
- *  path/command separators. Any one of them counts as grounding. */
-const GROUNDING_ARTIFACT = /["'`/\\]/;
+/** Characters that mark quoted trajectory material: double quotes, code
+ *  spans, path/command separators. Any one of them counts as grounding.
+ *  The bare apostrophe is deliberately excluded: a contraction ("it's
+ *  working great") is not a quote, and treating it as grounding would
+ *  suppress the warning on exactly the evidence it exists to flag. */
+const GROUNDING_ARTIFACT = /["`/\\]/;
 
 /** Warning for evidence that reads as self-reported success without any
  *  trajectory artifact. Undefined when the evidence looks grounded (or is

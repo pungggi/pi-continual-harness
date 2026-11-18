@@ -303,12 +303,14 @@ supposed to save. Three scoped additions:
   half of the 0.21 provenance boundary. On-trial = active + `provenance:
   "agent"` + no positive support (citations/keeps exempt permanently — the
   "re-grounded in later trajectories" signal this package already records).
-  A cadenced turn_end pass steps stale items down (`afterDays` 14, `step`
-  0.05, `updatedAt` untouched so the window never self-restarts) and DELETES
+  A cadenced turn_end pass steps stale items down (`afterDays` 14 measured
+  from CREATION — `createdAt`, the one timestamp no agent delta can rewind;
+  an `updatedAt` clock would only ever reap abandoned notes — and DELETES
   below the prune floor (the trial failed). Owner-authored items never
   considered; pure planner (`planTrialDecay`) held at 100% statement
   coverage; chain order pinned (outcome → trial-decay, so same-tick citations
-  exempt).
+  exempt — also pinned behaviorally in decay.test.ts); notifications once
+  per item per session (first decay) plus every expiry.
 - **Lean metrics in `/harness status`**: a `Trial:` band (on-trial count)
   plus `agentSurfaced` in the session injection stats — how much of the
   served block is agent-authored — and a `trial-decay` hint when on-trial

@@ -364,6 +364,9 @@ describe("evidence grounding warning (self-reported-success detector)", () => {
       "great success overall",
       "all tests pass, item proven",
       "went smoothly end to end",
+      // Contractions are not quotes: the bare apostrophe is deliberately NOT
+      // a grounding artifact, so this self-praise still warns.
+      "it's working great",
     ]) {
       expect(groundingWarning(evidence)).toMatch(/self-reported success/);
     }
