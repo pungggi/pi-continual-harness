@@ -152,6 +152,7 @@ export function buildSteeringPrompt(evidence: string, lookback: number, lessons?
     scoped,
     "",
     "Constraints: never rewrite the whole store; ground every change in evidence; if nothing durable is worth recording, say so and do nothing.",
+    'Evidence must point at the trajectory itself — a command, a path, a verbatim line, an error — never self-reported success ("worked perfectly" with nothing quoted is not evidence).',
     ...(lessons ? ["", lessons] : []),
     "",
     "## Trajectory evidence",

@@ -65,6 +65,9 @@ export interface InjectionStats {
   renders: number;
   /** Items surfaced across those renders (sum of the selection's `selected`). */
   surfaced: number;
+  /** Of the surfaced items, how many were agent-authored (unverified) —
+   *  the "how much of my context is self-grown" share. */
+  agentSurfaced: number;
   /** Items the selection policy dropped across those renders. */
   omitted: number;
   /** Estimated tokens of the LAST injected block (intro + headers + items). */
@@ -157,7 +160,13 @@ export function renderHarnessBlock(
     );
   }
   const block = lines.join("\n");
-  recordInjectionStats(block, selected.length, omitted, cfg);
+  recordInjectionStats(
+    block,
+    selected.length,
+    omitted,
+    cfg,
+    selected.filter((i) => i.provenance === "agent").length,
+  );
   return block;
 }
 
@@ -167,11 +176,13 @@ function recordInjectionStats(
   surfaced: number,
   omitted: number,
   cfg?: InjectionConfig,
+  agentSurfaced = 0,
 ): void {
   const n = normalizeInjection(cfg);
   stats = {
     renders: (stats?.renders ?? 0) + 1,
     surfaced: (stats?.surfaced ?? 0) + surfaced,
+    agentSurfaced: (stats?.agentSurfaced ?? 0) + agentSurfaced,
     omitted: (stats?.omitted ?? 0) + omitted,
     lastTokens: estimateTokens(block, n.charsPerToken),
     maxTokens: n.maxTokens,

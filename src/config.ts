@@ -32,6 +32,12 @@ export const DEFAULT_EVERY_TURNS = 25;
 export const DEFAULT_AUTO_EVERY_TURNS = 100;
 /** Default per-reference importance bump for the opt-in outcome loop. */
 export const DEFAULT_REF_BUMP = 0.03;
+/** Default cadence (completed turns) between trial-decay passes (decay.ts). */
+export const DEFAULT_TRIAL_EVERY_TURNS = 20;
+/** Default staleness gate (days) before an on-trial item starts decaying. */
+export const DEFAULT_TRIAL_AFTER_DAYS = 14;
+/** Default importance lost per trial-decay pass. */
+export const DEFAULT_TRIAL_STEP = 0.05;
 /** History-gate default: a cadenced auto-refine is skipped when the last N
  *  refine runs (any source) were ALL ineffective — no deltas applied and no
  *  state mutation followed. 0 disables the gate (autoRefine.refineNoOpSkip). */
@@ -55,6 +61,19 @@ export interface NormalizedDedupe {
   /** Merge duplicates into the keeper (evidence union) instead of delete-only.
    *  Default true; `false` restores the pre-0.10 delete-only behavior. */
   merge: boolean;
+}
+
+/** Resolved trial-decay policy (opt-in autonomous pass, see decay.ts).
+ *  Populated by loadConfig, so the value here is always fully-populated. */
+export interface NormalizedTrialDecay {
+  /** Master switch. Default false (autonomous mutation is opt-in). */
+  enabled: boolean;
+  /** Cadence in completed turns between passes. Default 20. */
+  everyTurns: number;
+  /** Staleness gate in days before an on-trial item starts decaying. Default 14. */
+  afterDays: number;
+  /** Importance lost per pass. Default 0.05. */
+  step: number;
 }
 
 export interface HarnessConfig {
@@ -135,6 +154,9 @@ export interface HarnessConfig {
   /** Dedupe proposer policy (merge-capable). Resolved by loadConfig, so the
    *  value here is always fully-populated. See src/proposer.ts. */
   dedupe?: NormalizedDedupe;
+  /** Trial decay for unverified items (opt-in). Resolved by loadConfig, so
+   *  the value here is always fully-populated. See src/decay.ts. */
+  trialDecay?: NormalizedTrialDecay;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
@@ -161,6 +183,15 @@ export const DEFAULT_CONFIG: HarnessConfig = {
   // near-duplicate merges into its keeper (evidence unioned) instead of being
   // deleted cold. `merge: false` restores delete-only.
   dedupe: { threshold: DEDUPE_THRESHOLD, merge: true },
+  // OFF by default: unverified agent items stay until the owner prunes. When
+  // enabled, stale unsupported agent items decay per cadence and expire below
+  // the importance floor (see src/decay.ts).
+  trialDecay: {
+    enabled: false,
+    everyTurns: DEFAULT_TRIAL_EVERY_TURNS,
+    afterDays: DEFAULT_TRIAL_AFTER_DAYS,
+    step: DEFAULT_TRIAL_STEP,
+  },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
   // `injection.enabled: false`. See src/select.ts.
@@ -250,6 +281,15 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       threshold: coerceThreshold(over.dedupe?.threshold),
       merge: over.dedupe?.merge !== false,
     },
+    // Defensive like every resolved block: bad types fall back to the
+    // defaults, never throw — a malformed trialDecay object must not take the
+    // whole config (or the session) down with it.
+    trialDecay: {
+      enabled: over.trialDecay?.enabled === true,
+      everyTurns: coerceMinTurns(over.trialDecay?.everyTurns, DEFAULT_TRIAL_EVERY_TURNS),
+      afterDays: coercePositive(over.trialDecay?.afterDays, DEFAULT_TRIAL_AFTER_DAYS),
+      step: coerceUnitInterval(over.trialDecay?.step, DEFAULT_TRIAL_STEP),
+    },
   };
 }
 
@@ -275,9 +315,21 @@ function coerceBump(raw: unknown): number {
  *  out-of-range or non-numeric values must degrade to the default rather than
  *  silently matching everything (0/-1) or nothing (>1). */
 function coerceThreshold(raw: unknown): number {
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1
-    ? raw
-    : DEDUPE_THRESHOLD;
+  return coerceUnitInterval(raw, DEDUPE_THRESHOLD);
+}
+
+/** Coerce to a finite number in (0,1] against an explicit default (shared by
+ *  the dedupe threshold and the trial-decay step — both comparison/arithmetic
+ *  operands where 0 would match/do everything and >1 nothing). */
+function coerceUnitInterval(raw: unknown, def: number): number {
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : def;
+}
+
+/** Coerce a user-provided positive number (days), else the default. Days feed
+ *  a subtraction against `now` — 0 or negative would mark everything stale at
+ *  once, NaN never fires; both degrade to the default instead. */
+function coercePositive(raw: unknown, def: number): number {
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : def;
 }
 
 /** Result of a reviewed config write (see saveConfig). */

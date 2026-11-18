@@ -63,6 +63,7 @@ describe("presets (pure data)", () => {
       "remindRefine",
       "autoRefine",
       "outcomeImportance",
+      "trialDecay",
     ]);
     for (const d of quiet.deltas) {
       if (d.path === "remindRefine") continue; // the deliberate exception

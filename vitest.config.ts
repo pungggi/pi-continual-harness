@@ -22,6 +22,7 @@ export default defineConfig({
         "src/lessons.ts": { statements: 100 },
         "src/cadence.ts": { statements: 100 },
         "src/vmodel.ts": { statements: 100 },
+        "src/decay.ts": { statements: 100 },
       },
     },
   },

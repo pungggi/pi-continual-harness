@@ -116,6 +116,37 @@ export function validateDeltas(raw: unknown): string | undefined {
   return undefined;
 }
 
+// ---- evidence grounding (self-reported-success detector) -------------------
+//
+// The hidden-grader lesson: an item's "evidence" must rest on observable
+// trajectory signal, not on the agent's own satisfaction. Self-congratulatory
+// evidence ("worked perfectly", "great success") with NO grounding artifact
+// (no quote, path, command, or code span) is the signature of a note that
+// records enthusiasm rather than fact. Non-blocking by design: a heuristic
+// must not reject a legitimate write on a phrase match — it warns in the tool
+// result, teaching the boundary on the very next call.
+
+/** Self-reported-success phrases (case-insensitive, word-boundary). */
+const SELF_PRAISE =
+  /\b(worked|works|working|went)\s+(perfectly|great|flawlessly|smoothly)\b|\bflawless(ly)?\b|\bgreat success\b|\beverything (passed|works|worked)\b|\ball (tests|checks) pass(ed)?\b|\bno issues (at all|whatsoever)\b/i;
+
+/** Characters that mark quoted trajectory material: quotes, code spans,
+ *  path/command separators. Any one of them counts as grounding. */
+const GROUNDING_ARTIFACT = /["'`/\\]/;
+
+/** Warning for evidence that reads as self-reported success without any
+ *  trajectory artifact. Undefined when the evidence looks grounded (or is
+ *  not self-congratulatory in the first place). Pure; exported for tests. */
+export function groundingWarning(evidence: string): string | undefined {
+  if (!SELF_PRAISE.test(evidence)) return undefined;
+  if (GROUNDING_ARTIFACT.test(evidence)) return undefined;
+  return (
+    "evidence reads as self-reported success with no trajectory artifact " +
+    "(no quote, path, command, or code span) — ground it in what actually " +
+    "happened: a verbatim line, a command, an error, or a file"
+  );
+}
+
 /** harness_list execute: list items, optionally filtered. */
 export async function executeHarnessList(
   params: HarnessListParams,
@@ -210,6 +241,15 @@ export async function executeHarnessMutate(
     }
     return d;
   });
+  // Evidence-grounding warnings (non-blocking): scan CREATE deltas for
+  // self-reported success with no trajectory artifact and surface the note
+  // in the result, teaching the boundary without rejecting the write.
+  const warnings: string[] = [];
+  deltas.forEach((d, i) => {
+    if (d.op !== "create") return;
+    const w = groundingWarning(d.evidence);
+    if (w) warnings.push(`delta ${i + 1}: ${w}`);
+  });
   // The active model is the ACTOR: creates bind to it, and update/delete are
   // scoped to it (per-model isolation). When the active model is unknown (no
   // turn started) there is no actor — creates become orphans, adopted next
@@ -226,10 +266,14 @@ export async function executeHarnessMutate(
     content: [
       {
         type: "text",
-        text: `Applied ${applied.length} delta(s): ${created} created, ${updated} updated, ${deleted} deleted.`,
+        text:
+          `Applied ${applied.length} delta(s): ${created} created, ${updated} updated, ${deleted} deleted.` +
+          (warnings.length > 0
+            ? `\nWarning (${warnings.length}):\n- ${warnings.join("\n- ")}`
+            : ""),
       },
     ],
-    details: { applied, version: getState().items.length },
+    details: { applied, warnings, version: getState().items.length },
     structuredContent: { applied: applied.length, created, updated, deleted },
   };
 }

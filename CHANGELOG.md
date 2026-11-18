@@ -8,6 +8,31 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Trial decay** (opt-in `trialDecay` in harness.json): the expiry half of
+  the provenance trust boundary. On-trial items — active, agent-authored,
+  with no positive support yet — decay (`afterDays` 14, `step` 0.05) on a
+  cadenced turn_end pass and are **deleted** once the next step would land
+  below the prune floor. A single citation or `/harness keep` exempts an item
+  permanently (re-grounded / owner-confirmed); owner-authored items are never
+  considered. Pure planner (`planTrialDecay`, exported) + store applier
+  (`applyTrialDecay`); persisted via the same branch-local snapshots (`/tree`
+  rollback), notify-visible per changed pass, quiet no-op otherwise. Runs
+  after the outcome handler in the turn_end chain so same-tick citations
+  exempt their items.
+- **Lean metrics in `/harness status`**: a new `Trial:` band (active
+  unverified-with-no-support count), `agentSurfaced` in the session injection
+  stats (how much of the served block is agent-authored), and a `trial-decay`
+  hint when on-trial items exist while the pass is off.
+- **Evidence grounding warning** (non-blocking): `harness_mutate` create
+  evidence that reads as self-reported success with no trajectory artifact
+  ("worked perfectly", no quote/path/command/code span) now draws a warning
+  in the tool result; the `/refine` steering prompt demands verbatim trajectory
+  grounding. Exposed as `groundingWarning` for companions.
+
 ## [0.22.0] — 2026-11-11
 
 ### Added

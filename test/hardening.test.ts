@@ -15,7 +15,7 @@ import {
   reconstructFromDurable,
   setActiveModelKey,
 } from "../src/store.js";
-import { executeHarnessMutate, validateDeltas } from "../src/tools.js";
+import { executeHarnessMutate, groundingWarning, validateDeltas } from "../src/tools.js";
 import { runHarnessCommand } from "../src/harness.js";
 import { handleAutoExportTurnEnd, resetDurableSync, syncDurableOnStart } from "../src/durable.js";
 import { loadConfig, resetConfigCache } from "../src/config.js";
@@ -348,6 +348,69 @@ describe("harness_mutate boundary guard (validateDeltas)", () => {
     const item = getState().items[0]!;
     expect(item.ownerModel).toBe("test/main"); // never the smuggled key
     setActiveModelKey(undefined);
+  });
+});
+
+describe("evidence grounding warning (self-reported-success detector)", () => {
+  beforeEach(() => {
+    reconstruct([]);
+    setActiveModelKey(undefined);
+  });
+
+  it("flags self-praise with no trajectory artifact", () => {
+    for (const evidence of [
+      "the fix worked perfectly",
+      "Everything works now",
+      "great success overall",
+      "all tests pass, item proven",
+      "went smoothly end to end",
+    ]) {
+      expect(groundingWarning(evidence)).toMatch(/self-reported success/);
+    }
+  });
+
+  it("stays silent for grounded evidence, neutral evidence, and updates", () => {
+    // Self-praise BUT grounded (quotes/paths/commands/code count as artifacts):
+    expect(groundingWarning('worked perfectly: `npm test` printed "12 passed"')).toBeUndefined();
+    expect(groundingWarning("worked great — fixed src/foo.ts line 42")).toBeUndefined();
+    // Neutral, factual evidence never warns:
+    expect(groundingWarning("user asked for tabs in the config file")).toBeUndefined();
+    expect(groundingWarning("")).toBeUndefined();
+  });
+
+  it("is non-blocking: the create applies AND the result carries the warning", async () => {
+    reconstruct([]);
+    const { pi } = makeFakePi([]);
+    const res = (await executeHarnessMutate(pi, {
+      deltas: [
+        {
+          op: "create",
+          kind: "memory",
+          content: "always run the full suite",
+          evidence: "the fix worked perfectly on the first try",
+        },
+      ],
+    })) as unknown as {
+      content: Array<{ type: string; text: string }>;
+      details: { warnings: string[] };
+    };
+    expect(getState().items).toHaveLength(1); // applied, not rejected
+    expect(res.content[0]!.text).toMatch(/Applied 1 delta/);
+    expect(res.content[0]!.text).toMatch(/delta 1: evidence reads as self-reported success/);
+    expect(res.details.warnings).toHaveLength(1);
+  });
+
+  it("update deltas never trigger the warning (evidence replaces, not creates)", async () => {
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "c", evidence: "e", ownerModel: "" }],
+      () => {},
+    );
+    const id = getState().items[0]!.id;
+    const { pi } = makeFakePi([]);
+    const res = (await executeHarnessMutate(pi, {
+      deltas: [{ op: "update", id, evidence: "the rewrite worked perfectly" }],
+    })) as unknown as { content: Array<{ type: string; text: string }> };
+    expect(res.content[0]!.text).not.toMatch(/Warning/);
   });
 });
 

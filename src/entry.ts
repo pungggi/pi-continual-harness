@@ -45,9 +45,11 @@ interface TurnEndHandler {
 }
 
 /** The turn_end chain in REGISTRATION ORDER. The order is load-bearing:
- *  durable sync's export must run BEFORE outcome/auto-refine — a refine's
- *  deltas must be visible to that same turn's export check, not the next
- *  one's. This array is the single definition; test/entry.test.ts pins the
+ *  durable sync's export must run BEFORE outcome/trial-decay/auto-refine — a
+ *  refine's deltas must be visible to that same turn's export check, not the
+ *  next one's — and trial-decay runs AFTER outcome so citations earned THIS
+ *  turn (positive support) exempt the cited items from the same tick's decay
+ *  pass. This array is the single definition; test/entry.test.ts pins the
  *  order so a future insertion cannot silently reorder it. */
 export const TURN_END_CHAIN: TurnEndHandler[] = [
   {
@@ -68,6 +70,11 @@ export const TURN_END_CHAIN: TurnEndHandler[] = [
     name: "outcome",
     run: (pi, event, ctx) =>
       import("./outcome.js").then((m) => m.handleOutcomeTurnEnd(pi, event, ctx)),
+  },
+  {
+    name: "trial-decay",
+    run: (pi, event, ctx) =>
+      import("./decay.js").then((m) => m.handleTrialDecayTurnEnd(pi, event, ctx)),
   },
   {
     name: "auto-refine",

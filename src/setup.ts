@@ -140,6 +140,11 @@ export const PRESETS: Record<PresetName, Preset> = {
         value: clone(DEFAULT_CONFIG.outcomeImportance),
         rationale: "Autonomous importance promotion stays off.",
       },
+      {
+        path: "trialDecay",
+        value: clone(DEFAULT_CONFIG.trialDecay),
+        rationale: "Autonomous trial decay (unverified-item expiry) stays off.",
+      },
     ],
   },
   recommended: {
