@@ -14,6 +14,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIND_LABEL, KIND_ORDER } from "./types.js";
+import { detectRecreate, recordRemoval } from "./tombstones.js";
 import type {
   AppliedDelta,
   ComponentKind,
@@ -165,11 +166,17 @@ function applyOne(
       // Durable-layer scope: global unless the delta says project (which
       // requires a slug — explicit or the cached session slug).
       scope: "global",
+      ...(delta.check ? { check: delta.check } : {}),
       createdAt: now,
       updatedAt: now,
     };
     applyDeltaScope(item, delta);
     if (opts?.authoredBy) item.provenance = opts.authoredBy;
+    // Recreate detection (tombstones.ts): a create whose content matches a
+    // recent removal of the SAME correction carries the lineage's recreate
+    // count — server-side support, like every counter (never model-writable).
+    const recreates = detectRecreate(delta.kind, delta.content);
+    if (recreates !== undefined) item.support = { recreates };
     state.items.push(item);
     return { op: "create", item };
   }
@@ -193,13 +200,28 @@ function applyOne(
       // Server-side only (dedupe carries absorbed support onto the keeper);
       // the model-facing tool schema does not expose it.
       support: delta.support ?? before.support,
+      // Verification command: replace-or-clear ("" clears), like every
+      // optional field.
+      ...(delta.check !== undefined
+        ? delta.check === ""
+          ? { check: undefined }
+          : { check: delta.check }
+        : { check: before.check }),
       updatedAt: Date.now(),
     };
     applyDeltaScope(after, delta);
     // Provenance follows the last CONTENT write: an agent-authored rewrite
     // makes the current text agent-authored, so the item loses trust. Updates
-    // without content (importance/active/scope/support) never flip it.
-    if (opts?.authoredBy && delta.content !== undefined) after.provenance = opts.authoredBy;
+    // without content (importance/active/scope/support) never flip it. A
+    // `check` write flips it too (0.24.0): a check is EXECUTABLE content —
+    // an agent-authored command must not ride a trusted item into the
+    // auto-run path (checks.ts gates on provenance), so writing one from an
+    // agent surface demotes the item exactly like a content rewrite.
+    if (
+      opts?.authoredBy &&
+      (delta.content !== undefined || delta.check !== undefined)
+    )
+      after.provenance = opts.authoredBy;
     state.items[idx] = after;
     return { op: "update", before, after };
   }
@@ -208,6 +230,17 @@ function applyOne(
   const idx = state.items.findIndex((i) => i.id === delta.id);
   if (idx < 0) throw new Error(`delete: no item with id ${delta.id}`);
   assertOwnsItem("delete", delta.id, state.items[idx]!, actorModel);
+  // Tombstone the removal (recreate detection): kind + content + whatever
+  // recreate count the lineage already had, so a later near-identical create
+  // carries the FULL history (see tombstones.ts).
+  const removed = state.items[idx]!;
+  recordRemoval([
+    {
+      kind: removed.kind,
+      content: removed.content,
+      recreates: removed.support?.recreates,
+    },
+  ]);
   state.items.splice(idx, 1);
   return { op: "delete", id: delta.id, reason: delta.reason };
 }
@@ -319,6 +352,9 @@ function normalizeItem(raw: unknown): HarnessItem | undefined {
   // Provenance must be a known trust class; anything else (a corrupt or
   // future-unknown snapshot value) drops the field → trusted.
   if (i.provenance !== "agent" && i.provenance !== "owner") delete item.provenance;
+  // A check must be a non-empty string (the runner executes it verbatim);
+  // anything else drops the field rather than storing a corrupt command.
+  if (typeof i.check !== "string" || !i.check) delete item.check;
   return item;
 }
 
@@ -371,8 +407,18 @@ export function decayAndPrune(
     }
   }
   const before = state.items.length;
+  const prunedItems = state.items.filter((i) => i.importance < IMPORTANCE_FLOOR);
   state.items = state.items.filter((i) => i.importance >= IMPORTANCE_FLOOR);
   const pruned = before - state.items.length;
+  if (pruned > 0) {
+    recordRemoval(
+      prunedItems.map((i) => ({
+        kind: i.kind,
+        content: i.content,
+        recreates: i.support?.recreates,
+      })),
+    );
+  }
   // No-op idempotency (review finding #3): like mergeParsed and adoptOrphans,
   // a prune that changed nothing persists nothing — otherwise every no-op
   // /harness prune appends a harness-state entry of pure /tree noise.
@@ -402,6 +448,15 @@ export function applyTrialDecay(
       item.importance = clamp(action.to);
       decayed += 1;
     } else {
+      // Expired trials are removals like any other: tombstone them so a
+      // re-learn of the same correction counts as a recreate.
+      recordRemoval([
+        {
+          kind: item.kind,
+          content: item.content,
+          recreates: item.support?.recreates,
+        },
+      ]);
       state.items = state.items.filter((i) => i.id !== action.id);
       expired += 1;
     }
@@ -445,6 +500,34 @@ export function bumpImportance(
   return item;
 }
 
+/** Record deterministic-check outcomes (checks.ts): passes/fails counters,
+ *  lastCheckAt + lastCheckOk. Pure support bookkeeping — no importance
+ *  change (a pass EARNS retention via hasPositiveSupport; a fail never
+ *  deletes, it flags). Persists ONCE per batch, only when anything changed. */
+export function recordCheckResults(
+  results: Array<{ id: string; ok: boolean }>,
+  persist: PersistFn,
+): number {
+  let changed = 0;
+  const now = Date.now();
+  for (const r of results) {
+    const item = state.items.find((i) => i.id === r.id);
+    if (!item) continue;
+    const s: SupportInfo = { ...(item.support ?? {}) };
+    if (r.ok) s.passes = (s.passes ?? 0) + 1;
+    else s.fails = (s.fails ?? 0) + 1;
+    s.lastCheckAt = now;
+    s.lastCheckOk = r.ok;
+    item.support = s;
+    changed += 1;
+  }
+  if (changed > 0) {
+    version += 1;
+    persist(state, version);
+  }
+  return changed;
+}
+
 /** Sum two support records (dedupe merge: the keeper inherits everything the
  *  absorbed duplicates accumulated). Counters add; lastCitedAt takes the max.
  *  Undefined when both sides are empty, so items stay support-less until the
@@ -460,6 +543,24 @@ export function mergeSupport(a?: SupportInfo, b?: SupportInfo): SupportInfo | un
   if (drops > 0) out.drops = drops;
   const last = Math.max(a?.lastCitedAt ?? 0, b?.lastCitedAt ?? 0);
   if (last > 0) out.lastCitedAt = last;
+  // Check outcomes: counters add (every verification event counts); the
+  // LAST verdict rides its own timestamp (later side wins for lastCheckOk).
+  const passes = (a?.passes ?? 0) + (b?.passes ?? 0);
+  const fails = (a?.fails ?? 0) + (b?.fails ?? 0);
+  if (passes > 0) out.passes = passes;
+  if (fails > 0) out.fails = fails;
+  const later =
+    (a?.lastCheckAt ?? 0) >= (b?.lastCheckAt ?? 0)
+      ? { at: a?.lastCheckAt, ok: a?.lastCheckOk }
+      : { at: b?.lastCheckAt, ok: b?.lastCheckOk };
+  if (later.at) {
+    out.lastCheckAt = later.at;
+    if (later.ok !== undefined) out.lastCheckOk = later.ok;
+  }
+  // Recreates measure the lineage ("times this correction came back"), not
+  // an additive event count — the max of both sides, never a sum.
+  const recreates = Math.max(a?.recreates ?? 0, b?.recreates ?? 0);
+  if (recreates > 0) out.recreates = recreates;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -505,6 +606,9 @@ function renderDurable(items: HarnessItem[]): string {
     for (const i of forKind) {
       lines.push(`- **[${i.id}]** (importance ${i.importance.toFixed(2)}) ${i.content}`);
       lines.push(`  - evidence: ${i.evidence}`);
+      // Verification command (only when set, so files for check-less stores
+      // stay byte-identical to pre-check exports).
+      if (i.check) lines.push(`  - check: ${i.check}`);
       if (i.ownerModel) lines.push(`  - model: ${i.ownerModel}`);
       if (i.scope === "project") lines.push(`  - scope: project (${i.project ?? ""})`);
       // Trust marker: only agent-authored items carry the line, so files for
@@ -528,7 +632,12 @@ export function renderSupport(s?: SupportInfo): string | undefined {
   if (s.citations) parts.push(`citations=${s.citations}`);
   if (s.keeps) parts.push(`keeps=${s.keeps}`);
   if (s.drops) parts.push(`drops=${s.drops}`);
+  if (s.passes) parts.push(`passes=${s.passes}`);
+  if (s.fails) parts.push(`fails=${s.fails}`);
+  if (s.recreates) parts.push(`recreates=${s.recreates}`);
   if (s.lastCitedAt) parts.push(`last-cited=${new Date(s.lastCitedAt).toISOString()}`);
+  if (s.lastCheckAt) parts.push(`last-check=${new Date(s.lastCheckAt).toISOString()}`);
+  if (s.lastCheckOk !== undefined) parts.push(`last-check-ok=${s.lastCheckOk}`);
   return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
@@ -540,17 +649,26 @@ const RE_SUPPORT = /^\s+-\s+support:\s*(.*)$/i;
 export function parseSupport(line: string): SupportInfo | undefined {
   const out: SupportInfo = {};
   for (const tok of line.split(/\s+/).filter(Boolean)) {
-    const m = tok.match(/^(citations|keeps|drops)=(\d+)$/);
+    const m = tok.match(/^(citations|keeps|drops|passes|fails|recreates)=(\d+)$/);
     if (m) {
       const n = Number(m[2]);
-      if (n > 0) out[m[1] as "citations" | "keeps" | "drops"] = n;
+      if (n > 0) out[m[1] as "citations" | "keeps" | "drops" | "passes" | "fails" | "recreates"] = n;
       continue;
     }
     const lc = tok.match(/^last-cited=(.+)$/);
     if (lc) {
       const t = Date.parse(lc[1]!);
       if (Number.isFinite(t)) out.lastCitedAt = t;
+      continue;
     }
+    const ck = tok.match(/^last-check=(.+)$/);
+    if (ck) {
+      const t = Date.parse(ck[1]!);
+      if (Number.isFinite(t)) out.lastCheckAt = t;
+      continue;
+    }
+    const ok = tok.match(/^last-check-ok=(true|false)$/);
+    if (ok) out.lastCheckOk = ok[1] === "true";
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -673,6 +791,10 @@ export interface ParsedItem {
   /** Parsed from a `provenance: agent|owner` sub-line. Absent = trusted
    *  (legacy files, or a hand-edited file that removed the line). */
   provenance?: Provenance | undefined;
+  /** Parsed from a `check:` sub-line. Absent = no check (durable import
+   *  CLEARS a live check when the line is gone — hand-deleting the line is
+   *  the documented way to drop a check, same as provenance). */
+  check?: string | undefined;
 }
 
 // Section title → kind. Exact export titles first, then tolerant keyword
@@ -697,6 +819,7 @@ const RE_H2 = /^##\s+(.*)$/;
 const RE_ID_BULLET = /^-\s+\*\*\[([^\]]+)\]\*\*\s*\(importance\s+([\d.]+)\)\s*(.*)$/;
 const RE_PLAIN_BULLET = /^-\s+(.+)$/;
 const RE_EVIDENCE = /^\s+-\s+evidence:\s*(.*)$/i;
+const RE_CHECK = /^\s+-\s+check:\s+(.+)$/i;
 const RE_MODEL = /^\s+-\s+model:\s*(.*)$/i;
 const RE_SCOPE = /^\s+-\s+scope:\s*(global|project)\b\s*(?:\(([^)]*)\))?/i;
 const RE_PROVENANCE = /^\s+-\s+provenance:\s*(agent|owner)\s*$/i;
@@ -728,6 +851,12 @@ export function parseDurable(text: string): ParsedItem[] {
     const ev = line.match(RE_EVIDENCE);
     if (ev) {
       if (pending) pending.evidence = ev[1]!.trim();
+      continue;
+    }
+
+    const chk = line.match(RE_CHECK);
+    if (chk) {
+      if (pending) pending.check = chk[1]!.trim();
       continue;
     }
 
@@ -865,7 +994,9 @@ function applyImportUpdate(existing: HarnessItem, p: ParsedItem & ScopeInfo, now
     (existing.scope === "project" ? existing.project : undefined) === p.project &&
     supportEqual(existing.support, p.support) &&
     // Provenance compares by exact value (absent on BOTH sides = trusted).
-    existing.provenance === p.provenance;
+    existing.provenance === p.provenance &&
+    // Check compares the same way (absent on both sides = no check).
+    (existing.check ?? undefined) === (p.check || undefined);
   if (unchanged) return false;
   existing.content = p.content;
   existing.evidence = p.evidence;
@@ -886,6 +1017,11 @@ function applyImportUpdate(existing: HarnessItem, p: ParsedItem & ScopeInfo, now
   // line is therefore the documented way for an owner to trust an item.
   if (p.provenance) existing.provenance = p.provenance;
   else delete existing.provenance;
+  // Durable wins on the check too: a present line sets the command (a
+  // hand-written line is the owner approving it — trusted surface); an
+  // absent line clears it, like every other optional sub-line.
+  if (p.check) existing.check = p.check;
+  else delete existing.check;
   existing.updatedAt = now;
   return true;
 }
@@ -909,6 +1045,7 @@ function applyImportCreate(p: ParsedItem & ScopeInfo, now: number, lookups: Merg
       : { scope: "global" as const }),
     ...(p.support ? { support: p.support } : {}),
     ...(p.provenance ? { provenance: p.provenance } : {}),
+    ...(p.check ? { check: p.check } : {}),
     createdAt: now,
     updatedAt: now,
   });
@@ -920,16 +1057,30 @@ function applyImportCreate(p: ParsedItem & ScopeInfo, now: number, lookups: Merg
 
 /** --prune semantics: drop items that were active before the import and are
  *  absent from EVERY layer (union over the file's explicit ids and every line
- *  that resolved to a live item). Inactive items are never touched. */
+ *  that resolved to a live item). Inactive items are never touched. Removals
+ *  are tombstoned like every removal path (the item went away — usually
+ *  deleted in ANOTHER session, which recorded its own tombstone; the fold's
+ *  max-semantics keep the count honest either way). */
 function pruneAbsent(lookups: MergeLookups): number {
-  const before = state.items.length;
-  state.items = state.items.filter((i) => {
+  const keep = (i: HarnessItem): boolean => {
     if (!i.active) return true; // inactive items are never touched by durable I/O
     if (!lookups.preActiveIds.has(i.id)) return true; // created during this import
     if (lookups.fileIds.has(i.id)) return true; // present in the file
     if (lookups.touchedIds.has(i.id)) return true; // matched by content (id-less / foreign id)
     return false; // was active before, absent from the file → drop
-  });
+  };
+  const before = state.items.length;
+  const removedItems = state.items.filter((i) => !keep(i));
+  state.items = state.items.filter(keep);
+  if (removedItems.length > 0) {
+    recordRemoval(
+      removedItems.map((i) => ({
+        kind: i.kind,
+        content: i.content,
+        recreates: i.support?.recreates,
+      })),
+    );
+  }
   return before - state.items.length;
 }
 
@@ -1005,7 +1156,12 @@ function supportEqual(a: SupportInfo | undefined, b: SupportInfo | undefined): b
     (a.citations ?? 0) === (b.citations ?? 0) &&
     (a.keeps ?? 0) === (b.keeps ?? 0) &&
     (a.drops ?? 0) === (b.drops ?? 0) &&
-    (a.lastCitedAt ?? 0) === (b.lastCitedAt ?? 0)
+    (a.lastCitedAt ?? 0) === (b.lastCitedAt ?? 0) &&
+    (a.passes ?? 0) === (b.passes ?? 0) &&
+    (a.fails ?? 0) === (b.fails ?? 0) &&
+    (a.lastCheckAt ?? 0) === (b.lastCheckAt ?? 0) &&
+    (a.lastCheckOk ?? undefined) === (b.lastCheckOk ?? undefined) &&
+    (a.recreates ?? 0) === (b.recreates ?? 0)
   );
 }
 

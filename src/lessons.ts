@@ -31,6 +31,11 @@ import { REFINE_ENTRY, STATE_ENTRY } from "./store.js";
 /** Char cap on one item line inside the digest (bounded prompt block). */
 const DIGEST_PREVIEW_CHARS = 90;
 
+/** Recreate count at which the digest names an item as a recurring
+ *  correction (graduation nudge): twice re-learned is a pattern, once is
+ *  noise. */
+const RECREATE_NUDGE_THRESHOLD = 2;
+
 /** One-line, whitespace-flattened preview (shared style with list rows). */
 function flat(text: string, max: number): string {
   return preview(text, max);
@@ -123,11 +128,20 @@ export function recentIneffectiveRuns(entries: Iterable<unknown>, n: number): bo
 // ---- the digest -----------------------------------------------------------
 
 /** Positive support score: citations weigh double keeps (organic use is a
- *  stronger contrast than a human nudge), drops are negative. */
+ *  stronger contrast than a human nudge), a passing check counts like a
+ *  keep (deterministic, repeatable), and drops / failing checks are negative
+ *  (a failing check is the strongest negative there is: the correction is
+ *  provably not holding). */
 function supportScore(i: HarnessItem): number {
   const s = i.support;
   if (!s) return 0;
-  return 2 * (s.citations ?? 0) + (s.keeps ?? 0) - 2 * (s.drops ?? 0);
+  return (
+    2 * (s.citations ?? 0) +
+    (s.keeps ?? 0) +
+    (s.passes ?? 0) -
+    2 * (s.drops ?? 0) -
+    2 * (s.fails ?? 0)
+  );
 }
 
 export interface DigestOptions {
@@ -135,6 +149,8 @@ export interface DigestOptions {
   maxSupported?: number;
   /** Max struggling items listed (default 3). */
   maxStruggling?: number;
+  /** Max recurring items listed (default 3). */
+  maxRecurring?: number;
   /** Refine runs summarized (default 6). */
   runsWindow?: number;
   /** Hard character cap on the whole digest (default 1200). */
@@ -193,6 +209,7 @@ export function buildLessonsDigest(
           const bits = [
             s.citations ? `cited ${s.citations}×` : "",
             s.keeps ? `kept ${s.keeps}×` : "",
+            s.passes ? `check ok ${s.passes}×` : "",
           ].filter(Boolean);
           return `- [${i.id}] (${bits.join(", ")}): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`;
         }),
@@ -200,22 +217,50 @@ export function buildLessonsDigest(
     );
   }
 
-  // 2. Struggling — explicit NEGATIVE net signal only (drops strictly
-  //    outweigh any later use). An item dropped once and then cited again
-  //    (score 0) or cited more than dropped (score > 0) is contested, not
-  //    rejected — later execution evidence outranks the drop (review
-  //    r4341960962). Net-neutral items are never named (no signal ≠ negative).
+  // 2. Struggling — explicit NEGATIVE net signal only: drops, or a check
+  //    that FAILS (deterministic proof the correction is not holding —
+  //    outweighed by nothing). An item dropped/failed once and then cited
+  //    again (score >= 0) is contested, not rejected — later execution
+  //    evidence outranks the negative. Net-neutral items are never named
+  //    (no signal ≠ negative).
   const struggling = active
-    .filter((i) => (i.support?.drops ?? 0) > 0 && supportScore(i) < 0)
-    .sort((a, b) => (b.support!.drops ?? 0) - (a.support!.drops ?? 0))
+    .filter(
+      (i) =>
+        ((i.support?.drops ?? 0) > 0 || (i.support?.fails ?? 0) > 0) && supportScore(i) < 0,
+    )
+    .sort((a, b) => (b.support!.drops ?? 0) + 2 * (b.support!.fails ?? 0) - ((a.support!.drops ?? 0) + 2 * (a.support!.fails ?? 0)))
     .slice(0, opts.maxStruggling ?? 3);
   if (struggling.length > 0) {
     sections.push(
       [
-        `Rejected signals (candidates to delete or rewrite — past drops, no use since):`,
-        ...struggling.map(
+        `Rejected signals (candidates to delete or rewrite — dropped, or their check fails, with no use since):`,
+        ...struggling.map((i) => {
+          const s = i.support!;
+          const bits = [
+            s.drops ? `dropped ${s.drops}×` : "",
+            s.fails ? `check failed ${s.fails}×` : "",
+          ].filter(Boolean);
+          return `- [${i.id}] (${bits.join(", ")}): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`;
+        }),
+      ].join("\n"),
+    );
+  }
+
+  // 2b. Recurring corrections — the graduation nudge (tombstones.ts): a
+  //     correction deleted before and re-learned is prose trying to become
+  //     code. Tell the improver to attach a `check` command instead of
+  //     storing the same prose a third time.
+  const recurring = active
+    .filter((i) => (i.support?.recreates ?? 0) >= RECREATE_NUDGE_THRESHOLD)
+    .sort((a, b) => (b.support!.recreates ?? 0) - (a.support!.recreates ?? 0))
+    .slice(0, opts.maxRecurring ?? 3);
+  if (recurring.length > 0) {
+    sections.push(
+      [
+        `Recurring corrections (deleted before and re-learned — encode as a deterministic \`check\` command instead of more prose):`,
+        ...recurring.map(
           (i) =>
-            `- [${i.id}] (dropped ${i.support!.drops}×): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`,
+            `- [${i.id}] (re-learned ${i.support!.recreates}×): ${flat(i.content, DIGEST_PREVIEW_CHARS)}`,
         ),
       ].join("\n"),
     );

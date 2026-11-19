@@ -65,6 +65,7 @@ import { nextHint } from "./hints.js";
 import { preview, renderListReport, type ListScope } from "./list.js";
 import { buildLessonsDigest } from "./lessons.js";
 import { defaultLayerPaths } from "./durable.js";
+import { runHarnessCheck } from "./checks.js";
 import { handleSetup, PRESET_COMPLETIONS } from "./setup.js";
 
 /** One row of the /harness subcommand menu (label = name, value = name). */
@@ -109,6 +110,11 @@ const SUBCOMMANDS: CompletionEntry[] = [
   {
     name: "lessons",
     description: "Evidence-gated lessons from past refines (the digest /refine steers with)",
+  },
+  {
+    name: "check",
+    description:
+      "Run item `check` commands now — any trust class ([id] to run one); records pass/fail as support",
   },
 ];
 
@@ -388,6 +394,9 @@ export async function runHarnessCommand(
     case "lessons":
       handleLessons(ctx);
       return;
+    case "check":
+      await runHarnessCheck(pi, ctx, rest);
+      return;
     case "list":
       await handleList(ctx, rest);
       return;
@@ -445,6 +454,7 @@ const ARG_SPECS: Record<string, ArgSpec> = {
   setup: { bool: ["--yes"], value: ["--preset"] },
   split: {},
   lessons: {},
+  check: { maxPositionals: 1, positionalName: "item id" },
 };
 
 /** Enforce `sub`'s argument grammar: every token must be a known flag, a

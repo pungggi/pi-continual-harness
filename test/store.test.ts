@@ -28,7 +28,8 @@ import {
   setSessionProject,
   snapshotState,
 } from "../src/store.js";
-import type { Delta } from "../src/types.js";
+import { listTombstones, resetTombstones } from "../src/tombstones.js";
+import type { AppliedDelta, Delta, HarnessItem } from "../src/types.js";
 
 function reset(): void {
   reconstruct([]);
@@ -1373,5 +1374,163 @@ describe("durable layers — import", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---- check field + recreate stamping (0.24.0) ------------------------------
+
+/** Narrow an AppliedDelta to its create arm (test-local convenience). */
+function asCreate(d: AppliedDelta | undefined): { item: HarnessItem } {
+  if (!d || d.op !== "create") throw new Error("expected a create delta");
+  return d;
+}
+
+/** Narrow an AppliedDelta to its update arm (test-local convenience). */
+function asUpdate(d: AppliedDelta | undefined): { before: HarnessItem; after: HarnessItem } {
+  if (!d || d.op !== "update") throw new Error("expected an update delta");
+  return d;
+}
+
+describe("check field (graduation path)", () => {
+  beforeEach(reset);
+
+  it("create carries a check; update replaces it; empty string clears it", () => {
+    const persist = vi.fn();
+    const [created] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "c", evidence: "e", check: "npm test" }],
+      persist,
+    );
+    expect(asCreate(created).item.check).toBe("npm test");
+    const id = asCreate(created).item.id;
+    const [updated] = applyDeltas(
+      [{ op: "update", id, check: "pnpm check" }],
+      persist,
+    );
+    expect(asUpdate(updated).after.check).toBe("pnpm check");
+    const [cleared] = applyDeltas([{ op: "update", id, check: "" }], persist);
+    expect(asUpdate(cleared).after.check).toBeUndefined();
+  });
+
+  it("an agent-surface check WRITE flips provenance to agent (executable content)", () => {
+    const persist = vi.fn();
+    const [created] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "c", evidence: "e", check: "npm test" }],
+      persist,
+      undefined,
+      { authoredBy: "agent" },
+    );
+    expect(asCreate(created).item.provenance).toBe("agent");
+    const id = asCreate(created).item.id;
+    const [ownerCheck] = applyDeltas([{ op: "update", id, check: "pnpm check" }], persist);
+    // A later owner-surface write replaces the command but never RE-TRUSTS
+    // the item: provenance only ever loses trust in-session; the documented
+    // trust path back is the durable file (hand-delete the provenance line).
+    expect(asUpdate(ownerCheck).after.provenance).toBe("agent");
+    expect(asUpdate(ownerCheck).after.check).toBe("pnpm check");
+  });
+
+  it("reconstruct drops a corrupt check but keeps a valid one", () => {
+    const base = { id: "h_1", kind: "memory", content: "c", evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: 1, updatedAt: 1 };
+    reconstruct([
+      { type: "custom", customType: "harness-state", data: { state: { items: [
+        { ...base, check: "npm test" },
+        { ...base, id: "h_2", check: 42 },
+      ] } } },
+    ] as never);
+    const items = getState().items;
+    expect(items[0]!.check).toBe("npm test");
+    expect(items[1]!.check).toBeUndefined();
+  });
+});
+
+describe("check durable round-trip", () => {
+  beforeEach(reset);
+
+  it("renders a check sub-line and parses it back; an absent line clears it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-ch-check-dur-"));
+    const file = join(dir, "harness-state.md");
+    const persist = vi.fn();
+    applyDeltas(
+      [{ op: "create", kind: "memory", content: "c", evidence: "e", check: "npm run typecheck" }],
+      persist,
+    );
+    await exportDurable(file);
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain("  - check: npm run typecheck");
+    // Re-import into a store where the live item has NO check: durable wins.
+    const p2 = vi.fn();
+    applyDeltas([{ op: "create", kind: "memory", content: "c", evidence: "e" }], p2);
+    await reconstructFromDurable(file, {}, p2);
+    expect(getState().items.filter((i) => i.check).length).toBeGreaterThan(0);
+    // Hand-delete the line → the next import clears the live check.
+    const stripped = text
+      .split("\n")
+      .filter((l) => !l.includes("- check:"))
+      .join("\n");
+    writeFileSync(file, stripped, "utf8");
+    await reconstructFromDurable(file, {}, p2);
+    expect(getState().items.every((i) => i.check === undefined)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("recreate stamping (tombstones integration)", () => {
+  beforeEach(() => {
+    reset();
+    resetTombstones();
+  });
+
+  it("delete tombstones; a near-identical create carries support.recreates", () => {
+    const persist = vi.fn();
+    const [created] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "always run pnpm check before commit", evidence: "e" }],
+      persist,
+    );
+    applyDeltas([{ op: "delete", id: asCreate(created).item.id, reason: "r" }], persist);
+    expect(listTombstones()).toHaveLength(1);
+    const [recreated] = applyDeltas(
+      [{ op: "create", kind: "memory", content: "Always run pnpm check before committing!", evidence: "e" }],
+      persist,
+    );
+    expect(asCreate(recreated).item.support?.recreates).toBe(1);
+  });
+
+  it("an unrelated create gets no recreate stamp", () => {
+    const persist = vi.fn();
+    applyDeltas([{ op: "create", kind: "prompt", content: "unrelated words entirely", evidence: "e" }], persist);
+    const state = getState();
+    expect(state.items[0]!.support).toBeUndefined();
+  });
+});
+
+describe("support render/parse — check + recreate tokens", () => {
+  it("round-trips passes, fails, recreates, last-check, last-check-ok", () => {
+    const rendered = renderSupport({
+      passes: 2,
+      fails: 1,
+      recreates: 3,
+      lastCheckAt: Date.UTC(2026, 10, 18, 12, 0, 0),
+      lastCheckOk: false,
+    })!;
+    expect(rendered).toContain("passes=2");
+    expect(rendered).toContain("fails=1");
+    expect(rendered).toContain("recreates=3");
+    expect(rendered).toContain("last-check-ok=false");
+    const parsed = parseSupport(rendered)!;
+    expect(parsed).toMatchObject({ passes: 2, fails: 1, recreates: 3, lastCheckOk: false });
+    expect(parsed.lastCheckAt).toBe(Date.UTC(2026, 10, 18, 12, 0, 0));
+  });
+
+  it("parseSupport ignores unknown and malformed tokens", () => {
+    expect(parseSupport("passes=abc fails=-1 recreates=0 last-check-ok=maybe wat")).toBeUndefined();
+  });
+
+  it("mergeSupport: counters add, recreates take the max, lastCheckOk rides the later side", () => {
+    expect(
+      mergeSupport(
+        { passes: 2, fails: 1, recreates: 2, lastCheckAt: 100, lastCheckOk: true },
+        { passes: 1, fails: 2, recreates: 5, lastCheckAt: 200, lastCheckOk: false },
+      ),
+    ).toEqual({ passes: 3, fails: 3, recreates: 5, lastCheckAt: 200, lastCheckOk: false });
   });
 });

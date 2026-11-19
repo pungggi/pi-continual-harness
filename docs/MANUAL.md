@@ -382,6 +382,22 @@ shown on the previous call. The report builder is pure and exported
 (`buildStatusReport`/`renderStatusReport`, plus the hint library in
 `src/hints.ts`) so companions reuse the same copy source.
 
+#### `check [id]`
+
+```
+/harness check            # run every check-carrying active item's command
+/harness check h_1abc     # run one item's check
+```
+
+The **explicit** check runner (0.24.0): executes `check` commands on demand
+and records the outcomes as support (`passes`/`fails`, `lastCheckOk`) —
+exit 0 is earned support, a fail flags the item in the digest and status.
+Unlike the automatic path this is a human action, so it runs **any** item's
+check, agent-authored included (the automatic path at `/refine` is
+trusted-only). Bounded by `checks.timeoutMs`; ignores `checks.enabled`.
+See [Deterministic checks](#deterministic-checks-prose--code-graduation) in
+the README for the full model.
+
 #### `list [-f] [--kind <kind>] [--scope <global|project|all>]`
 
 ```
@@ -404,7 +420,8 @@ same stable policy as injection selection). Inactive items are marked
 extended with the scope: complete text plus the evidence line, with owner
 model and `global` / `project "slug"` in the parenthetical. `-f` also appends
 a `support:` line (`cited 3×, kept 1×, dropped 0×`-style, only the
-non-zero signals) once an item has feedback — see [`lessons`](#lessons).
+non-zero signals, plus `check ok`/`check failed`/`recreated` counts) once an
+item has feedback — see [`lessons`](#lessons).
 
 Scope semantics mirror the durable layers:
 

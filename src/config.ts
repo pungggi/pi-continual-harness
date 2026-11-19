@@ -25,7 +25,7 @@ import {
   type ScopeInfo,
 } from "./store.js";
 import { DEFAULT_INJECTION, normalizeInjection, type NormalizedInjection } from "./select.js";
-import { DEDUPE_THRESHOLD } from "./proposer.js";
+import { DEDUPE_THRESHOLD } from "./similarity.js";
 import { DEFAULT_PROVENANCE, normalizeProvenance, type NormalizedProvenance } from "./types.js";
 
 export const DEFAULT_EVERY_TURNS = 25;
@@ -47,6 +47,10 @@ export const DEFAULT_IMPORT_REMIND_TURNS = 25;
 /** Default escalation cadence for the /refine reminder: every Nth fired
  *  reminder is the detailed guide instead of the one-line nudge. */
 export const DEFAULT_DETAIL_EVERY = 4;
+/** Default per-check subprocess timeout (ms) for the checks runner (checks.ts). */
+export const DEFAULT_CHECK_TIMEOUT_MS = 20_000;
+/** Default max check commands one refine run executes (checks.ts). */
+export const DEFAULT_CHECK_MAX_PER_RUN = 10;
 
 /** How the binding key treats virtual (router) models. "virtual" (default):
  * key = the selected model's own provider/id. "physical": when the selection
@@ -74,6 +78,18 @@ export interface NormalizedTrialDecay {
   afterDays: number;
   /** Importance lost per pass. Default 0.05. */
   step: number;
+}
+
+/** Resolved deterministic-checks policy (see checks.ts). Populated by
+ *  loadConfig, so the value here is always fully-populated. */
+export interface NormalizedChecks {
+  /** Master switch. Default false: the runner executes shell commands, so
+   *  it is opt-in like every autonomous-effect path. Trusted-only. */
+  enabled: boolean;
+  /** Per-check subprocess timeout in ms. Default 20000. */
+  timeoutMs: number;
+  /** Max checks one refine run executes (oldest-checked first). Default 10. */
+  maxPerRun: number;
 }
 
 export interface HarnessConfig {
@@ -157,6 +173,11 @@ export interface HarnessConfig {
   /** Trial decay for unverified items (opt-in). Resolved by loadConfig, so
    *  the value here is always fully-populated. See src/decay.ts. */
   trialDecay?: NormalizedTrialDecay;
+  /** Deterministic checks (graduation path, opt-in): at refine time, run the
+   *  `check:` commands of TRUSTED items and record pass/fail as support.
+   *  Agent-authored checks never auto-run (`/harness check` runs any item
+   *  explicitly). Resolved by loadConfig. See src/checks.ts. */
+  checks?: NormalizedChecks;
 }
 
 export const DEFAULT_CONFIG: HarnessConfig = {
@@ -191,6 +212,15 @@ export const DEFAULT_CONFIG: HarnessConfig = {
     everyTurns: DEFAULT_TRIAL_EVERY_TURNS,
     afterDays: DEFAULT_TRIAL_AFTER_DAYS,
     step: DEFAULT_TRIAL_STEP,
+  },
+  // OFF by default: the runner spawns subprocesses, so like every
+  // autonomous-effect path it is opt-in. When enabled, /refine (manual or
+  // gated auto) runs TRUSTED items' checks first and feeds pass/fail into
+  // the support counters (see src/checks.ts).
+  checks: {
+    enabled: false,
+    timeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+    maxPerRun: DEFAULT_CHECK_MAX_PER_RUN,
   },
   // ON by default: importance-ordered, maxPerKind 10, maxTokens 1500. A no-op
   // for small stores; protective as the harness accumulates. Opt out with
@@ -289,6 +319,11 @@ function mergeConfig(over: Partial<HarnessConfig>): HarnessConfig {
       everyTurns: coerceMinTurns(over.trialDecay?.everyTurns, DEFAULT_TRIAL_EVERY_TURNS),
       afterDays: coercePositive(over.trialDecay?.afterDays, DEFAULT_TRIAL_AFTER_DAYS),
       step: coerceUnitInterval(over.trialDecay?.step, DEFAULT_TRIAL_STEP),
+    },
+    checks: {
+      enabled: over.checks?.enabled === true,
+      timeoutMs: coercePositive(over.checks?.timeoutMs, DEFAULT_CHECK_TIMEOUT_MS),
+      maxPerRun: coerceMinTurns(over.checks?.maxPerRun, DEFAULT_CHECK_MAX_PER_RUN),
     },
   };
 }

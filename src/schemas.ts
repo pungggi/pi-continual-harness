@@ -37,6 +37,9 @@ export const MAX_DELTAS = 20;
 export const MAX_CONTENT_CHARS = 8000;
 export const MAX_EVIDENCE_CHARS = 4000;
 export const MAX_REASON_CHARS = 1000;
+/** Cap on a `check` command. A check is one shell line (a test selector, a
+ *  grep, a npm script invocation) — NOT a script — so the cap stays tight. */
+export const MAX_CHECK_CHARS = 500;
 
 /** Local StringEnum shape — { type: "string", enum: [...] }, the same schema
  *  pi-ai's helper emits (for providers without anyOf/const support). */
@@ -74,6 +77,12 @@ const CreateShape = {
       description:
         'Durable-layer scope (default global). "project" binds the item to this session\'s project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.',
     }),
+    check: {
+      type: "string",
+      maxLength: MAX_CHECK_CHARS,
+      description:
+        "Optional shell command whose exit code deterministically verifies this item (exit 0 = holds). One line, e.g. 'npm run typecheck' or 'grep -q useCallback src/hooks.ts'. Auto-runs at /refine only for owner-trusted items; agent-proposed checks run only via /harness check.",
+    },
   },
   required: ["op", "kind", "content", "evidence"],
 };
@@ -91,6 +100,12 @@ const UpdateShape = {
       description:
         "Move the item between durable layers (global file vs this session's project file). Use during a /harness split classification; leave unchanged otherwise.",
     }),
+    check: {
+      type: "string",
+      maxLength: MAX_CHECK_CHARS,
+      description:
+        'Verification command (replace semantics; empty string "" clears it). Writing a check from the agent surface re-marks the item agent-authored (unverified), since a check is executable content.',
+    },
   },
   required: ["op", "id"],
 };
@@ -138,7 +153,17 @@ const ItemSchema = {
         keeps: { type: "number" },
         drops: { type: "number" },
         lastCitedAt: { type: "number" },
+        passes: { type: "number" },
+        fails: { type: "number" },
+        lastCheckAt: { type: "number" },
+        lastCheckOk: { type: "boolean" },
+        recreates: { type: "number" },
       },
+    },
+    check: {
+      type: "string",
+      description:
+        "Optional verification command; exit 0 = the item holds (runs automatically only for trusted items).",
     },
     createdAt: { type: "number" },
     updatedAt: { type: "number" },

@@ -60,11 +60,17 @@ export type { TrialAction, TrialDecayPlan };
 const MS_PER_DAY = 86_400_000;
 
 /** True when the item has EARNED retention: cited by the agent in later
- *  trajectories (outcome loop) or explicitly kept by the human. Drops are
- *  not positive support — a dropped item still decays (the human signal is
- *  already negative, decay just finishes what /harness drop started). */
+ *  trajectories (outcome loop), explicitly kept by the human, or verified by
+ *  a passing `check` command (checks.ts — deterministic verification is the
+ *  strongest retention signal there is). Drops are not positive support —
+ *  a dropped item still decays (the human signal is already negative, decay
+ *  just finishes what /harness drop started). */
 export function hasPositiveSupport(item: HarnessItem): boolean {
-  return (item.support?.citations ?? 0) > 0 || (item.support?.keeps ?? 0) > 0;
+  return (
+    (item.support?.citations ?? 0) > 0 ||
+    (item.support?.keeps ?? 0) > 0 ||
+    (item.support?.passes ?? 0) > 0
+  );
 }
 
 /** True when the item is ON TRIAL: active, agent-authored (unverified), and

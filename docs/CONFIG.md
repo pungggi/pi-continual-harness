@@ -19,6 +19,7 @@ wizard instead of hand-editing — see the
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "trialDecay": { "enabled": false, "everyTurns": 20, "afterDays": 14, "step": 0.05 },
+"checks": { "enabled": false, "timeoutMs": 20000, "maxPerRun": 10 },
   "classifier": { "model": "typesafe/jev-latest" },
   "virtualBinding": "virtual"
 }
@@ -177,6 +178,17 @@ keys — `$schema` included — and a `/harness setup` rewrite preserves it.
   context it was supposed to save — an expiry trial keeps the unverified
   share bounded without giving up on genuinely useful agent notes (they earn
   retention through use).
+- **`checks`** — opt-in **deterministic checks** runner (**off by default**),
+  the graduation path from prose to code: at `/refine` (manual or gated
+  auto-refine), run the `check` commands of **trusted** items (owner/absent
+  provenance) and record exit codes as support — a pass is earned retention
+  (exactly like a citation or keep), a fail flags the item in the digest and
+  `/harness status` without deleting anything. Agent-authored checks never
+  auto-run (writing one from an agent surface re-marks the item unverified);
+  `/harness check [id]` runs any item explicitly, regardless of this setting.
+  Knobs: `timeoutMs` per command (default 20000), `maxPerRun` per refine run
+  (default 10, never-checked first, then oldest verdicts). Off by default
+  because it spawns subprocesses — opt-in like every autonomous effect.
 
 > **Removed:** the store-wide `durableScope` config key (deprecated 0.9.0,
 > removed now). Items carry their own scope (`/harness move`), and durable I/O

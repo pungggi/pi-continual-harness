@@ -133,6 +133,26 @@
         }
       }
     },
+    "checks": {
+      "type": "object",
+      "description": "Opt-in deterministic-check runner: at /refine, run trusted items' check commands and record pass/fail as support. Agent-authored checks never auto-run; /harness check [id] runs any item explicitly regardless of this setting.",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 20000,
+          "description": "Per-command timeout in milliseconds."
+        },
+        "maxPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Max check commands per refine run; never-checked items first, then oldest verdicts."
+        }
+      }
+    },
     "injection": {
       "type": "object",
       "description": "Selection policy for WHAT gets surfaced in the system block each provider request.",
