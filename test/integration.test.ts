@@ -197,6 +197,127 @@ describe("injection — before_agent_start bridge + context_with_system render",
     expect(second[0]!.messages![0]!.content).toContain("prefer pnpm here");
   });
 
+  // Issue #45 asked to port pi-context-engine's session_compact re-injection
+  // (arm-then-reassert). The premise does not hold for THIS package's delivery
+  // mechanism: our block is not a persisted conversation message that compaction
+  // could drop — it is re-rendered from the live store into the system message on
+  // EVERY provider request (pi runs context_with_system per request via
+  // transformContext, including the retry that follows a mid-run overflow
+  // compaction). These tests pin that invariant with a faithful post-compaction
+  // transcript — exactly what pi's buildSessionProjection emits after a compaction
+  // (SessionManager.appendCompaction stores the base system message on the
+  // compaction entry; buildContextEntries then projects [system, compactionSummary,
+  // ...kept] and filters other system messages out of the kept range). If someone
+  // later "optimizes" the render into a once-per-session shape, these fail and this
+  // is the bug that came back.
+  it("re-injects into a post-compaction transcript: the block survives compaction without any session_compact handler", async () => {
+    const { pi, fire, ctx, tools } = makeFakePi([]);
+    continualHarness(pi);
+    await fire("session_start", { reason: "startup" }, ctx());
+    await fire(
+      "before_agent_start",
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx(),
+    );
+    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {
+        deltas: [{ op: "create", kind: "prompt", content: "cite evidence", evidence: "e" }],
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+
+    // Faithful post-compaction request transcript (pi ≥ 0.99 projection shape):
+    // base system message carried by the compaction entry, the summary as its own
+    // role, then the kept entries (system messages filtered from the kept range).
+    const compacted = [
+      { role: "system", content: "BASE" },
+      {
+        role: "compactionSummary",
+        summary: "Earlier: the user said hi.",
+        tokensBefore: 9001,
+        timestamp: 1,
+      },
+      { role: "user", content: [{ type: "text", text: "and then continue" }] },
+      { role: "assistant", content: [{ type: "text", text: "working on it" }] },
+    ];
+    const [ret] = (await fire("context_with_system", { messages: compacted }, ctx())) as Array<
+      | {
+          messages?: Array<{ role: string; content?: unknown; summary?: string }>;
+        }
+      | undefined
+    >;
+
+    // The live block rides the very next request — no session_compact hook, no
+    // armed window, nothing to restore.
+    expect(ret?.messages).toBeDefined();
+    expect(ret!.messages).toHaveLength(compacted.length);
+    const sys = ret!.messages![0]!;
+    expect(sys.role).toBe("system");
+    expect((sys.content as string).startsWith("BASE")).toBe(true);
+    expect(sys.content).toContain("Continual Harness state");
+    expect(sys.content).toContain("cite evidence");
+    // The compaction summary and kept entries pass through untouched at their
+    // positions — injection edits only the system message.
+    expect(ret!.messages![1]!.role).toBe("compactionSummary");
+    expect(ret!.messages![1]!.summary).toBe("Earlier: the user said hi.");
+    expect(ret!.messages![2]!.role).toBe("user");
+    expect(ret!.messages![3]!.role).toBe("assistant");
+  });
+
+  it("a harness_mutate AFTER the compaction lands in the next post-compaction request (regenerated, not cached)", async () => {
+    const { pi, fire, ctx, tools } = makeFakePi([]);
+    continualHarness(pi);
+    await fire("session_start", { reason: "startup" }, ctx());
+    await fire(
+      "before_agent_start",
+      { type: "before_agent_start", messageType: "user", systemPrompt: "BASE", prompt: "hi" },
+      ctx(),
+    );
+    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      { deltas: [{ op: "create", kind: "prompt", content: "first note", evidence: "e" }] },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const postCompaction = [
+      { role: "system", content: "BASE" },
+      { role: "compactionSummary", summary: "sum", tokensBefore: 1, timestamp: 1 },
+    ];
+    const first = (await fire(
+      "context_with_system",
+      { messages: postCompaction },
+      ctx(),
+    )) as Array<{
+      messages?: Array<{ role: string; content?: string }>;
+    }>;
+    expect(first[0]!.messages![0]!.content).toContain("first note");
+
+    // The model records a NEW durable note after the compaction; the next request
+    // must carry it — the block is rebuilt from the live store every time.
+    await (tools.get("harness_mutate")!.execute as (...a: unknown[]) => Promise<unknown>)(
+      undefined,
+      {
+        deltas: [{ op: "create", kind: "memory", content: "post-compaction fact", evidence: "e" }],
+      },
+      undefined,
+      undefined,
+      ctx(),
+    );
+    const second = (await fire(
+      "context_with_system",
+      { messages: postCompaction },
+      ctx(),
+    )) as Array<{
+      messages?: Array<{ role: string; content?: string }>;
+    }>;
+    expect(second[0]!.messages![0]!.content).toContain("first note");
+    expect(second[0]!.messages![0]!.content).toContain("post-compaction fact");
+  });
+
   it("returns undefined (no transcript ownership) when there is no active state", async () => {
     const { pi, fire, ctx } = makeFakePi([]);
     continualHarness(pi);
