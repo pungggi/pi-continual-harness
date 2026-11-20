@@ -30,7 +30,11 @@
 
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.js";
 import { getState, makePersist, recordCheckResults } from "./store.js";
 import type { HarnessItem } from "./types.js";
@@ -63,8 +67,7 @@ export function planCheckRun(items: HarnessItem[], maxPerRun: number): HarnessIt
     .filter(autoRunnable)
     .map((item, idx) => [item, idx] as const)
     .sort(
-      (a, b) =>
-        (a[0].support?.lastCheckAt ?? 0) - (b[0].support?.lastCheckAt ?? 0) || a[1] - b[1],
+      (a, b) => (a[0].support?.lastCheckAt ?? 0) - (b[0].support?.lastCheckAt ?? 0) || a[1] - b[1],
     )
     .map(([item]) => item)
     .slice(0, Math.max(0, maxPerRun));
@@ -108,7 +111,11 @@ export async function runChecks(
     const r = await runOneCheck(item.check!, cwd, timeoutMs);
     results.push({ id: item.id, ...r });
   }
-  if (results.length > 0) recordCheckResults(results.map(({ id, ok }) => ({ id, ok })), makePersist(pi));
+  if (results.length > 0)
+    recordCheckResults(
+      results.map(({ id, ok }) => ({ id, ok })),
+      makePersist(pi),
+    );
   return results;
 }
 
@@ -183,5 +190,8 @@ export async function runHarnessCheck(
     (r) =>
       `[${r.id}] ${r.ok ? "ok" : "FAILED"} (${(r.durationMs / 1000).toFixed(1)}s)${r.detail ? ` — ${r.detail}` : ""}`,
   );
-  ctx.ui.notify(`Check run: ${results.length} command(s)\n${lines.join("\n")}`, results.every((r) => r.ok) ? "info" : "warning");
+  ctx.ui.notify(
+    `Check run: ${results.length} command(s)\n${lines.join("\n")}`,
+    results.every((r) => r.ok) ? "info" : "warning",
+  );
 }

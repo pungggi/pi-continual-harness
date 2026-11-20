@@ -19,7 +19,11 @@ import { applyDeltas, getState, recordCheckResults, reconstruct } from "../src/s
 import { loadConfig, resetConfigCache } from "../src/config.js";
 import { hasPositiveSupport, isOnTrial } from "../src/decay.js";
 import type { HarnessItem } from "../src/types.js";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { runHarnessCheck } from "../src/checks.js";
 
 const cwd = mkdtempSync(join(tmpdir(), "pi-ch-checks-"));
@@ -77,7 +81,11 @@ describe("runOneCheck (real subprocesses)", () => {
   });
 
   it("non-zero exit → not ok, with a detail tail", async () => {
-    const r = await runOneCheck('node -e "process.stderr.write(\'boom\'); process.exit(3)"', cwd, 5000);
+    const r = await runOneCheck(
+      "node -e \"process.stderr.write('boom'); process.exit(3)\"",
+      cwd,
+      5000,
+    );
     expect(r.ok).toBe(false);
     expect(r.detail).toContain("boom");
   });
@@ -95,8 +103,20 @@ describe("runChecks + recordCheckResults (store integration)", () => {
   it("records pass/fail as support counters in one persist", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "ok note", evidence: "e", check: 'node -e "process.exit(0)"' },
-        { op: "create", kind: "memory", content: "bad note", evidence: "e", check: 'node -e "process.exit(1)"' },
+        {
+          op: "create",
+          kind: "memory",
+          content: "ok note",
+          evidence: "e",
+          check: 'node -e "process.exit(0)"',
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "bad note",
+          evidence: "e",
+          check: 'node -e "process.exit(1)"',
+        },
       ],
       vi.fn(),
     );
@@ -211,7 +231,13 @@ describe("runHarnessCheck (/harness check — the explicit runner)", () => {
   it("runs the named item regardless of provenance (explicit human action)", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "agent note", evidence: "e", check: 'node -e "process.exit(0)"' },
+        {
+          op: "create",
+          kind: "memory",
+          content: "agent note",
+          evidence: "e",
+          check: 'node -e "process.exit(0)"',
+        },
       ],
       vi.fn(),
       undefined,
@@ -242,8 +268,20 @@ describe("runHarnessCheck (/harness check — the explicit runner)", () => {
   it("runs every check-carrying item when no id is given", async () => {
     applyDeltas(
       [
-        { op: "create", kind: "memory", content: "a", evidence: "e", check: 'node -e "process.exit(0)"' },
-        { op: "create", kind: "memory", content: "b", evidence: "e", check: 'node -e "process.exit(2)"' },
+        {
+          op: "create",
+          kind: "memory",
+          content: "a",
+          evidence: "e",
+          check: 'node -e "process.exit(0)"',
+        },
+        {
+          op: "create",
+          kind: "memory",
+          content: "b",
+          evidence: "e",
+          check: 'node -e "process.exit(2)"',
+        },
       ],
       vi.fn(),
     );

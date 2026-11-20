@@ -217,10 +217,7 @@ function applyOne(
     // an agent-authored command must not ride a trusted item into the
     // auto-run path (checks.ts gates on provenance), so writing one from an
     // agent surface demotes the item exactly like a content rewrite.
-    if (
-      opts?.authoredBy &&
-      (delta.content !== undefined || delta.check !== undefined)
-    )
+    if (opts?.authoredBy && (delta.content !== undefined || delta.check !== undefined))
       after.provenance = opts.authoredBy;
     state.items[idx] = after;
     return { op: "update", before, after };
@@ -652,7 +649,8 @@ export function parseSupport(line: string): SupportInfo | undefined {
     const m = tok.match(/^(citations|keeps|drops|passes|fails|recreates)=(\d+)$/);
     if (m) {
       const n = Number(m[2]);
-      if (n > 0) out[m[1] as "citations" | "keeps" | "drops" | "passes" | "fails" | "recreates"] = n;
+      if (n > 0)
+        out[m[1] as "citations" | "keeps" | "drops" | "passes" | "fails" | "recreates"] = n;
       continue;
     }
     const lc = tok.match(/^last-cited=(.+)$/);

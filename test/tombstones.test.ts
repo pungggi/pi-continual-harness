@@ -31,7 +31,12 @@ describe("pruneTombstones", () => {
   it("drops entries older than the age window and keeps the rest", () => {
     const now = Date.now();
     const list: Tombstone[] = [
-      { kind: "memory", content: "old", recreates: 1, deletedAt: now - (TOMBSTONE_MAX_AGE_DAYS + 1) * DAY },
+      {
+        kind: "memory",
+        content: "old",
+        recreates: 1,
+        deletedAt: now - (TOMBSTONE_MAX_AGE_DAYS + 1) * DAY,
+      },
       { kind: "memory", content: "fresh", recreates: 0, deletedAt: now - DAY },
     ];
     const out = pruneTombstones(list, now);
@@ -56,9 +61,7 @@ describe("parseTombstones", () => {
   it("parses a valid sidecar", () => {
     const raw = JSON.stringify({
       version: 1,
-      tombstones: [
-        { kind: "memory", content: "run pnpm check", recreates: 2, deletedAt: 123 },
-      ],
+      tombstones: [{ kind: "memory", content: "run pnpm check", recreates: 2, deletedAt: 123 }],
     });
     expect(parseTombstones(raw)).toEqual([
       { kind: "memory", content: "run pnpm check", recreates: 2, deletedAt: 123 },

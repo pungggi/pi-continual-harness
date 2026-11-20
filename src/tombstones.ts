@@ -122,7 +122,10 @@ export function parseTombstones(raw: string): Tombstone[] {
     out.push({
       kind: r.kind as ComponentKind,
       content: r.content,
-      recreates: typeof r.recreates === "number" && Number.isFinite(r.recreates) && r.recreates > 0 ? r.recreates : 0,
+      recreates:
+        typeof r.recreates === "number" && Number.isFinite(r.recreates) && r.recreates > 0
+          ? r.recreates
+          : 0,
       deletedAt: r.deletedAt,
     });
   }
@@ -192,11 +195,7 @@ export function recordRemoval(
 }
 
 /** Best same-kind tombstone for `content` at the shared threshold. */
-function bestMatch(
-  list: Tombstone[],
-  kind: ComponentKind,
-  content: string,
-): Tombstone | undefined {
+function bestMatch(list: Tombstone[], kind: ComponentKind, content: string): Tombstone | undefined {
   let best: Tombstone | undefined;
   let bestScore = DEDUPE_THRESHOLD;
   for (const t of list) {
@@ -216,17 +215,12 @@ function bestMatch(
  * recreate count for the caller to stamp on the new item (support.recreates,
  * server-side). No match → undefined (a fresh correction, not a re-learn).
  */
-export function detectRecreate(
-  kind: ComponentKind,
-  content: string,
-): number | undefined {
+export function detectRecreate(kind: ComponentKind, content: string): number | undefined {
   if (!content) return undefined;
   const t = bestMatch(tombstones, kind, content.slice(0, TOMBSTONE_CONTENT_CHARS));
   if (!t) return undefined;
   t.recreates += 1;
   // A matched recreate is a live signal again; persist on the next flush.
-  flushChain = flushChain
-    .then(() => flushTombstones())
-    .catch(() => {});
+  flushChain = flushChain.then(() => flushTombstones()).catch(() => {});
   return t.recreates;
 }

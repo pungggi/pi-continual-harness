@@ -225,10 +225,14 @@ export function buildLessonsDigest(
   //    (no signal ≠ negative).
   const struggling = active
     .filter(
-      (i) =>
-        ((i.support?.drops ?? 0) > 0 || (i.support?.fails ?? 0) > 0) && supportScore(i) < 0,
+      (i) => ((i.support?.drops ?? 0) > 0 || (i.support?.fails ?? 0) > 0) && supportScore(i) < 0,
     )
-    .sort((a, b) => (b.support!.drops ?? 0) + 2 * (b.support!.fails ?? 0) - ((a.support!.drops ?? 0) + 2 * (a.support!.fails ?? 0)))
+    .sort(
+      (a, b) =>
+        (b.support!.drops ?? 0) +
+        2 * (b.support!.fails ?? 0) -
+        ((a.support!.drops ?? 0) + 2 * (a.support!.fails ?? 0)),
+    )
     .slice(0, opts.maxStruggling ?? 3);
   if (struggling.length > 0) {
     sections.push(

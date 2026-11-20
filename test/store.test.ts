@@ -1381,13 +1381,13 @@ describe("durable layers — import", () => {
 
 /** Narrow an AppliedDelta to its create arm (test-local convenience). */
 function asCreate(d: AppliedDelta | undefined): { item: HarnessItem } {
-  if (!d || d.op !== "create") throw new Error("expected a create delta");
+  if (d?.op !== "create") throw new Error("expected a create delta");
   return d;
 }
 
 /** Narrow an AppliedDelta to its update arm (test-local convenience). */
 function asUpdate(d: AppliedDelta | undefined): { before: HarnessItem; after: HarnessItem } {
-  if (!d || d.op !== "update") throw new Error("expected an update delta");
+  if (d?.op !== "update") throw new Error("expected an update delta");
   return d;
 }
 
@@ -1402,10 +1402,7 @@ describe("check field (graduation path)", () => {
     );
     expect(asCreate(created).item.check).toBe("npm test");
     const id = asCreate(created).item.id;
-    const [updated] = applyDeltas(
-      [{ op: "update", id, check: "pnpm check" }],
-      persist,
-    );
+    const [updated] = applyDeltas([{ op: "update", id, check: "pnpm check" }], persist);
     expect(asUpdate(updated).after.check).toBe("pnpm check");
     const [cleared] = applyDeltas([{ op: "update", id, check: "" }], persist);
     expect(asUpdate(cleared).after.check).toBeUndefined();
@@ -1430,12 +1427,30 @@ describe("check field (graduation path)", () => {
   });
 
   it("reconstruct drops a corrupt check but keeps a valid one", () => {
-    const base = { id: "h_1", kind: "memory", content: "c", evidence: "e", importance: 0.5, active: true, ownerModel: "", createdAt: 1, updatedAt: 1 };
+    const base = {
+      id: "h_1",
+      kind: "memory",
+      content: "c",
+      evidence: "e",
+      importance: 0.5,
+      active: true,
+      ownerModel: "",
+      createdAt: 1,
+      updatedAt: 1,
+    };
     reconstruct([
-      { type: "custom", customType: "harness-state", data: { state: { items: [
-        { ...base, check: "npm test" },
-        { ...base, id: "h_2", check: 42 },
-      ] } } },
+      {
+        type: "custom",
+        customType: "harness-state",
+        data: {
+          state: {
+            items: [
+              { ...base, check: "npm test" },
+              { ...base, id: "h_2", check: 42 },
+            ],
+          },
+        },
+      },
     ] as never);
     const items = getState().items;
     expect(items[0]!.check).toBe("npm test");
@@ -1483,13 +1498,27 @@ describe("recreate stamping (tombstones integration)", () => {
   it("delete tombstones; a near-identical create carries support.recreates", () => {
     const persist = vi.fn();
     const [created] = applyDeltas(
-      [{ op: "create", kind: "memory", content: "always run pnpm check before commit", evidence: "e" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "always run pnpm check before commit",
+          evidence: "e",
+        },
+      ],
       persist,
     );
     applyDeltas([{ op: "delete", id: asCreate(created).item.id, reason: "r" }], persist);
     expect(listTombstones()).toHaveLength(1);
     const [recreated] = applyDeltas(
-      [{ op: "create", kind: "memory", content: "Always run pnpm check before committing!", evidence: "e" }],
+      [
+        {
+          op: "create",
+          kind: "memory",
+          content: "Always run pnpm check before committing!",
+          evidence: "e",
+        },
+      ],
       persist,
     );
     expect(asCreate(recreated).item.support?.recreates).toBe(1);
@@ -1497,7 +1526,10 @@ describe("recreate stamping (tombstones integration)", () => {
 
   it("an unrelated create gets no recreate stamp", () => {
     const persist = vi.fn();
-    applyDeltas([{ op: "create", kind: "prompt", content: "unrelated words entirely", evidence: "e" }], persist);
+    applyDeltas(
+      [{ op: "create", kind: "prompt", content: "unrelated words entirely", evidence: "e" }],
+      persist,
+    );
     const state = getState();
     expect(state.items[0]!.support).toBeUndefined();
   });

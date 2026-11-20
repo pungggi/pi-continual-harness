@@ -532,14 +532,22 @@ describe("checks config (deterministic-check runner)", () => {
 
   it("coerces malformed values back to the defaults", async () => {
     const file = tempFile();
-    await writeFile(file, JSON.stringify({ checks: { enabled: "yes", timeoutMs: -5, maxPerRun: 0 } }), "utf8");
+    await writeFile(
+      file,
+      JSON.stringify({ checks: { enabled: "yes", timeoutMs: -5, maxPerRun: 0 } }),
+      "utf8",
+    );
     const cfg = await loadConfig(file);
     expect(cfg.checks).toEqual({ enabled: false, timeoutMs: 20000, maxPerRun: 10 });
   });
 
   it("accepts explicit values", async () => {
     const file = tempFile();
-    await writeFile(file, JSON.stringify({ checks: { enabled: true, timeoutMs: 5000, maxPerRun: 3 } }), "utf8");
+    await writeFile(
+      file,
+      JSON.stringify({ checks: { enabled: true, timeoutMs: 5000, maxPerRun: 3 } }),
+      "utf8",
+    );
     const cfg = await loadConfig(file);
     expect(cfg.checks).toEqual({ enabled: true, timeoutMs: 5000, maxPerRun: 3 });
   });

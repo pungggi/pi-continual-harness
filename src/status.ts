@@ -273,9 +273,7 @@ function applicableHints(
   }
   // Recurring corrections without a check → the graduation nudge: prose that
   // keeps coming back wants to become a deterministic command.
-  const recurringNoCheck = active.filter(
-    (i) => (i.support?.recreates ?? 0) >= 2 && !i.check,
-  );
+  const recurringNoCheck = active.filter((i) => (i.support?.recreates ?? 0) >= 2 && !i.check);
   if (recurringNoCheck.length > 0) {
     hints.push({
       id: "graduate-check",
