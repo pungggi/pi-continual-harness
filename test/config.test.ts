@@ -517,3 +517,38 @@ describe("config", () => {
     });
   });
 });
+
+// ---- checks block (0.24.0) --------------------------------------------------
+
+describe("checks config (deterministic-check runner)", () => {
+  // Appended top-level describe: reset the cache ourselves (the outer
+  // describe's beforeEach does not reach here).
+  beforeEach(resetConfigCache);
+
+  it("defaults: off, 20s timeout, 10 per run", async () => {
+    const cfg = await loadConfig(tempFile());
+    expect(cfg.checks).toEqual({ enabled: false, timeoutMs: 20000, maxPerRun: 10 });
+  });
+
+  it("coerces malformed values back to the defaults", async () => {
+    const file = tempFile();
+    await writeFile(
+      file,
+      JSON.stringify({ checks: { enabled: "yes", timeoutMs: -5, maxPerRun: 0 } }),
+      "utf8",
+    );
+    const cfg = await loadConfig(file);
+    expect(cfg.checks).toEqual({ enabled: false, timeoutMs: 20000, maxPerRun: 10 });
+  });
+
+  it("accepts explicit values", async () => {
+    const file = tempFile();
+    await writeFile(
+      file,
+      JSON.stringify({ checks: { enabled: true, timeoutMs: 5000, maxPerRun: 3 } }),
+      "utf8",
+    );
+    const cfg = await loadConfig(file);
+    expect(cfg.checks).toEqual({ enabled: true, timeoutMs: 5000, maxPerRun: 3 });
+  });
+});

@@ -170,7 +170,11 @@ export const steeringProposer: DeltaProposer = {
 
 // ---- rule-based alternate: dedupe (merge-capable) -------------------------
 
-export const DEDUPE_THRESHOLD = 0.6;
+// The similarity seam lives in similarity.ts (shared with tombstones.ts,
+// 0.24.0 — no store → proposer cycle); re-exported here so the public API
+// (dedupe threshold, tokenize/tokenOverlap for companions) is unchanged.
+export { DEDUPE_THRESHOLD, tokenize, tokenOverlap } from "./similarity.js";
+import { DEDUPE_THRESHOLD, tokenOverlap } from "./similarity.js";
 
 /** Enriched similarity return: a score plus an explicit per-pair abstain.
  *  The shape pinned by the pi-jev consumer contract (a conformal decision
@@ -203,27 +207,10 @@ export interface DedupeOptions {
 /** Shipped defaults: merge ON at the historical 0.6 threshold. */
 export const DEFAULT_DEDUPE: DedupeOptions = { threshold: DEDUPE_THRESHOLD, merge: true };
 
+// tokenize/tokenOverlap moved to similarity.ts (re-exported above).
+
 /** Cap (chars) on a merged item's evidence so durable layers stay lean. */
 export const EVIDENCE_MERGE_CAP = 2000;
-
-/** Tokenize for overlap comparison: lowercase alnum tokens. */
-export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/** Jaccard token overlap in [0,1]. 0 if either side has no tokens. */
-export function tokenOverlap(a: string, b: string): number {
-  const sa = new Set(tokenize(a));
-  const sb = new Set(tokenize(b));
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let inter = 0;
-  for (const t of sa) if (sb.has(t)) inter++;
-  return inter / (sa.size + sb.size - inter);
-}
 
 function truncate(s: string, n = 48): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;

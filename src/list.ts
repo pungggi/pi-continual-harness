@@ -98,6 +98,9 @@ export function supportSummary(s?: SupportInfo): string | undefined {
   if (s.citations) parts.push(`cited ${s.citations}×`);
   if (s.keeps) parts.push(`kept ${s.keeps}×`);
   if (s.drops) parts.push(`dropped ${s.drops}×`);
+  if (s.passes) parts.push(`check ok ${s.passes}×`);
+  if (s.fails) parts.push(`check failed ${s.fails}×`);
+  if (s.recreates) parts.push(`recreated ${s.recreates}×`);
   return parts.length > 0 ? `support: ${parts.join(", ")}` : undefined;
 }
 
@@ -118,6 +121,7 @@ function fullRow(i: HarnessItem, opts: ListOptions): string {
   const sup = supportSummary(i.support);
   return (
     `[${i.id}] (${bits.join(", ")}) ${i.content}\n  evidence: ${i.evidence}` +
+    (i.check ? `\n  check: ${i.check}` : "") +
     (sup ? `\n  ${sup}` : "")
   );
 }

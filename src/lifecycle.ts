@@ -14,6 +14,7 @@ import { resetDurableSync, syncDurableOnStart } from "./durable.js";
 import { resetInjectionStats } from "./inject.js";
 import { resetHints } from "./hints.js";
 import { setActiveModelKey, setSessionProject, reconstruct, getState } from "./store.js";
+import { loadTombstones } from "./tombstones.js";
 import { CONFIG_PATH, configMalformed, loadConfig, projectSlug } from "./config.js";
 
 /** The full session_start handler (rebuild state from the current branch). */
@@ -50,6 +51,12 @@ export async function onSessionStart(pi: ExtensionAPI, ctx: ExtensionContext): P
     );
   }
   reconstruct(ctx.sessionManager.getBranch() as Iterable<unknown>);
+  // Recreate detection (0.24.0): load the tombstone sidecar AFTER state
+  // reconstruction and BEFORE any turn can create items — every create is
+  // matched against it (see tombstones.ts). Soft-fail: a missing or corrupt
+  // sidecar starts the session with an empty tombstone list, which only ever
+  // misses a recreate count.
+  await loadTombstones();
   const n = getState().items.length;
   if (n > 0) {
     ctx.ui.notify(`Continual Harness: ${n} item(s) restored`, "info");

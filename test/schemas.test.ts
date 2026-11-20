@@ -12,6 +12,7 @@ import {
   harnessListTool,
   harnessMutateTool,
   KIND_VALUES,
+  MAX_CHECK_CHARS,
   MAX_CONTENT_CHARS,
   MAX_DELTAS,
   MAX_EVIDENCE_CHARS,
@@ -48,6 +49,13 @@ const CreateShape = Type.Object({
         'Durable-layer scope (default global). "project" binds the item to this session\'s project file (slug stamped server-side). Normally managed via /harness move or /harness split — set directly only when a new item is clearly project-specific.',
     }),
   ),
+  check: Type.Optional(
+    Type.String({
+      maxLength: MAX_CHECK_CHARS,
+      description:
+        "Optional shell command whose exit code deterministically verifies this item (exit 0 = holds). One line, e.g. 'npm run typecheck' or 'grep -q useCallback src/hooks.ts'. Auto-runs at /refine only for owner-trusted items; agent-proposed checks run only via /harness check.",
+    }),
+  ),
 });
 
 const UpdateShape = Type.Object({
@@ -61,6 +69,13 @@ const UpdateShape = Type.Object({
     StringEnum(["global", "project"], {
       description:
         "Move the item between durable layers (global file vs this session's project file). Use during a /harness split classification; leave unchanged otherwise.",
+    }),
+  ),
+  check: Type.Optional(
+    Type.String({
+      maxLength: MAX_CHECK_CHARS,
+      description:
+        'Verification command (replace semantics; empty string "" clears it). Writing a check from the agent surface re-marks the item agent-authored (unverified), since a check is executable content.',
     }),
   ),
 });
@@ -98,6 +113,17 @@ const ItemSchema = Type.Object({
       keeps: Type.Optional(Type.Number()),
       drops: Type.Optional(Type.Number()),
       lastCitedAt: Type.Optional(Type.Number()),
+      passes: Type.Optional(Type.Number()),
+      fails: Type.Optional(Type.Number()),
+      lastCheckAt: Type.Optional(Type.Number()),
+      lastCheckOk: Type.Optional(Type.Boolean()),
+      recreates: Type.Optional(Type.Number()),
+    }),
+  ),
+  check: Type.Optional(
+    Type.String({
+      description:
+        "Optional verification command; exit 0 = the item holds (runs automatically only for trusted items).",
     }),
   ),
   createdAt: Type.Number(),

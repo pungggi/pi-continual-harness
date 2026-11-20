@@ -8,6 +8,55 @@ Releases are tag-driven (`vX.Y.Z`) and published by GitHub Actions via npm
 Trusted Publishing. This file begins at 0.7.0; earlier releases are recorded in
 the git tags (`git tag -l`) and the [GitHub release history](https://github.com/pungggi/pi-continual-harness/releases).
 
+## [0.24.0] — 2026-11-19
+
+### Added
+
+- **Deterministic checks** (`check` field + opt-in `checks` config): the
+  prose→code graduation path. Any item can carry one shell command whose
+  exit code verifies the lesson; a **pass is earned support** (exempts from
+  trial decay, joins the digest's proven-useful section — same weight as a
+  citation or keep) and a **fail flags without deleting** (digest, status,
+  notification). Set via `harness_mutate` deltas or the durable `  - check:`
+  sub-line. Trust boundary preserved: a check is executable content, so the
+  auto-run path is **trusted-only** — writing a check from an agent surface
+  re-marks the item agent-authored, exactly like a content rewrite; the
+  owner's path back is the durable hand-delete (durable wins, in-session
+  trust only ever decreases). Run timing: `/refine` runs due trusted checks
+  **before** building the steering prompt, bounded `maxPerRun` 10
+  (never-checked first, then oldest verdicts), each under `timeoutMs` 20s;
+  off by default because it spawns subprocesses. `/harness check [id]` runs
+  any item explicitly (a human action — any trust class), ignoring the
+  config gate. New `src/checks.ts` (pure planner + runner + summary).
+- **Recreate detection** (tombstones): every removal path (delete, prune,
+  trial expiry, durable `--prune`) records a tombstone in
+  `~/.pi/agent/harness-state.tombstones.json`; creates are matched with the
+  dedupe seam (token overlap ≥ 0.6, same kind) and a match stamps
+  `support.recreates` server-side. Sidecar is capped (90 days, 200 entries,
+  1000-char content), flushed atomically, best-effort. At `recreates ≥ 2` the
+  digest names the item under **Recurring corrections** and status counts
+  it — the graduation nudge that turns the store's most stubborn prose into
+  self-verifying commands. Why: a correction that keeps being deleted and
+  re-learned is prose trying to become a check.
+- **`/harness check [id]`** subcommand: the explicit runner, plus `check:`
+  lines in `/harness list -f` and `harness_list` output, and a
+  `verification` block (withCheck / autoRunnable / failing) plus `Recurring:`
+  count and a `graduate-check` hint in `/harness status`.
+
+### Changed
+
+- **Lessons digest gains check + recreate signals**: struggling score now
+  includes fails (`2·citations + keeps + passes − 2·drops − 2·fails`), the
+  supported section names `check ok N×`, and the new Recurring corrections
+  section is bounded by a `maxRecurring` digest option (default 3). A pass
+  also exempts an item from trial decay (`hasPositiveSupport` includes
+  `passes > 0`).
+- **Similarity seam extracted** to `src/similarity.ts` (`DEDUPE_THRESHOLD`,
+  `tokenize`, `tokenOverlap`): the dedupe proposer and the tombstone matcher
+  share one definition instead of importing across a store→proposer cycle.
+- Schemas: `check` on create/update deltas (max 500 chars; empty string
+  clears) and the new support fields in the harness_mutate output schema.
+
 ## [0.23.0] — 2026-11-18
 
 ### Added

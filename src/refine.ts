@@ -42,6 +42,7 @@ import type {
 } from "./proposer.js";
 import { REFINE_COMMAND_DESCRIPTION } from "./command-meta.js";
 import { buildClassify } from "./classify.js";
+import { handleRefineChecks } from "./checks.js";
 import { resolveBindingKey, branchEntries } from "./vmodel.js";
 import type { AnyEntry, AppliedDelta } from "./types.js";
 import { loadConfig, projectSlug } from "./config.js";
@@ -271,6 +272,12 @@ export async function runRefine(
   const commit = options.commit ?? false;
   const proposer = resolveProposer(ctx, options.proposer);
   ctx.ui.setStatus("harness", `Refining (last ${lookback} turns)… [${proposer.name}]`);
+
+  // Deterministic checks (0.24.0) run BEFORE evidence gathering and digest
+  // building: their pass/fail outcomes land in support counters, so both the
+  // lessons digest and the proposer see fresh verdicts in the same prompt.
+  // No-op unless `checks.enabled` (checks.ts owns the config read).
+  await handleRefineChecks(pi, ctx);
 
   const evidence = gatherEvidence(ctx, lookback);
   const proposeCtx = await buildProposeInput(ctx, evidence, lookback, options);

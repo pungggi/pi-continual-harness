@@ -14,6 +14,7 @@ import {
   harnessListTool,
   harnessMutateTool,
   KIND_VALUES,
+  MAX_CHECK_CHARS,
   MAX_CONTENT_CHARS,
   MAX_DELTAS,
   MAX_EVIDENCE_CHARS,
@@ -80,6 +81,12 @@ export function validateDeltas(raw: unknown): string | undefined {
       if (delta.scope !== undefined && delta.scope !== "global" && delta.scope !== "project") {
         return `${where}: scope must be global|project`;
       }
+      // Optional field: only validated when present (validText rejects
+      // undefined — it is shaped for required fields).
+      if (delta.check !== undefined) {
+        const chk = validText(delta.check, MAX_CHECK_CHARS, "check", where);
+        if (chk) return chk;
+      }
     } else if (delta.op === "update") {
       const id = validText(delta.id, 200, "id", where);
       if (id) return id;
@@ -103,6 +110,10 @@ export function validateDeltas(raw: unknown): string | undefined {
       }
       if (delta.scope !== undefined && delta.scope !== "global" && delta.scope !== "project") {
         return `${where}: scope must be global|project`;
+      }
+      if (delta.check !== undefined) {
+        const chk = validText(delta.check, MAX_CHECK_CHARS, "check", where);
+        if (chk) return chk;
       }
     } else if (delta.op === "delete") {
       const id = validText(delta.id, 200, "id", where);
@@ -175,7 +186,7 @@ export async function executeHarnessList(
                   // Same support line as /harness list -f: feedback signals the
                   // agent should see when grounding its next deltas.
                   const sup = supportSummary(i.support);
-                  return `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}, model ${i.ownerModel || "(orphan)"}) ${i.content}\n  evidence: ${i.evidence}${sup ? `\n  ${sup}` : ""}`;
+                  return `[${i.id}] (${i.kind}, importance ${i.importance.toFixed(2)}, ${i.active ? "active" : "inactive"}, model ${i.ownerModel || "(orphan)"}) ${i.content}\n  evidence: ${i.evidence}${i.check ? `\n  check: ${i.check}` : ""}${sup ? `\n  ${sup}` : ""}`;
                 })
                 .join("\n"),
       },
@@ -194,6 +205,7 @@ export async function executeHarnessList(
         ...(i.scope ? { scope: i.scope } : {}),
         ...(i.project ? { project: i.project } : {}),
         ...(i.support ? { support: i.support } : {}),
+        ...(i.check ? { check: i.check } : {}),
         createdAt: i.createdAt,
         updatedAt: i.updatedAt,
       })),

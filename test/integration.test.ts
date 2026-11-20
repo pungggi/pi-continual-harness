@@ -594,6 +594,7 @@ describe("/harness command", () => {
       "push-mem",
       "setup",
       "lessons",
+      "check",
     ]);
     for (const i of items) {
       expect(i.label).toBe(i.value); // label mirrors the subcommand name

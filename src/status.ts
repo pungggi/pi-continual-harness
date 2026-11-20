@@ -15,6 +15,7 @@
 import { classifyTransition, parseDedupeDelete, walkAuditTrail } from "./corpus.js";
 import { DEFAULT_REF_BUMP, type HarnessConfig } from "./config.js";
 import { isOnTrial } from "./decay.js";
+import { autoRunnable } from "./checks.js";
 import type { InjectionStats } from "./inject.js";
 import type { StatusHint } from "./hints.js";
 import type { ComponentKind, HarnessState } from "./types.js";
@@ -188,6 +189,19 @@ export interface StatusReport {
   /** Count of active on-trial items (unverified, no support yet) — the
    *  self-grown share of the store that trial decay bounds. */
   trial: number;
+  /** Active items carrying a `check` command + latest verdicts (the
+   *  verification surface, 0.24.0). Undefined when nothing carries a check. */
+  verification?: {
+    withCheck: number;
+    /** Trusted (auto-runnable at refine time); the rest run only via the
+     *  explicit `/harness check`. */
+    autoRunnable: number;
+    /** Items whose latest check FAILED — flagged, never auto-deleted. */
+    failing: number;
+  };
+  /** Active items re-learned >= 2 times after deletion (graduation
+   *  candidates — see tombstones.ts). */
+  recurring: number;
   /** Applicable hints in stable priority order; the caller picks one
    *  (rotation lives in hints.ts — keeps this builder pure). */
   hints: StatusHint[];
@@ -257,6 +271,15 @@ function applicableHints(
       text: `${active.filter((i) => isOnTrial(i)).length} active item(s) are unverified with no support yet — set \`trialDecay: { "enabled": true }\` in harness.json so stale ones decay and expire instead of accumulating`,
     });
   }
+  // Recurring corrections without a check → the graduation nudge: prose that
+  // keeps coming back wants to become a deterministic command.
+  const recurringNoCheck = active.filter((i) => (i.support?.recreates ?? 0) >= 2 && !i.check);
+  if (recurringNoCheck.length > 0) {
+    hints.push({
+      id: "graduate-check",
+      text: `${recurringNoCheck.length} recurring correction(s) (deleted before, re-learned) carry no \`check\` command — attach one (a test selector or grep) so the correction verifies itself instead of riding the prompt forever`,
+    });
+  }
   return hints;
 }
 
@@ -286,6 +309,7 @@ export function buildStatusReport(
   const perKind: Record<ComponentKind, number> = { prompt: 0, memory: 0, skill: 0, subagent: 0 };
   for (const i of active) perKind[i.kind] += 1;
   const scopeProject = active.filter((i) => i.scope === "project").length;
+  const withCheck = active.filter((i) => i.check);
   const owners = [...new Set(active.map((i) => i.ownerModel).filter(Boolean))];
   const mine = opts.modelKey
     ? active.filter((i) => i.ownerModel === opts.modelKey).length
@@ -305,6 +329,18 @@ export function buildStatusReport(
     ...(opts.modelKey ? { modelImpact: byOwner.get(opts.modelKey) ?? emptyImpact() } : {}),
     ...(opts.injection ? { injection: opts.injection } : {}),
     trial: active.filter((i) => isOnTrial(i)).length,
+    ...(withCheck.length > 0
+      ? {
+          verification: {
+            withCheck: withCheck.length,
+            autoRunnable: withCheck.filter(autoRunnable).length,
+            failing: withCheck.filter(
+              (i) => (i.support?.fails ?? 0) > 0 && i.support?.lastCheckOk === false,
+            ).length,
+          },
+        }
+      : {}),
+    recurring: active.filter((i) => (i.support?.recreates ?? 0) >= 2).length,
     hints: applicableHints(state, opts.config, whole),
     ...(active.length === 0 ? { zeroState: zeroStateGuidance(items.length) } : {}),
   };
@@ -367,6 +403,20 @@ export function renderStatusReport(
   if (r.trial > 0) {
     lines.push(
       `Trial: ${r.trial} active item(s) unverified with no support yet — they decay toward expiry only while \`trialDecay\` is enabled; \`/harness keep <id>\` confirms one now.`,
+    );
+  }
+  // Verification band (0.24.0): the deterministic-check surface.
+  if (r.verification) {
+    const v = r.verification;
+    lines.push(
+      v.failing > 0
+        ? `Checks: ${v.failing} of ${v.withCheck} check-carrying item(s) FAILING — fix the root cause or rewrite the item; \`/harness check\` re-runs, the refine digest flags them.`
+        : `Checks: ${v.withCheck} item(s) carry verification commands (${v.autoRunnable} trusted → auto-run at /refine while \`checks.enabled\`) — all passing.`,
+    );
+  }
+  if (r.recurring > 0) {
+    lines.push(
+      `Recurring: ${r.recurring} correction(s) deleted and re-learned — graduate them into \`check\` commands instead of re-storing prose (see the digest's Recurring section).`,
     );
   }
   // Band 3 — the rotating one-line hint.

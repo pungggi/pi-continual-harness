@@ -257,3 +257,80 @@ describe("buildLessonsDigest", () => {
     expect(digest).toContain("## Lessons from past refines");
   });
 });
+
+// ---- digest: check signals + recurring corrections (0.24.0) ----------------
+
+describe("buildLessonsDigest — deterministic-check signals", () => {
+  it("names a passing check among the supported items", () => {
+    const digest = buildLessonsDigest(
+      stateOf([item({ id: "h_p", support: { passes: 2, lastCheckOk: true }, check: "npm test" })]),
+      [],
+    );
+    expect(digest).toContain("[h_p]");
+    expect(digest).toContain("check ok 2\u00d7");
+  });
+
+  it("a failing check alone is explicit negative signal: the item is named as struggling", () => {
+    const digest = buildLessonsDigest(
+      stateOf([item({ id: "h_f", support: { fails: 1, lastCheckOk: false } })]),
+      [],
+    );
+    expect(digest).toContain("Rejected signals");
+    expect(digest).toContain("[h_f]");
+    expect(digest).toContain("check failed 1\u00d7");
+  });
+
+  it("orders multiple struggling items by fails-heaviness (worst first)", () => {
+    const digest = buildLessonsDigest(
+      stateOf([
+        item({ id: "h_drop", support: { drops: 1 } }),
+        item({ id: "h_2fails", support: { fails: 2, lastCheckOk: false } }),
+      ]),
+      [],
+    );
+    // 2 fails weigh double a single drop, so h_2fails is named first.
+    const first = digest.indexOf("[h_2fails]");
+    const second = digest.indexOf("[h_drop]");
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+  });
+
+  it("passes outweigh a fail: a mostly-passing item is contested, not rejected", () => {
+    const digest = buildLessonsDigest(
+      stateOf([item({ id: "h_c", support: { passes: 3, fails: 1 } })]),
+      [],
+    );
+    expect(digest).toContain("Proven useful");
+    expect(digest).not.toContain("Rejected signals");
+  });
+});
+
+describe("buildLessonsDigest — recurring corrections (graduation nudge)", () => {
+  it("names items re-learned >= 2 times and tells the improver to encode a check", () => {
+    const digest = buildLessonsDigest(
+      stateOf([
+        item({ id: "h_r", support: { recreates: 3 } }),
+        item({ id: "h_once", support: { recreates: 1 } }),
+      ]),
+      [],
+    );
+    expect(digest).toContain("Recurring corrections");
+    expect(digest).toContain("[h_r]");
+    expect(digest).toContain("re-learned 3\u00d7");
+    expect(digest).toContain("check");
+    expect(digest).not.toContain("[h_once]");
+  });
+
+  it("respects maxRecurring", () => {
+    const digest = buildLessonsDigest(
+      stateOf([
+        item({ id: "h_a", support: { recreates: 2 } }),
+        item({ id: "h_b", support: { recreates: 4 } }),
+      ]),
+      [],
+      { maxRecurring: 1 },
+    );
+    expect(digest).toContain("[h_b]");
+    expect(digest).not.toContain("[h_a]");
+  });
+});

@@ -101,6 +101,22 @@ export type SupportInfo = {
   drops?: number;
   /** Last citation time (ms epoch). */
   lastCitedAt?: number;
+  /** Times the item's `check` command exited 0 (deterministic verification,
+   *    checks.ts). A pass is EARNED support: it exempts the item from trial
+   *  decay exactly like a citation or keep. */
+  passes?: number;
+  /** Times the item's `check` command exited non-zero. A fail never deletes
+   *  anything by itself — it flags the item in the digest and /harness status
+   *  (the correction is provably not holding; rewrite or encode it better). */
+  fails?: number;
+  /** Last check time (ms epoch). */
+  lastCheckAt?: number;
+  /** Whether the LAST check passed — the freshest verification verdict. */
+  lastCheckOk?: boolean;
+  /** Times this correction was REMOVED and later re-created with
+   *  near-identical content (tombstones.ts). >= 2 is the graduation signal:
+   *  prose that keeps coming back wants to become a `check` command. */
+  recreates?: number;
 };
 
 /** A single item in the unified harness store. */
@@ -139,6 +155,15 @@ export interface HarnessItem {
    *  trusted: owner-authored, or legacy. Stamped server-side only — the
    *  model can never set it. */
   provenance?: Provenance | undefined;
+  /** Optional shell command whose exit code DETERMINISTICALLY verifies this
+   *  item's claim (exit 0 = the correction holds; any other exit = it does
+   *  not). The graduation path: recurring prose corrections should become
+   *  checks. Proposed through deltas like content, but a check WRITTEN by an
+   *  agent surface flips provenance to "agent" (see applyOne) — so an
+   *  agent-authored command is never auto-executed; it runs only via the
+   *  explicit `/harness check`, or automatically once the item is trusted
+   *  (durable hand-edit is the documented trust path). */
+  check?: string | undefined;
   createdAt: number;
   updatedAt: number;
 }
@@ -179,6 +204,9 @@ export type Delta =
       scope?: "global" | "project";
       /** Explicit project slug for scope:"project" (server-side use). */
       project?: string;
+      /** Optional verification command (see HarnessItem.check). Agent surfaces
+       *  may propose it; executing it is gated by trust (checks.ts). */
+      check?: string;
     }
   | {
       op: "update";
@@ -199,6 +227,11 @@ export type Delta =
        *  model-facing tool). The dedupe proposer uses this to carry the
        *  absorbed duplicates' support onto the keeper (see mergeSupport). */
       support?: SupportInfo | undefined;
+      /** Verification command (see HarnessItem.check). Replace semantics like
+       *  every optional field; an empty string CLEARS it. Writing it from an
+       *  agent surface flips provenance to "agent" (a check is executable
+       *  content — trust follows the writer). */
+      check?: string;
     }
   | { op: "delete"; id: string; reason: string };
 

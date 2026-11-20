@@ -196,6 +196,7 @@ Optional config at `~/.pi/agent/harness.json` (missing → defaults; malformed �
   "autoRefine": { "enabled": false, "everyTurns": 100, "commit": false, "gate": false, "refineNoOpSkip": 3 },
   "outcomeImportance": { "enabled": false, "bump": 0.03 },
   "trialDecay": { "enabled": false, "everyTurns": 20, "afterDays": 14, "step": 0.05 },
+  "checks": { "enabled": false, "timeoutMs": 20000, "maxPerRun": 10 },
   "classifier": { "model": "github-copilot/microsoft-decision-1", "auto": true },
   "virtualBinding": "virtual"
 }
@@ -220,12 +221,13 @@ schemas (the same pattern pi ≥ 1.2 ships for its own `settings.json` /
 | `autoRefine` | off, every 100 turns | Opt-in autonomous `/refine` on a cadence; `gate` adds the classifier question, `refineNoOpSkip` the free history gate. |
 | `outcomeImportance` | off, bump 0.03 | Opt-in promotion of items you cite by `[h_xxxx]` tag. Promotion only — never deletes. |
 | `trialDecay` | off, every 20 turns / 14 days / step 0.05 | Opt-in trial expiry: stale **unverified** items with no support decay toward the importance floor and are deleted below it ([below](#trial-decay-for-unverified-items)). Owner-authored items are never touched. |
+| `checks` | off, 20s / 10 per run | Opt-in deterministic checks: at `/refine`, run **trusted** items' `check` commands and record pass/fail as support ([below](#deterministic-checks-prose--code-graduation)). Agent-authored checks never auto-run — `/harness check [id]` runs any item explicitly. |
 | `classifier` | `model` unset, `auto: true` | Classifier enabling classifier-confirmed dedupe + the auto-refine gate. With `auto` (default), an unset `model` auto-resolves the hosted `github-copilot/microsoft-decision-1` on pi ≥ 1.5.1 with Copilot auth; set `model` to pin any classifier, or `auto: false` to require it. |
 | `virtualBinding` | `"virtual"` | Per-model isolation key for router (virtual) models; `"physical"` keys by the routed model. |
 
 The package's autonomous paths (`autoImport`, `autoRefine`, `outcomeImportance`,
-`trialDecay`) are all opt-in and off by default; everything else is notify-only or
-human-triggered. Removed keys: the store-wide `durableScope` (0.9.0) — items
+`trialDecay`, `checks`) are all opt-in and off by default; everything else is
+notify-only or human-triggered. Removed keys: the store-wide `durableScope` (0.9.0) — items
 carry their own scope (`/harness move`, `/harness split`); see
 [docs/CONFIG.md](docs/CONFIG.md) for the migration note.
 
@@ -237,18 +239,23 @@ supports it. Four pieces implement this without any extra model calls:
 
 - **Support counters.** Every item accumulates `support` signals: `citations`
   (the outcome loop saw the agent cite the item's `[h_xxxx]` tag), `keeps` and
-  `drops` (`/harness keep|drop`). Dedupe merges carry the counters onto the
-  keeper, and durable export/import round-trips them (`support:` sub-line), so
-  feedback survives restarts. See them with `/harness list -f`.
+  `drops` (`/harness keep|drop`), `passes`/`fails` (deterministic checks,
+  [below](#deterministic-checks-prose--code-graduation)), and `recreates`
+  (the [recreate detector](#recreate-detection-graduation-nudge) saw this
+  correction come back after being removed). Dedupe merges carry the counters
+  onto the keeper, and durable export/import round-trips them (`support:`
+  sub-line), so feedback survives restarts. See them with `/harness list -f`.
 - **Lessons digest.** `/refine` steers with a compact, evidence-gated digest:
-  items proven useful (cited or kept), rejected signals (drops that strictly
-  outweigh any later use — a drop followed by re-citations is contested, not
-  rejected), and how productive recent refine runs were. Never-cited items are
-  NOT named: no signal is not a negative signal. The digest is **scoped to the
-  active model's items** — per-model isolation applies to what the improver is
-  told, not just what it is shown. `/harness lessons` prints the exact digest
-  the next `/refine` will use. Why: the improver starts from
-  what worked instead of re-deriving it, and stops re-creating rejected notes.
+  items proven useful (cited, kept, or check-passing), rejected signals
+  (drops or failing checks that outweigh any later use — a drop followed by
+  re-citations is contested, not rejected), recurring corrections (the
+  graduation nudge, below), and how productive recent refine runs were.
+  Never-cited items are NOT named: no signal is not a negative signal. The
+  digest is **scoped to the active model's items** — per-model isolation
+  applies to what the improver is told, not just what it is shown. `/harness
+  lessons` prints the exact digest the next `/refine` will use. Why: the
+  improver starts from what worked instead of re-deriving it, and stops
+  re-creating rejected notes.
 - **Scoped proposals.** The `/refine` steering prompt classifies every create
   as **invariant** (cross-domain agentic behavior → `scope: "global"`) or
   **domain-specific** (this project's knowledge → `scope: "project"`).
@@ -258,6 +265,53 @@ supports it. Four pieces implement this without any extra model calls:
   `refineNoOpSkip` refine runs all produced nothing durable, **bounded to one
   consecutive skip** so later evidence always gets a chance (see
   `autoRefine` in [Configuration](#configuration)).
+
+## Deterministic checks (prose → code graduation)
+
+A correction stored as prose must be re-read and re-trusted every turn, and
+nothing verifies it still holds. A **check command** turns the correction
+into a falsifiable claim:
+
+- **`check` field.** Any item can carry `check`: one shell line whose exit
+  code verifies the claim (`npm run typecheck`, `grep -q useCallback
+  src/hooks.ts`, a test selector). Set it through `harness_mutate` deltas or
+  by hand-editing the durable file (`  - check: <command>` sub-line).
+- **Exit 0 = earned support.** A pass counts like a citation or keep: the
+  item leaves the trial queue and joins the digest's "proven useful"
+  section. A fail never deletes anything — it flags the item in the digest,
+  `/harness status`, and the check-run notification, telling the improver to
+  rewrite it and you what to fix at the root.
+- **Trust boundary.** A check is *executable content*, so the auto-run path
+  is trusted-only: writing a check from an agent surface re-marks the item
+  agent-authored (unverified), exactly like a content rewrite. Agent-proposed
+  checks run only via the explicit `/harness check [id]` command (any trust
+  class — it is your action). Hand-writing a `check:` line in the durable
+  file is the owner approving the command: trusted, auto-run.
+- **Run timing.** With `checks.enabled`, `/refine` (manual or gated
+  auto-refine) runs due trusted checks **before** building the steering
+  prompt — the proposer sees fresh pass/fail verdicts in the same digest.
+  Bounded: `maxPerRun` commands per run (never-checked first), each under
+  `timeoutMs`. Off by default (it spawns subprocesses — opt-in like every
+  autonomous effect).
+
+Why: recurring prose corrections want to become code. A passing check needs
+no injection budget at all; a failing one is proof the lesson is wrong — the
+strongest signal in the store.
+
+## Recreate detection (graduation nudge)
+
+A correction that keeps being deleted and re-learned with near-identical
+content is prose trying to become a check. Every removal path (delete,
+prune, trial expiry, durable `--prune`) records a **tombstone**
+(`~/.pi/agent/harness-state.tombstones.json`, age-pruned, best-effort);
+creates are matched against tombstones with the same token-overlap seam as
+the dedupe proposer (threshold 0.6, same kind). A match carries
+`support.recreates` onto the new item — server-side, like every counter.
+
+At `recreates >= 2` the digest names the item under **Recurring corrections**
+("encode as a deterministic `check` command instead of more prose") and
+`/harness status` counts it — the graduation nudge that turns the store's
+most stubborn prose into self-verifying commands.
 
 ## How it works
 
