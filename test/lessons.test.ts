@@ -280,6 +280,21 @@ describe("buildLessonsDigest — deterministic-check signals", () => {
     expect(digest).toContain("check failed 1\u00d7");
   });
 
+  it("orders multiple struggling items by fails-heaviness (worst first)", () => {
+    const digest = buildLessonsDigest(
+      stateOf([
+        item({ id: "h_drop", support: { drops: 1 } }),
+        item({ id: "h_2fails", support: { fails: 2, lastCheckOk: false } }),
+      ]),
+      [],
+    );
+    // 2 fails weigh double a single drop, so h_2fails is named first.
+    const first = digest.indexOf("[h_2fails]");
+    const second = digest.indexOf("[h_drop]");
+    expect(first).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(first);
+  });
+
   it("passes outweigh a fail: a mostly-passing item is contested, not rejected", () => {
     const digest = buildLessonsDigest(
       stateOf([item({ id: "h_c", support: { passes: 3, fails: 1 } })]),
